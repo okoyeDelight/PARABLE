@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#11130f" />
+  <title>PARABLE — Stories made visible</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">P</div>
+        <div><strong>PARABLE</strong><span>STORY → SCREEN</span></div>
+      </div>
+      <nav>
+        <button class="nav-item active">Studio</button>
+        <button class="nav-item">Stories</button>
+        <button class="nav-item">Writers' Room</button>
+        <button class="nav-item">Context Library</button>
+      </nav>
+      <div class="build-state"><span></span><div><b>Foundation Alpha</b><small>Day 1 web mirror</small></div></div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Writer workspace</p>
+          <h1>Turn the written word into a world people can enter.</h1>
+        </div>
+        <button id="newStoryBtn" class="primary-btn">+ New story</button>
+      </header>
+
+      <section class="metrics">
+        <div><span>Active stories</span><strong id="activeCount">00</strong></div>
+        <div><span>Worlds grounded</span><strong id="worldsCount">00</strong></div>
+        <div><span>Engines mapped</span><strong>07</strong></div>
+        <div class="accent-metric"><span>Generation spend</span><strong>₦0</strong><small>Architecture-first</small></div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <div><p class="eyebrow">Production desk</p><h2>Your stories</h2></div>
+          <p>Each project retains its own world, audience, culture, locations and continuity.</p>
+        </div>
+        <div id="projectGrid" class="project-grid"><div class="loading">Loading PARABLE…</div></div>
+      </section>
+
+      <section class="foundation-panel">
+        <div>
+          <p class="eyebrow">Day 1 foundation</p>
+          <h2>The studio is built as brains, not one giant model.</h2>
+          <p>Story, film, culture, location, performance and rendering stay independent so each layer can improve without breaking the whole studio.</p>
+        </div>
+        <div id="engineList" class="engine-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="storyDialog">
+    <form id="storyForm" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">New production</p><h2>Start a story project</h2></div><button type="button" id="closeDialog" class="icon-btn">×</button></div>
+      <p class="dialog-copy">Give PARABLE enough context to understand where this story belongs. Everything can be refined later.</p>
+      <label>Story title<input name="title" required placeholder="e.g. The Altar" /></label>
+      <label>Opening, synopsis or rough idea<textarea name="sourceText" rows="6" placeholder="Write naturally. PARABLE will later adapt this into story structure, episodes, scenes and shots."></textarea></label>
+      <div class="two-col">
+        <label>Where is the story set?<input name="setting" placeholder="UNIBEN, Benin City / London / Accra" /></label>
+        <label>Primary audience<input name="primaryAudience" placeholder="e.g. African Christian youth" /></label>
+      </div>
+      <div class="two-col">
+        <label>Audience scope<select name="audienceScope"><option value="global">Global</option><option value="regional">Regional / country cluster</option><option value="local">Local / campus / church</option></select></label>
+        <label>Story period<select name="storyPeriod"><option value="present">Present day</option><option value="historical">Historical / past</option><option value="future">Future</option></select></label>
+      </div>
+      <div class="context-note">✦ The Living Context Engine will later research the place, culture and current moment before adaptation.</div>
+      <div class="dialog-actions"><button type="button" id="cancelDialog" class="secondary-btn">Cancel</button><button type="submit" class="primary-btn">Create project</button></div>
+    </form>
+  </dialog>
+  <script src="/app.js"></script>
+</body>
+</html>
