@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#11130f" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#060706" />
+  <meta name="color-scheme" content="dark" />
   <title>PARABLE — Stories made visible</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -11,74 +12,131 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">P</div>
-        <div><strong>PARABLE</strong><span>STORY → SCREEN</span></div>
+  <div class="ambient ambient-one" aria-hidden="true"></div>
+  <div class="ambient ambient-two" aria-hidden="true"></div>
+  <div class="noise" aria-hidden="true"></div>
+
+  <header class="global-nav">
+    <a class="brand" href="#" aria-label="PARABLE home">
+      <span class="brand-symbol">P</span>
+      <span class="brand-word">PARABLE</span>
+    </a>
+    <nav class="desktop-nav" aria-label="Studio navigation">
+      <button class="nav-link active">Studio</button>
+      <button class="nav-link">Stories</button>
+      <button class="nav-link">Worlds</button>
+      <button class="nav-link">Writers</button>
+    </nav>
+    <div class="nav-actions">
+      <button class="glass-icon" id="searchBtn" aria-label="Search"><span>⌕</span></button>
+      <button id="newStoryBtn" class="create-btn"><span>＋</span><b>New story</b></button>
+    </div>
+  </header>
+
+  <main class="studio-shell">
+    <section class="welcome reveal">
+      <p class="kicker">Your studio</p>
+      <h1>Good evening.<br><em>What are we bringing to life?</em></h1>
+    </section>
+
+    <section id="featuredStage" class="featured-stage reveal" aria-live="polite">
+      <div class="featured-loading">Preparing your studio…</div>
+    </section>
+
+    <section class="shelf-section reveal">
+      <div class="section-title-row">
+        <div>
+          <p class="kicker">Continue creating</p>
+          <h2>Your productions</h2>
+        </div>
+        <button class="quiet-action" id="seeAllBtn">See all <span>→</span></button>
       </div>
-      <nav>
-        <button class="nav-item active">Studio</button>
-        <button class="nav-item">Stories</button>
-        <button class="nav-item">Writers' Room</button>
-        <button class="nav-item">Context Library</button>
-      </nav>
-      <div class="build-state"><span></span><div><b>Foundation Alpha</b><small>Day 1 web mirror</small></div></div>
-    </aside>
+      <div class="story-shelf-wrap">
+        <div id="storyShelf" class="story-shelf"><div class="shelf-loading">Loading stories…</div></div>
+      </div>
+    </section>
 
-    <main>
-      <header class="topbar">
+    <section class="context-section reveal">
+      <div class="section-title-row compact">
         <div>
-          <p class="eyebrow">Writer workspace</p>
-          <h1>Turn the written word into a world people can enter.</h1>
+          <p class="kicker">Studio intelligence</p>
+          <h2>Everything behind the frame.</h2>
         </div>
-        <button id="newStoryBtn" class="primary-btn">+ New story</button>
-      </header>
+        <p class="section-copy">Separate creative brains work together so the story stays human, grounded and directable.</p>
+      </div>
+      <div id="engineRail" class="engine-rail"></div>
+    </section>
 
-      <section class="metrics">
-        <div><span>Active stories</span><strong id="activeCount">00</strong></div>
-        <div><span>Worlds grounded</span><strong id="worldsCount">00</strong></div>
-        <div><span>Engines mapped</span><strong>07</strong></div>
-        <div class="accent-metric"><span>Generation spend</span><strong>₦0</strong><small>Architecture-first</small></div>
-      </section>
-
-      <section class="section">
-        <div class="section-heading">
-          <div><p class="eyebrow">Production desk</p><h2>Your stories</h2></div>
-          <p>Each project retains its own world, audience, culture, locations and continuity.</p>
+    <section class="now-section reveal">
+      <div class="now-card">
+        <div class="now-orb" aria-hidden="true"><span></span></div>
+        <div class="now-copy">
+          <p class="kicker">Living context</p>
+          <h2>The world outside your script keeps moving.</h2>
+          <p>PARABLE is being built to understand place, culture and the current moment before it adapts a story — without making the writer become a prompt engineer.</p>
         </div>
-        <div id="projectGrid" class="project-grid"><div class="loading">Loading PARABLE…</div></div>
-      </section>
+        <button class="round-arrow" aria-label="Explore context">↗</button>
+      </div>
+    </section>
+  </main>
 
-      <section class="foundation-panel">
-        <div>
-          <p class="eyebrow">Day 1 foundation</p>
-          <h2>The studio is built as brains, not one giant model.</h2>
-          <p>Story, film, culture, location, performance and rendering stay independent so each layer can improve without breaking the whole studio.</p>
+  <nav class="mobile-dock" aria-label="Mobile navigation">
+    <button class="dock-item active"><span>◐</span><small>Studio</small></button>
+    <button class="dock-item"><span>▤</span><small>Stories</small></button>
+    <button class="dock-create" id="mobileNewStory" aria-label="New story">＋</button>
+    <button class="dock-item"><span>⌖</span><small>Worlds</small></button>
+    <button class="dock-item"><span>◌</span><small>Writers</small></button>
+  </nav>
+
+  <div id="storyView" class="story-view" aria-hidden="true">
+    <div class="story-view-backdrop"></div>
+    <article class="story-view-panel">
+      <button id="closeStoryView" class="story-close" aria-label="Close story">×</button>
+      <div id="storyViewArt" class="story-view-art"></div>
+      <div class="story-view-body">
+        <div class="story-view-meta"><span id="detailStatus"></span><span id="detailUpdated"></span></div>
+        <h2 id="detailTitle"></h2>
+        <p id="detailLogline" class="detail-logline"></p>
+        <div class="detail-context">
+          <div><small>World</small><strong id="detailSetting"></strong></div>
+          <div><small>Audience</small><strong id="detailAudience"></strong></div>
+          <div><small>Development</small><strong id="detailProgress"></strong></div>
         </div>
-        <div id="engineList" class="engine-list"></div>
-      </section>
-    </main>
+        <div class="detail-progress"><span id="detailProgressBar"></span></div>
+        <div class="detail-actions">
+          <button class="detail-primary">Continue story <span>→</span></button>
+          <button class="detail-secondary">•••</button>
+        </div>
+      </div>
+    </article>
   </div>
 
-  <dialog id="storyDialog">
+  <dialog id="storyDialog" class="story-dialog">
     <form id="storyForm" method="dialog">
-      <div class="dialog-head"><div><p class="eyebrow">New production</p><h2>Start a story project</h2></div><button type="button" id="closeDialog" class="icon-btn">×</button></div>
-      <p class="dialog-copy">Give PARABLE enough context to understand where this story belongs. Everything can be refined later.</p>
-      <label>Story title<input name="title" required placeholder="e.g. The Altar" /></label>
-      <label>Opening, synopsis or rough idea<textarea name="sourceText" rows="6" placeholder="Write naturally. PARABLE will later adapt this into story structure, episodes, scenes and shots."></textarea></label>
-      <div class="two-col">
-        <label>Where is the story set?<input name="setting" placeholder="UNIBEN, Benin City / London / Accra" /></label>
-        <label>Primary audience<input name="primaryAudience" placeholder="e.g. African Christian youth" /></label>
+      <div class="sheet-handle" aria-hidden="true"></div>
+      <div class="dialog-head">
+        <div><p class="kicker">New production</p><h2>Begin with the story.</h2></div>
+        <button type="button" id="closeDialog" class="dialog-close" aria-label="Close">×</button>
       </div>
-      <div class="two-col">
-        <label>Audience scope<select name="audienceScope"><option value="global">Global</option><option value="regional">Regional / country cluster</option><option value="local">Local / campus / church</option></select></label>
-        <label>Story period<select name="storyPeriod"><option value="present">Present day</option><option value="historical">Historical / past</option><option value="future">Future</option></select></label>
+      <p class="dialog-copy">Write normally. PARABLE will understand the world around the story later — culture, location, audience and the moment it belongs to.</p>
+      <div class="form-stack">
+        <label><span>Title</span><input name="title" required placeholder="The Altar" autocomplete="off" /></label>
+        <label><span>Story, synopsis or rough idea</span><textarea name="sourceText" rows="6" placeholder="Start wherever the story begins…"></textarea></label>
+        <div class="form-grid">
+          <label><span>Story setting</span><input name="setting" placeholder="Benin City, Nigeria" /></label>
+          <label><span>Primary audience</span><input name="primaryAudience" placeholder="Global Christian young adults" /></label>
+        </div>
+        <div class="segmented-row">
+          <label><span>Audience reach</span><select name="audienceScope"><option value="global">Global</option><option value="regional">Regional</option><option value="local">Local</option></select></label>
+          <label><span>Time</span><select name="storyPeriod"><option value="present">Present day</option><option value="historical">Historical</option><option value="future">Future</option></select></label>
+        </div>
       </div>
-      <div class="context-note">✦ The Living Context Engine will later research the place, culture and current moment before adaptation.</div>
-      <div class="dialog-actions"><button type="button" id="cancelDialog" class="secondary-btn">Cancel</button><button type="submit" class="primary-btn">Create project</button></div>
+      <div class="context-whisper"><span>✦</span><p>Location and cultural grounding will become richer as the studio intelligence comes online.</p></div>
+      <div class="dialog-actions"><button type="button" id="cancelDialog" class="cancel-btn">Cancel</button><button type="submit" class="submit-btn">Create production <span>→</span></button></div>
     </form>
   </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>
