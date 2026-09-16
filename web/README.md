@@ -1,16 +1,16 @@
 # PARABLE Web
 
-PARABLE is now website-first and GitHub is the source of truth.
+PARABLE is website-first and GitHub is the source of truth.
 
 ## Current architecture
 
 - `web/public/` — cinematic PARABLE frontend
-- `netlify/functions/projects.mjs` — persistent project API
-- `netlify/functions/engines.mjs` — studio engine registry API
-- `netlify.toml` — publishes `web/public` and maps `/api/*` to the Netlify backend
+- `netlify/functions/projects.mts` — persistent project API
+- `netlify/functions/engines.mts` — studio engine registry API
+- `netlify.toml` — publishes `web/public` and keeps the SPA fallback
 - Netlify Blobs — persistent server-side project and context storage
 
-The frontend continues to call `/api/projects` and `/api/engines`, so the product UI is decoupled from the hosting provider.
+The frontend continues to call `/api/projects` and `/api/engines`, so the product UI stays decoupled from hosting details.
 
 ## Current product foundation
 
