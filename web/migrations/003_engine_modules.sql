@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS engine_modules (engine_key TEXT PRIMARY KEY, display_name TEXT NOT NULL, engine_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'foundation', version TEXT NOT NULL DEFAULT '0.1.0', capabilities JSONB NOT NULL DEFAULT '[]'::jsonb, implementation_notes TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())
