@@ -91,6 +91,13 @@ jobs:
           }
           if (!previewReady) throw new Error('PARABLE preview did not become ready in time.');
 
+          const aiStatus = await jsonFetch('/api/ai-status');
+          assert(aiStatus.response.ok, `AI status endpoint failed: ${aiStatus.response.status}`);
+          const providers = aiStatus.body?.story_intelligence?.configured_providers || {};
+          const requireRealModel = Boolean(providers.openrouter || providers.groq || providers.gemini);
+          console.log(`AI status: ${JSON.stringify(aiStatus.body?.story_intelligence || {})}`);
+          if (providers.openrouter) console.log('OpenRouter secret is visible to the deployed server function.');
+
           const fixtures = [
             {
               title: 'The Altar CI',
@@ -136,6 +143,8 @@ jobs:
             validateResult(result, fixture);
             runs.push({ fixture, project: projectCall.body, result });
             console.log(`${fixture.title}: ${result.engine.provider}/${result.engine.model} (${result.engine.mode})`);
+            if (result.engine.mode !== 'model') console.log(`${fixture.title} fallback reason: ${result.engine.fallback_reason || 'none reported'}`);
+            if (requireRealModel) assert(result.engine.mode === 'model', `${fixture.title}: provider is configured but Story Intelligence fell back: ${result.engine.fallback_reason || 'no reason reported'}`);
           }
 
           assert(new Set(runs.map(r => r.result.source_hash)).size === 3, 'Different stories produced duplicate source hashes.');
