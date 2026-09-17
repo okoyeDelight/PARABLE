@@ -70,11 +70,7 @@
       .film-stage-contained .intelligence-copy h3{font-size:clamp(25px,3vw,44px)!important;}
       .film-stage-contained .intelligence-copy p{display:block!important;}
 
-      .film-stage-contained .hero-cover{width:190px!important;height:270px!important;padding:20px!important;border-radius:17px!important;}
-      .film-stage-contained .hero-cover b{font-size:25px!important;}
-      .film-stage-contained .cover-center{left:50%!important;top:47%!important;}
-      .film-stage-contained .cover-left{left:31%!important;top:50%!important;}
-      .film-stage-contained .cover-right{left:69%!important;top:50%!important;}
+      .film-stage-contained .hero-cover{width:190px!important;height:270px!important;padding:0!important;border-radius:17px!important;}
 
       .film-stage-contained .director-layout{
         inset:6%!important;
@@ -121,6 +117,188 @@
     }
   `;
   document.head.appendChild(style);
+
+  /*
+    Scene 03 premium stage.
+    The covers are treated like objects on a photographed set, not cards in a
+    carousel: shallow arc, one clear hero, restrained side depth, one moving
+    edge light, and a slow camera drift across the group.
+  */
+  const coverStyle = document.createElement('style');
+  coverStyle.id = 'parable-premium-cover-stage';
+  coverStyle.textContent = `
+    .film-stage-contained .scene-covers{
+      background:
+        radial-gradient(ellipse 46% 46% at 50% 50%,rgba(72,83,255,.15),transparent 64%),
+        radial-gradient(ellipse 32% 36% at 63% 48%,rgba(111,70,221,.09),transparent 72%),
+        linear-gradient(180deg,#08090d 0%,#050609 100%)!important;
+    }
+
+    .film-stage-contained .scene-covers .cover-space{
+      position:absolute!important;
+      inset:0!important;
+      perspective:1450px!important;
+      perspective-origin:50% 46%!important;
+      transform-style:preserve-3d!important;
+      transform:none!important;
+      isolation:isolate;
+    }
+
+    .film-stage-contained .scene-covers .cover-space::before{
+      content:'';
+      position:absolute;
+      left:16%;right:16%;top:18%;bottom:15%;
+      border-radius:50%;
+      background:
+        radial-gradient(ellipse at 50% 48%,rgba(72,93,255,.20),rgba(80,54,185,.09) 34%,transparent 69%);
+      filter:blur(34px);
+      opacity:.82;
+      pointer-events:none;
+      z-index:0;
+    }
+
+    .film-stage-contained .scene-covers .cover-space::after{
+      content:'';
+      position:absolute;
+      left:24%;right:24%;bottom:10%;height:42px;
+      border-radius:50%;
+      background:radial-gradient(ellipse,rgba(27,31,55,.55),rgba(5,6,10,0) 72%);
+      filter:blur(9px);
+      transform:scaleX(1.25);
+      opacity:.78;
+      pointer-events:none;
+      z-index:0;
+    }
+
+    .film-stage-contained .scene-covers .cover-glow{
+      opacity:.20!important;
+      filter:blur(72px)!important;
+    }
+
+    .film-stage-contained .scene-covers .hero-cover{
+      top:48%!important;
+      margin:0!important;
+      transform-style:preserve-3d!important;
+      backface-visibility:hidden;
+      transition:filter .65s cubic-bezier(.22,1,.36,1),box-shadow .65s cubic-bezier(.22,1,.36,1)!important;
+      will-change:transform,translate,filter;
+    }
+
+    .film-stage-contained .scene-covers .cover-center{
+      left:50%!important;
+      top:46.5%!important;
+      z-index:6!important;
+      transform:translate(-50%,-50%) translateZ(96px) scale(1.07)!important;
+      filter:saturate(.98) brightness(1.02) contrast(1.02)!important;
+      box-shadow:
+        0 42px 90px rgba(0,0,0,.58),
+        0 0 0 1px rgba(172,196,255,.12),
+        0 0 32px rgba(83,107,255,.16)!important;
+      translate:0 -3px;
+      animation:parableHeroCoverFloat 4.8s ease-in-out 1.05s infinite alternate!important;
+    }
+
+    .film-stage-contained .scene-covers .cover-left{
+      left:27.5%!important;
+      top:49%!important;
+      z-index:3!important;
+      transform:translate(-50%,-50%) translateZ(-42px) rotateY(14deg) rotateZ(-3deg) scale(.83)!important;
+      filter:saturate(.77) brightness(.67) contrast(.96)!important;
+      box-shadow:0 30px 62px rgba(0,0,0,.46)!important;
+      translate:0 3px;
+      animation:parableSideCoverLeftFloat 5.6s ease-in-out 1.15s infinite alternate!important;
+    }
+
+    .film-stage-contained .scene-covers .cover-right{
+      left:72.5%!important;
+      top:49%!important;
+      z-index:3!important;
+      transform:translate(-50%,-50%) translateZ(-42px) rotateY(-14deg) rotateZ(3deg) scale(.83)!important;
+      filter:saturate(.77) brightness(.67) contrast(.96)!important;
+      box-shadow:0 30px 62px rgba(0,0,0,.46)!important;
+      translate:0 3px;
+      animation:parableSideCoverRightFloat 5.3s ease-in-out 1.2s infinite alternate!important;
+    }
+
+    /* Only the focal cover gets the bright Framer-like perimeter comet. */
+    .film-stage-contained .scene-covers.is-active .cover-left::before,
+    .film-stage-contained .scene-covers.is-active .cover-right::before{
+      opacity:.10!important;
+      filter:drop-shadow(0 0 2px rgba(155,190,255,.28)) drop-shadow(0 0 7px rgba(87,111,255,.10))!important;
+    }
+    .film-stage-contained .scene-covers.is-active .cover-center::before{
+      opacity:1!important;
+      filter:drop-shadow(0 0 2px rgba(220,239,255,.98)) drop-shadow(0 0 8px rgba(112,189,255,.68)) drop-shadow(0 0 18px rgba(83,102,255,.25))!important;
+    }
+
+    /* One calm glass reflection instead of multiple competing effects. */
+    .film-stage-contained .scene-covers .hero-cover::after{
+      opacity:.16!important;
+    }
+    .film-stage-contained .scene-covers .cover-center::after{
+      opacity:.34!important;
+    }
+
+    .film-stage-contained .scene-covers .cover-copy{
+      padding:18px 17px 17px!important;
+      background:linear-gradient(180deg,transparent 0%,rgba(3,4,7,.12) 18%,rgba(3,4,7,.78) 59%,rgba(3,4,7,.96) 100%)!important;
+    }
+    .film-stage-contained .scene-covers .cover-copy small{
+      margin-bottom:38px!important;
+      opacity:.72;
+    }
+    .film-stage-contained .scene-covers .cover-copy b{
+      letter-spacing:-.045em!important;
+      text-wrap:balance;
+    }
+
+    /* Atmospheric lens pass: deliberately slow and almost invisible. */
+    .film-stage-contained .scene-covers::after{
+      content:'';
+      position:absolute;
+      width:38%;height:150%;
+      left:-18%;top:-25%;
+      background:linear-gradient(96deg,transparent 25%,rgba(154,189,255,.025) 42%,rgba(255,255,255,.055) 49%,rgba(122,162,255,.025) 56%,transparent 72%);
+      filter:blur(5px);
+      transform:rotate(9deg) translateX(-35%);
+      mix-blend-mode:screen;
+      pointer-events:none;
+      z-index:8;
+    }
+    .film-stage-contained .scene-covers.is-active::after{
+      animation:parableCoverLensPass 4.8s cubic-bezier(.22,.61,.36,1) infinite;
+    }
+
+    @keyframes parableHeroCoverFloat{
+      from{translate:0 -3px;}
+      to{translate:0 4px;}
+    }
+    @keyframes parableSideCoverLeftFloat{
+      from{translate:0 3px;}
+      to{translate:-3px -2px;}
+    }
+    @keyframes parableSideCoverRightFloat{
+      from{translate:0 3px;}
+      to{translate:3px -1px;}
+    }
+    @keyframes parableCoverLensPass{
+      0%,54%{transform:rotate(9deg) translateX(-42%);opacity:0;}
+      66%{opacity:.72;}
+      100%{transform:rotate(9deg) translateX(360%);opacity:0;}
+    }
+
+    @media(max-width:720px){
+      .film-stage-contained .scene-covers .cover-left{left:28.5%!important;transform:translate(-50%,-50%) translateZ(-36px) rotateY(11deg) rotateZ(-2.4deg) scale(.84)!important;}
+      .film-stage-contained .scene-covers .cover-right{left:71.5%!important;transform:translate(-50%,-50%) translateZ(-36px) rotateY(-11deg) rotateZ(2.4deg) scale(.84)!important;}
+      .film-stage-contained .scene-covers .cover-center{transform:translate(-50%,-50%) translateZ(82px) scale(1.055)!important;}
+    }
+
+    @media(prefers-reduced-motion:reduce){
+      .film-stage-contained .scene-covers .hero-cover,
+      .film-stage-contained .scene-covers::after{animation:none!important;}
+    }
+  `;
+  document.head.appendChild(coverStyle);
 
   function fitFilmArtboard(){
     if (window.innerWidth > 720) {
