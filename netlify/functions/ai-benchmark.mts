@@ -1,6 +1,6 @@
-import { benchmarkLaneEnabled, runStoryUnderstanding } from './_lib/understand-ai.mts';
+import { benchmarkLaneEnabled } from './_lib/understand-ai.mts';
 import { buildBenchmarkAdaptation, getBenchmarkFixture } from './_lib/benchmarks.mts';
-import { compactCriticPayload, runFilmCritic } from './_lib/critic-ai.mts';
+import { runFreeCriticBenchmark, runFreeStoryBenchmark } from './_lib/benchmark-free-router.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -17,31 +17,33 @@ export default async (request: Request) => {
   if (!fixture) return json({ error: 'Unknown benchmark fixture. Use altar, yes, or watchman.' }, 400);
   if (!['story', 'critic'].includes(stage)) return json({ error: 'Benchmark stage must be story or critic.' }, 400);
 
-  if (stage === 'story') {
-    const result = await runStoryUnderstanding(fixture.input, { lane: 'benchmark' });
+  try {
+    if (stage === 'story') {
+      const result = await runFreeStoryBenchmark(fixture);
+      return json({
+        benchmark: { fixture: fixture.id, label: fixture.label, stage: 'story-understanding', synthetic_only: true },
+        passed: result.engine.mode === 'model' && Boolean(result.data),
+        engine: result.engine,
+        result: result.data
+      });
+    }
+
+    const adaptation = buildBenchmarkAdaptation(fixture);
+    const result = await runFreeCriticBenchmark(fixture, adaptation);
     return json({
-      benchmark: { fixture: fixture.id, label: fixture.label, stage: 'story-understanding', synthetic_only: true },
+      benchmark: { fixture: fixture.id, label: fixture.label, stage: 'film-critic', synthetic_only: true },
       passed: result.engine.mode === 'model' && Boolean(result.data),
       engine: result.engine,
       result: result.data
     });
+  } catch (error) {
+    return json({
+      benchmark: { fixture: fixture.id, label: fixture.label, stage, synthetic_only: true },
+      passed: false,
+      engine: { provider: 'local', model: 'benchmark-failed', mode: 'deterministic-fallback', privacy_lane: 'local', privacy_mode: 'local-only' },
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
-
-  const adaptation = buildBenchmarkAdaptation(fixture);
-  const project = {
-    title: fixture.input.title,
-    source_text: fixture.input.sourceText,
-    setting: fixture.input.setting,
-    primary_audience: fixture.input.primaryAudience
-  };
-  const payload = compactCriticPayload(project, adaptation);
-  const result = await runFilmCritic(payload, adaptation, { lane: 'benchmark' });
-  return json({
-    benchmark: { fixture: fixture.id, label: fixture.label, stage: 'film-critic', synthetic_only: true },
-    passed: result.engine.mode === 'model' && Boolean(result.data),
-    engine: result.engine,
-    result: result.data
-  });
 };
 
 export const config = {
