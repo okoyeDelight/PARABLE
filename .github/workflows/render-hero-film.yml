@@ -85,7 +85,9 @@ jobs:
 
           const source = fs.readFileSync('/tmp/parable-render/web/public/index.html', 'utf8');
           await page.setContent(source, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForSelector('#filmFrame', { state: 'attached', timeout: 10000 });
+          const filmCount = await page.locator('#filmFrame').count();
+          console.log(`filmFrame found: ${filmCount}`);
+          if (filmCount !== 1) throw new Error(`Expected one #filmFrame, found ${filmCount}`);
 
           await page.evaluate(() => {
             const html = document.documentElement;
