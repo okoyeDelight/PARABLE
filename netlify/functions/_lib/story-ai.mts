@@ -196,9 +196,31 @@ async function fetchWithRetry(url: string, init: RequestInit) {
   return last!;
 }
 
+function groqReasoningEffort() {
+  const requested = String(process.env.PARABLE_GROQ_REASONING || 'high').toLowerCase();
+  return ['low', 'medium', 'high'].includes(requested) ? requested : 'high';
+}
+
+function geminiThinkingLevel() {
+  const requested = String(process.env.PARABLE_GEMINI_THINKING || 'high').toLowerCase();
+  return ['low', 'medium', 'high'].includes(requested) ? requested : 'high';
+}
+
+function geminiOutputText(body: any) {
+  if (typeof body?.output_text === 'string' && body.output_text.trim()) return body.output_text.trim();
+  const steps = Array.isArray(body?.steps) ? body.steps : [];
+  return steps
+    .filter((step: any) => step?.type === 'model_output')
+    .flatMap((step: any) => Array.isArray(step?.content) ? step.content : [])
+    .filter((content: any) => content?.type === 'text' && typeof content?.text === 'string')
+    .map((content: any) => content.text)
+    .join('\n')
+    .trim();
+}
+
 async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResult> {
   const model = process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b';
-  const timeout = timeoutSignal(12500);
+  const timeout = timeoutSignal(24000);
   try {
     const response = await fetchWithRetry('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -209,7 +231,7 @@ async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResu
       },
       body: JSON.stringify({
         model,
-        temperature: 0.3,
+        reasoning_effort: groqReasoningEffort(),
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userData(input) }
@@ -231,7 +253,7 @@ async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResu
     return {
       data: JSON.parse(content),
       engine: {
-        provider: 'groq', model, mode: 'model', version: 'story-intelligence-v3', privacy_mode: 'standard-inference'
+        provider: 'groq', model, mode: 'model', version: 'story-intelligence-v4', privacy_mode: 'standard-inference'
       }
     };
   } finally {
@@ -241,7 +263,7 @@ async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResu
 
 async function callGemini(input: StoryInput, apiKey: string): Promise<ProviderResult> {
   const model = process.env.PARABLE_GEMINI_MODEL || 'gemini-3.8-flash';
-  const timeout = timeoutSignal(12500);
+  const timeout = timeoutSignal(24000);
   try {
     const response = await fetchWithRetry('https://generativelanguage.googleapis.com/v1beta/interactions', {
       method: 'POST',
@@ -255,7 +277,7 @@ async function callGemini(input: StoryInput, apiKey: string): Promise<ProviderRe
         system_instruction: SYSTEM_PROMPT,
         input: userData(input),
         store: false,
-        generation_config: { temperature: 0.3 },
+        generation_config: { thinking_level: geminiThinkingLevel() },
         response_format: {
           type: 'text',
           mime_type: 'application/json',
@@ -265,12 +287,12 @@ async function callGemini(input: StoryInput, apiKey: string): Promise<ProviderRe
     });
     const body = await response.json().catch(() => ({})) as any;
     if (!response.ok) throw new Error(body?.error?.message || `Gemini returned ${response.status}`);
-    const content = body?.output_text;
+    const content = geminiOutputText(body);
     if (!content) throw new Error('Gemini returned an empty Story Intelligence result');
     return {
       data: JSON.parse(content),
       engine: {
-        provider: 'gemini', model, mode: 'model', version: 'story-intelligence-v3', privacy_mode: 'stateless-interaction'
+        provider: 'gemini', model, mode: 'model', version: 'story-intelligence-v4', privacy_mode: 'stateless-interaction'
       }
     };
   } finally {
@@ -334,6 +356,20 @@ function verifyScripture(context: any, sourceText: string, warnings: string[]) {
   };
 }
 
+function verifyScreenplayBeats(items: any[], sourceText: string, warnings: string[]) {
+  return items.slice(0, 24).map((beat) => {
+    const next = { ...beat };
+    if (String(next?.type) === 'dialogue') {
+      const speaker = cleanString(next?.speaker, 120);
+      if (speaker && !sourceContains(sourceText, speaker) && !genericRole.test(speaker)) {
+        next.speaker = 'CHARACTER';
+        warnings.push(`Replaced an unsupported screenplay speaker name from model output: ${speaker}.`);
+      }
+    }
+    return next;
+  });
+}
+
 export function sanitizeModelResult(value: Record<string, any>, input: StoryInput) {
   const warnings: string[] = [];
   const characters = verifyCharacters(Array.isArray(value.characters) ? value.characters : [], input.sourceText, warnings);
@@ -342,7 +378,7 @@ export function sanitizeModelResult(value: Record<string, any>, input: StoryInpu
   const shotPlan = Array.isArray(value.shot_plan) ? value.shot_plan.slice(0, 12) : [];
   const continuity = Array.isArray(value.continuity_ledger) ? value.continuity_ledger.slice(0, 24) : [];
   const screenplay = value.screenplay || {};
-  const beats = Array.isArray(screenplay.beats) ? screenplay.beats.slice(0, 24) : [];
+  const beats = verifyScreenplayBeats(Array.isArray(screenplay.beats) ? screenplay.beats : [], input.sourceText, warnings);
 
   if (!characters.length) throw new Error('Model output did not contain a source-grounded character.');
   if (!beats.length) throw new Error('Model output did not contain a screenplay adaptation.');
@@ -375,10 +411,19 @@ export async function runStoryModel(input: StoryInput): Promise<ProviderResult> 
   const requested = (process.env.PARABLE_AI_PROVIDER || 'auto').toLowerCase();
   const groqKey = process.env.GROQ_API_KEY || '';
   const geminiKey = process.env.GEMINI_API_KEY || '';
+  const configuredOrder = String(process.env.PARABLE_AI_ORDER || 'gemini,groq')
+    .toLowerCase()
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value === 'gemini' || value === 'groq');
+  const order = [...configuredOrder, ...['gemini', 'groq'].filter((value) => !configuredOrder.includes(value))];
+  const providers = requested === 'auto' ? order : [requested];
   const attempts: Array<() => Promise<ProviderResult>> = [];
 
-  if ((requested === 'auto' || requested === 'groq') && groqKey) attempts.push(() => callGroq(input, groqKey));
-  if ((requested === 'auto' || requested === 'gemini') && geminiKey) attempts.push(() => callGemini(input, geminiKey));
+  for (const provider of providers) {
+    if (provider === 'gemini' && geminiKey) attempts.push(() => callGemini(input, geminiKey));
+    if (provider === 'groq' && groqKey) attempts.push(() => callGroq(input, groqKey));
+  }
 
   const errors: string[] = [];
   for (const attempt of attempts) {
@@ -396,7 +441,7 @@ export async function runStoryModel(input: StoryInput): Promise<ProviderResult> 
       provider: 'local',
       model: 'deterministic-story-engine',
       mode: 'deterministic-fallback',
-      version: 'structured-v3-fallback',
+      version: 'structured-v4-fallback',
       privacy_mode: 'local-structured-processing',
       fallback_reason: errors.length ? errors.join(' | ').slice(0, 1600) : 'No external Story Intelligence provider is configured.'
     }
