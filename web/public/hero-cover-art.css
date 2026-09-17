@@ -1,0 +1,82 @@
+/* PARABLE Stage 1 / Scene 03 — cinematic cover art */
+.scene-covers .hero-cover{padding:0!important;overflow:hidden!important;background:#080a10!important;}
+.scene-covers .cover-art{position:absolute;inset:0;overflow:hidden;border-radius:inherit;}
+.scene-covers .cover-copy{position:absolute;left:0;right:0;bottom:0;z-index:8;padding:18px 17px 17px;background:linear-gradient(180deg,transparent 0%,rgba(4,5,8,.18) 10%,rgba(4,5,8,.82) 55%,rgba(4,5,8,.97) 100%);text-shadow:0 3px 18px rgba(0,0,0,.8)}
+.scene-covers .cover-copy small{display:block;font-size:6px;letter-spacing:.17em;color:rgba(255,255,255,.62);margin:0 0 42px}
+.scene-covers .cover-copy b{display:block;color:white;font-size:24px;line-height:.92;letter-spacing:-.05em;max-width:150px}
+.scene-covers .cover-copy em{display:block;font-size:7px;font-style:normal;color:rgba(229,235,255,.74);margin-top:9px;letter-spacing:.03em}
+.scene-covers .hero-cover::after{background:linear-gradient(115deg,transparent 0%,transparent 38%,rgba(255,255,255,.11) 49%,rgba(151,210,255,.10) 53%,transparent 64%)!important;opacity:.30!important;}
+
+/* THE ALTAR */
+.cover-altar .cover-art{background:
+  radial-gradient(circle at 50% 23%,rgba(255,224,170,.28),transparent 24%),
+  radial-gradient(circle at 50% 71%,rgba(255,101,49,.20),transparent 31%),
+  linear-gradient(180deg,#121723 0%,#080b12 49%,#030406 100%)}
+.cover-altar .cover-art::before{content:'';position:absolute;inset:0;background:linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:34% 100%;opacity:.16}
+.altar-beam{position:absolute;width:54%;height:78%;left:23%;top:-10%;background:linear-gradient(180deg,rgba(255,239,205,.36),rgba(255,212,144,.12) 45%,transparent 100%);clip-path:polygon(43% 0,57% 0,100% 100%,0 100%);filter:blur(5px)}
+.altar-cross{position:absolute;left:50%;top:18%;width:3px;height:86px;transform:translateX(-50%);background:rgba(243,229,202,.74);box-shadow:0 0 18px rgba(255,227,176,.33)}
+.altar-cross::after{content:'';position:absolute;left:50%;top:23px;width:34px;height:3px;transform:translateX(-50%);background:inherit;box-shadow:inherit}
+.altar-table{position:absolute;left:21%;right:21%;bottom:29%;height:42px;border-radius:4px 4px 10px 10px;background:linear-gradient(180deg,#6d4a2c,#291a0e 76%,#130d08);box-shadow:0 -4px 16px rgba(255,145,72,.12),0 20px 35px rgba(0,0,0,.62)}
+.altar-flame{position:absolute;bottom:36%;width:22px;height:38px;border-radius:55% 45% 58% 42%;background:radial-gradient(circle at 48% 64%,#fff8c8 0%,#ffb94f 27%,#ff6537 58%,transparent 72%);filter:drop-shadow(0 0 11px rgba(255,121,55,.5));transform-origin:50% 100%}
+.flame-one{left:39%}.flame-two{right:39%;transform:scale(.76)}
+.scene-covers.is-active .altar-flame{animation:altarFlicker 1.15s ease-in-out infinite alternate}
+.altar-dust{position:absolute;width:3px;height:3px;border-radius:50%;background:#ffd49c;box-shadow:0 0 7px #ff9a5c;opacity:.5}
+.dust-a{left:34%;top:35%}.dust-b{right:29%;top:44%}.dust-c{left:58%;top:27%}
+.scene-covers.is-active .altar-dust{animation:altarDust 3.1s ease-in-out infinite}
+.dust-b{animation-delay:-1.1s!important}.dust-c{animation-delay:-2.2s!important}
+
+/* BEFORE I SAID YES */
+.cover-before .cover-art{background:
+  radial-gradient(circle at 69% 23%,rgba(255,218,221,.36),transparent 28%),
+  radial-gradient(circle at 30% 72%,rgba(255,176,187,.16),transparent 37%),
+  linear-gradient(155deg,#3a1727 0%,#6f314d 46%,#20101c 100%)}
+.vow-arch{position:absolute;left:17%;right:17%;top:10%;height:72%;border:1px solid rgba(255,238,229,.36);border-bottom:0;border-radius:92px 92px 0 0;box-shadow:inset 0 0 32px rgba(255,219,224,.05),0 0 20px rgba(255,184,201,.08)}
+.vow-veil{position:absolute;width:85%;height:82%;left:-8%;top:3%;background:linear-gradient(135deg,rgba(255,247,244,.26),rgba(255,239,236,.025) 55%,transparent 70%);clip-path:polygon(0 0,60% 5%,92% 100%,0 100%);filter:blur(.4px)}
+.vow-ring{position:absolute;border:2px solid rgba(255,224,178,.78);border-radius:50%;width:46px;height:46px;box-shadow:0 0 16px rgba(255,205,138,.22),inset 0 0 10px rgba(255,255,255,.08)}
+.ring-one{left:42%;top:35%;transform:rotate(-20deg)}
+.ring-two{left:49%;top:39%;transform:rotate(22deg) scale(.86)}
+.vow-light{position:absolute;width:110%;height:32%;left:-5%;top:18%;background:linear-gradient(95deg,transparent,rgba(255,236,229,.19),transparent);transform:rotate(-12deg);filter:blur(8px)}
+.scene-covers.is-active .cover-before .vow-light{animation:vowSweep 3.8s ease-in-out infinite}
+
+/* THE WATCHMAN */
+.cover-watchman .cover-art{background:
+  radial-gradient(circle at 67% 20%,rgba(169,221,238,.24),transparent 20%),
+  linear-gradient(180deg,#0b1b27 0%,#0c2531 50%,#061014 100%)}
+.watch-moon{position:absolute;width:56px;height:56px;border-radius:50%;right:16%;top:13%;background:radial-gradient(circle at 35% 35%,#effaff,#9dc9d5 58%,#4d7783 100%);box-shadow:0 0 35px rgba(156,215,231,.26)}
+.watch-horizon{position:absolute;left:-6%;right:-6%;bottom:27%;height:50%;background:linear-gradient(180deg,transparent 0%,transparent 55%,rgba(1,7,10,.85) 56%),repeating-linear-gradient(90deg,transparent 0 25px,rgba(0,0,0,.3) 25px 34px);clip-path:polygon(0 70%,8% 62%,15% 67%,23% 48%,31% 61%,42% 45%,52% 60%,65% 40%,74% 57%,86% 46%,100% 63%,100% 100%,0 100%)}
+.watch-tower{position:absolute;left:22%;bottom:27%;width:50px;height:145px;background:linear-gradient(90deg,#071116,#10242d 48%,#061014);border:1px solid rgba(139,203,220,.13);box-shadow:0 17px 34px rgba(0,0,0,.48)}
+.watch-tower::before{content:'';position:absolute;left:-7px;right:-7px;top:-15px;height:20px;background:#09151b;clip-path:polygon(0 100%,15% 35%,50% 0,85% 35%,100% 100%)}
+.watch-tower i{position:absolute;width:8px;height:13px;background:#b7e6ef;box-shadow:0 0 13px rgba(150,223,238,.62);opacity:.62}
+.watch-tower i:nth-child(1){left:9px;top:32px}.watch-tower i:nth-child(2){right:9px;top:62px}.watch-tower i:nth-child(3){left:20px;top:95px}
+.watch-person{position:absolute;right:24%;bottom:28%;width:24px;height:66px;border-radius:14px 14px 6px 6px;background:#020608;box-shadow:0 10px 20px rgba(0,0,0,.6)}
+.watch-person::before{content:'';position:absolute;width:20px;height:20px;border-radius:50%;left:2px;top:-14px;background:#020608}
+.watch-beam{position:absolute;right:25%;top:40%;width:58%;height:20%;background:linear-gradient(90deg,rgba(183,240,255,.28),transparent 82%);clip-path:polygon(0 40%,100% 0,100% 100%,0 60%);transform:rotate(-6deg);transform-origin:0 50%;filter:blur(3px);opacity:.48}
+.scene-covers.is-active .cover-watchman .watch-beam{animation:watchSweep 3.4s ease-in-out infinite alternate}
+
+/* richer depth and subtle motion */
+.scene-covers.is-active .cover-center{filter:drop-shadow(0 30px 60px rgba(0,0,0,.5))}
+.scene-covers.is-active .cover-left,.scene-covers.is-active .cover-right{filter:saturate(.86) brightness(.88)}
+.scene-covers.is-active .cover-art{animation:coverBreath 5.2s ease-in-out infinite alternate}
+.scene-covers.is-active .cover-left .cover-art{animation-delay:-1.3s}
+.scene-covers.is-active .cover-right .cover-art{animation-delay:-2.6s}
+
+@keyframes altarFlicker{from{transform:scaleY(.92) rotate(-2deg)}to{transform:scaleY(1.08) rotate(2deg)}}
+@keyframes altarDust{0%,100%{transform:translateY(8px);opacity:.15}50%{transform:translateY(-12px);opacity:.7}}
+@keyframes vowSweep{0%,18%{transform:translateX(-18%) rotate(-12deg);opacity:.1}55%{opacity:.45}100%{transform:translateX(24%) rotate(-12deg);opacity:.08}}
+@keyframes watchSweep{from{transform:rotate(-11deg);opacity:.26}to{transform:rotate(8deg);opacity:.58}}
+@keyframes coverBreath{from{transform:scale(1)}to{transform:scale(1.015)}}
+
+@media(max-width:720px){
+  .scene-covers .cover-copy{padding:14px 13px 13px}
+  .scene-covers .cover-copy small{margin-bottom:32px;font-size:5px}
+  .scene-covers .cover-copy b{font-size:20px;max-width:130px}
+  .scene-covers .cover-copy em{font-size:6px}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .scene-covers.is-active .cover-art,
+  .scene-covers.is-active .altar-flame,
+  .scene-covers.is-active .altar-dust,
+  .scene-covers.is-active .cover-before .vow-light,
+  .scene-covers.is-active .cover-watchman .watch-beam{animation:none!important}
+}
