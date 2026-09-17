@@ -218,6 +218,59 @@ function geminiOutputText(body: any) {
     .trim();
 }
 
+async function callOpenRouter(input: StoryInput, apiKey: string): Promise<ProviderResult> {
+  const requestedModel = process.env.PARABLE_OPENROUTER_MODEL || 'openrouter/free';
+  const timeout = timeoutSignal(24000);
+  try {
+    const response = await fetchWithRetry('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      signal: timeout.signal,
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+        'HTTP-Referer': process.env.PARABLE_PUBLIC_URL || 'https://parable-studio.netlify.app',
+        'X-OpenRouter-Title': 'PARABLE'
+      },
+      body: JSON.stringify({
+        model: requestedModel,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userData(input) }
+        ],
+        provider: {
+          require_parameters: true,
+          data_collection: 'deny'
+        },
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'parable_story_intelligence',
+            strict: true,
+            schema: STORY_SCHEMA
+          }
+        }
+      })
+    });
+    const body = await response.json().catch(() => ({})) as any;
+    if (!response.ok) throw new Error(body?.error?.message || `OpenRouter returned ${response.status}`);
+    const content = body?.choices?.[0]?.message?.content;
+    if (!content) throw new Error('OpenRouter returned an empty Story Intelligence result');
+    return {
+      data: JSON.parse(content),
+      engine: {
+        provider: 'openrouter',
+        model: String(body?.model || requestedModel),
+        mode: 'model',
+        version: 'story-intelligence-v5',
+        privacy_mode: 'free-router-data-collection-denied'
+      }
+    };
+  } finally {
+    timeout.cancel();
+  }
+}
+
 async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResult> {
   const model = process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b';
   const timeout = timeoutSignal(24000);
@@ -253,7 +306,7 @@ async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResu
     return {
       data: JSON.parse(content),
       engine: {
-        provider: 'groq', model, mode: 'model', version: 'story-intelligence-v4', privacy_mode: 'standard-inference'
+        provider: 'groq', model, mode: 'model', version: 'story-intelligence-v5', privacy_mode: 'standard-inference'
       }
     };
   } finally {
@@ -292,7 +345,7 @@ async function callGemini(input: StoryInput, apiKey: string): Promise<ProviderRe
     return {
       data: JSON.parse(content),
       engine: {
-        provider: 'gemini', model, mode: 'model', version: 'story-intelligence-v4', privacy_mode: 'stateless-interaction'
+        provider: 'gemini', model, mode: 'model', version: 'story-intelligence-v5', privacy_mode: 'stateless-interaction'
       }
     };
   } finally {
@@ -409,20 +462,23 @@ export function sanitizeModelResult(value: Record<string, any>, input: StoryInpu
 
 export async function runStoryModel(input: StoryInput): Promise<ProviderResult> {
   const requested = (process.env.PARABLE_AI_PROVIDER || 'auto').toLowerCase();
+  const openrouterKey = process.env.OPENROUTER_API_KEY || '';
   const groqKey = process.env.GROQ_API_KEY || '';
   const geminiKey = process.env.GEMINI_API_KEY || '';
-  const configuredOrder = String(process.env.PARABLE_AI_ORDER || 'gemini,groq')
+  const allowedProviders = ['openrouter', 'groq', 'gemini'];
+  const configuredOrder = String(process.env.PARABLE_AI_ORDER || 'openrouter,groq,gemini')
     .toLowerCase()
     .split(',')
     .map((value) => value.trim())
-    .filter((value) => value === 'gemini' || value === 'groq');
-  const order = [...configuredOrder, ...['gemini', 'groq'].filter((value) => !configuredOrder.includes(value))];
+    .filter((value) => allowedProviders.includes(value));
+  const order = [...configuredOrder, ...allowedProviders.filter((value) => !configuredOrder.includes(value))];
   const providers = requested === 'auto' ? order : [requested];
   const attempts: Array<() => Promise<ProviderResult>> = [];
 
   for (const provider of providers) {
-    if (provider === 'gemini' && geminiKey) attempts.push(() => callGemini(input, geminiKey));
+    if (provider === 'openrouter' && openrouterKey) attempts.push(() => callOpenRouter(input, openrouterKey));
     if (provider === 'groq' && groqKey) attempts.push(() => callGroq(input, groqKey));
+    if (provider === 'gemini' && geminiKey) attempts.push(() => callGemini(input, geminiKey));
   }
 
   const errors: string[] = [];
@@ -441,7 +497,7 @@ export async function runStoryModel(input: StoryInput): Promise<ProviderResult> 
       provider: 'local',
       model: 'deterministic-story-engine',
       mode: 'deterministic-fallback',
-      version: 'structured-v4-fallback',
+      version: 'structured-v5-fallback',
       privacy_mode: 'local-structured-processing',
       fallback_reason: errors.length ? errors.join(' | ').slice(0, 1600) : 'No external Story Intelligence provider is configured.'
     }
