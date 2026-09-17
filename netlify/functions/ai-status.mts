@@ -12,15 +12,11 @@ export default async (request: Request) => {
   const openrouter = Boolean(process.env.OPENROUTER_API_KEY);
   const groq = Boolean(process.env.GROQ_API_KEY);
   const gemini = Boolean(process.env.GEMINI_API_KEY);
-  const preferred = (process.env.PARABLE_AI_PROVIDER || 'auto').toLowerCase();
-  const allowedProviders = ['openrouter', 'groq', 'gemini'];
-  const configuredOrder = String(process.env.PARABLE_AI_ORDER || 'openrouter,groq,gemini')
-    .toLowerCase()
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => allowedProviders.includes(value));
-  const order = [...configuredOrder, ...allowedProviders.filter((value) => !configuredOrder.includes(value))];
-  const openrouterModels = String(process.env.PARABLE_OPENROUTER_MODELS || process.env.PARABLE_OPENROUTER_MODEL || 'stealth/union-alpha,nex-agi/nex-n2.5-mini:free')
+  const openrouterModels = String(
+    process.env.PARABLE_OPENROUTER_MODELS ||
+    process.env.PARABLE_OPENROUTER_MODEL ||
+    'openai/gpt-oss-20b:free,google/gemma-4-26b-a4b-it:free'
+  )
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean)
@@ -28,21 +24,19 @@ export default async (request: Request) => {
 
   return json({
     story_intelligence: {
-      ready: openrouter || groq || gemini,
-      preferred,
-      provider_order: order,
-      configured_providers: { openrouter, groq, gemini },
+      ready: openrouter || groq,
+      provider_order: ['openrouter', 'groq'],
+      configured_providers: { openrouter, groq },
+      configured_but_not_active_in_v7: { gemini },
       provider_models: {
         openrouter: openrouterModels,
-        groq: process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b',
-        gemini: process.env.PARABLE_GEMINI_MODEL || 'gemini-3.8-flash'
+        groq: process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b'
       },
       fallback_available: true,
-      version: 'story-intelligence-v6',
+      version: 'story-intelligence-v7.1',
       privacy: {
         openrouter_no_training_routing_requested: true,
-        openrouter_note: 'Free development routing may still retain request data at a provider; confidential manuscripts require a stronger launch privacy tier.',
-        gemini_store_disabled: true,
+        openrouter_note: 'Free development routing still depends on provider availability and privacy-compatible endpoints. Confidential manuscripts require a stronger launch privacy tier.',
         secrets_exposed_to_client: false
       }
     }
