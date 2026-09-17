@@ -7,6 +7,7 @@ const resultState=$('#resultState');
 const toast=$('#studioToast');
 let currentProjectId=null;
 let currentResult=null;
+let currentCritic=null;
 let activeShot=null;
 let directionTimer=null;
 
@@ -21,7 +22,7 @@ async function loadAiStatus(){
     const body=await response.json();
     const status=body.story_intelligence||{};
     const configured=status.configured_providers||{};
-    const provider=configured.groq?'Groq':configured.gemini?'Gemini':null;
+    const provider=configured.openrouter?'OpenRouter':configured.groq?'Groq':configured.gemini?'Gemini':null;
     $('#engineDot')?.classList.toggle('is-fallback',!status.ready);
     $('#navEngineLabel').textContent=status.ready?`${provider||'Model'} Story Intelligence ready`:'Story Intelligence fallback ready';
   }catch{
@@ -33,7 +34,7 @@ async function loadAiStatus(){
 function setStep(step){
   $$('.workflow-step').forEach(btn=>{
     btn.classList.toggle('is-active',btn.dataset.step===step);
-    const order=['write','understand','adapt','direct'];
+    const order=['write','understand','adapt','direct','review'];
     if(currentResult){
       const activeIndex=order.indexOf(step);const i=order.indexOf(btn.dataset.step);
       btn.classList.toggle('is-ready',i<=activeIndex);
@@ -96,10 +97,50 @@ function renderDirect(data){
   if(shots.length)selectShot(shots[1]||shots[0]);
 }
 
+function resetCritic(){
+  currentCritic=null;
+  if($('#criticIntro'))$('#criticIntro').hidden=false;
+  if($('#criticResult'))$('#criticResult').hidden=true;
+  if($('#criticEngineBadge'))$('#criticEngineBadge').textContent='not run';
+}
+
+function listMarkup(items,emptyText){
+  const values=(items||[]).filter(Boolean);
+  if(!values.length)return `<p>${escapeHtml(emptyText)}</p>`;
+  return `<ul>${values.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+}
+
+function renderCritic(result){
+  currentCritic=result;
+  const review=result.review||{};
+  const engine=result.engine||{};
+  $('#criticIntro').hidden=true;
+  $('#criticResult').hidden=false;
+  $('#criticEngineBadge').textContent=engine.mode==='model'?`${engine.provider} · ${engine.model}`:'local structural critic';
+  $('#criticSummary').textContent=review.summary||'No summary returned.';
+  $('#criticReadiness').textContent=String(review.readiness||'revise').replaceAll('-',' ');
+  $('#criticConfidence').textContent=`${Math.round((Number(review.confidence)||0)*100)}% confidence`;
+  $('#criticStrongChoice').textContent=review.strongest_choice?.choice||'No strongest choice identified.';
+  $('#criticStrongWhy').textContent=review.strongest_choice?.why_it_works||'Human review required.';
+
+  const priorities=review.priorities||[];
+  $('#criticPriorityCount').textContent=`${priorities.length} ${priorities.length===1?'priority':'priorities'}`;
+  $('#criticPriorities').innerHTML=priorities.length?priorities.map(item=>`<article class="critic-priority"><span class="area">${escapeHtml(item.area||'review')}</span><div><strong>${escapeHtml(item.issue||'Review this choice')}</strong><p>${escapeHtml(item.why_it_matters||'')}</p><em>${escapeHtml(item.action||'')}</em></div></article>`).join(''):'<p>No high-leverage change was returned in this pass.</p>';
+
+  $('#criticContinuity').innerHTML=listMarkup(review.continuity_risks,'No continuity risk was identified in this pass.');
+  $('#criticFidelity').innerHTML=listMarkup(review.fidelity_risks,'No source-fidelity risk was identified in this pass.');
+  $('#criticQuestions').innerHTML=listMarkup(review.human_questions,'No unresolved human question was returned.');
+  $('#criticState').textContent=engine.mode==='model'
+    ?`Model-backed review saved to ${result.story_version}. Nothing is rewritten until you choose to change it.`
+    :`Structural fallback review saved to ${result.story_version}. A model critic was unavailable for this pass.`;
+  setStep('review');
+}
+
 function renderResult(data){
   currentResult=data;
   emptyState.hidden=true;
   resultState.hidden=false;
+  resetCritic();
   renderIntelligence(data);
   renderScreenplay(data);
   renderDirect(data);
@@ -116,6 +157,25 @@ async function adaptProject(payload,projectId){
   const r=await fetch('/api/adapt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,projectId})});
   const body=await r.json();if(!r.ok)throw new Error(body.error||'Story Intelligence could not complete this pass');
   return body;
+}
+
+async function runDirectorCritic(){
+  if(!currentProjectId||!currentResult?.story_version){showToast('Analyze the story first.');return;}
+  const buttons=[$('#runCriticBtn'),$('#rerunCriticBtn')].filter(Boolean);
+  buttons.forEach(button=>button.disabled=true);
+  if($('#criticState'))$('#criticState').textContent='Film Quality Critic is reviewing the current story version…';
+  showToast('Director Critic is reviewing the production.');
+  try{
+    const r=await fetch('/api/director-critic',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId:currentProjectId,storyVersion:currentResult.story_version})});
+    const body=await r.json();if(!r.ok)throw new Error(body.error||'Film Quality Critic could not complete this pass');
+    renderCritic(body);
+    showToast(body.engine?.mode==='model'?'Model-backed Director Critic complete.':'Structural Director Critic complete.');
+  }catch(err){
+    showToast(err.message||'Director Critic failed.');
+    if($('#criticState'))$('#criticState').textContent=err.message||'Director Critic failed.';
+  }finally{
+    buttons.forEach(button=>button.disabled=false);
+  }
 }
 
 async function persistDirection(){
@@ -183,6 +243,9 @@ $('#copyScreenplay')?.addEventListener('click',async()=>{
   const text=[currentResult.screenplay.heading,...currentResult.screenplay.beats.map(b=>b.type==='dialogue'?`${b.speaker}\n${b.text}`:b.text)].join('\n\n');
   try{await navigator.clipboard.writeText(text);showToast('Screenplay copied.')}catch{showToast('Copy is not available in this browser.')}
 });
+
+$('#runCriticBtn')?.addEventListener('click',runDirectorCritic);
+$('#rerunCriticBtn')?.addEventListener('click',runDirectorCritic);
 
 $('#lensControl')?.addEventListener('change',e=>{
   $('#shotPreview').dataset.lens=e.target.value;
