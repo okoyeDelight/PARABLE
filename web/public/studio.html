@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f4f1ea" />
+  <title>PARABLE Studio — Story to Screen</title>
+  <meta name="description" content="A real PARABLE story-to-screen workflow: write, understand, adapt and direct." />
+  <link rel="stylesheet" href="/studio.css" />
+</head>
+<body>
+  <header class="studio-nav">
+    <a class="brand" href="/" aria-label="Back to PARABLE">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>PARABLE</span>
+    </a>
+    <div class="nav-meta">
+      <span class="engine-dot"></span>
+      <span>Story Intelligence live</span>
+    </div>
+  </header>
+
+  <main class="studio-shell">
+    <aside class="story-pane">
+      <div class="pane-head">
+        <p class="eyebrow">01 · WRITE</p>
+        <h1>Begin with the story.</h1>
+        <p>Write naturally. PARABLE will turn the same words into story intelligence, screenplay beats and directable shots.</p>
+      </div>
+
+      <form id="goldenForm" class="story-form">
+        <label>
+          <span>Title</span>
+          <input name="title" value="The Altar" autocomplete="off" />
+        </label>
+        <label>
+          <span>Story</span>
+          <textarea name="sourceText" rows="12">The room fell quiet. Daniel looked at the empty chair across from him. Outside, rain touched the windows like fingertips. He had prayed for an answer. He had not expected silence. His calling had never frightened him until tonight.</textarea>
+        </label>
+        <div class="field-grid">
+          <label>
+            <span>Setting</span>
+            <input name="setting" value="Awka, Nigeria" autocomplete="off" />
+          </label>
+          <label>
+            <span>Primary audience</span>
+            <input name="primaryAudience" value="Global Christian young adults" autocomplete="off" />
+          </label>
+        </div>
+        <button class="analyze-btn" type="submit" id="analyzeBtn">
+          <span>Analyze story</span><b>→</b>
+        </button>
+        <p class="form-note" id="formNote">This action creates a real production and runs the backend Story Intelligence pipeline.</p>
+      </form>
+    </aside>
+
+    <section class="workbench" aria-live="polite">
+      <div class="workflow-bar">
+        <button class="workflow-step is-active" data-step="write"><span>01</span><b>Write</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="understand"><span>02</span><b>Understand</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="adapt"><span>03</span><b>Adapt</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="direct"><span>04</span><b>Direct</b></button>
+      </div>
+
+      <div class="empty-state" id="emptyState">
+        <div class="empty-orbit" aria-hidden="true"><span></span><span></span><span></span><b></b></div>
+        <p class="eyebrow">REAL PRODUCT FLOW</p>
+        <h2>Your story becomes the interface.</h2>
+        <p>Run the story on the left. Every panel here will be generated from the actual text you entered.</p>
+      </div>
+
+      <div class="result-state" id="resultState" hidden>
+        <section class="result-panel intelligence-panel" data-panel="understand">
+          <div class="panel-head">
+            <div><p class="eyebrow">02 · UNDERSTAND</p><h2>Story Intelligence</h2></div>
+            <span class="engine-badge" id="engineBadge">structured-v1</span>
+          </div>
+          <div class="intel-grid">
+            <article><small>CHARACTERS</small><div id="charactersList"></div></article>
+            <article><small>THEMES</small><div id="themesList"></div></article>
+            <article><small>CORE CONFLICT</small><strong id="conflictText"></strong></article>
+            <article><small>WORLD</small><strong id="worldText"></strong></article>
+          </div>
+          <div class="turn-card">
+            <small>EMOTIONAL TURN</small>
+            <p id="emotionalTurn"></p>
+          </div>
+        </section>
+
+        <section class="result-panel screenplay-panel" data-panel="adapt" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">03 · ADAPT</p><h2>Screenplay</h2></div>
+            <button class="copy-btn" id="copyScreenplay" type="button">Copy</button>
+          </div>
+          <div class="screenplay-page">
+            <h3 id="sceneHeading"></h3>
+            <div id="screenplayBeats"></div>
+          </div>
+        </section>
+
+        <section class="result-panel direct-panel" data-panel="direct" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">04 · DIRECT</p><h2>Shot direction</h2></div>
+            <span class="project-badge" id="projectBadge">LIVE PROJECT</span>
+          </div>
+
+          <div class="director-grid">
+            <div class="shot-browser" id="shotBrowser"></div>
+
+            <div class="shot-preview" id="shotPreview" data-lens="50">
+              <div class="preview-vignette"></div>
+              <div class="preview-grid"></div>
+              <div class="preview-window"></div>
+              <div class="preview-subject"></div>
+              <div class="preview-focus"><i></i><i></i><i></i><i></i></div>
+              <div class="preview-caption">
+                <small id="previewShotId">SHOT 02</small>
+                <strong id="previewBeat">Select a shot to direct it.</strong>
+              </div>
+            </div>
+
+            <div class="control-rack">
+              <label><span>Lens</span><select id="lensControl"><option>24</option><option>35</option><option selected>50</option><option>85</option></select></label>
+              <label><span>Motion</span><select id="motionControl"><option>Locked</option><option selected>Slow push-in</option><option>Slow drift</option><option>Gentle pull-back</option><option>Measured handheld</option></select></label>
+              <label><span>Light</span><select id="lightControl"><option selected>Soft motivated key</option><option>Natural environment</option><option>Window / practical edge</option><option>Low-contrast practicals</option></select></label>
+              <div class="performance-note"><small>PERFORMANCE</small><p id="performanceText">Hold one beat longer than comfortable.</p></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="studioToast" role="status" aria-live="polite"></div>
+  <script src="/studio.js"></script>
+</body>
+</html>
