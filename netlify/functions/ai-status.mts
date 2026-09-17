@@ -2,14 +2,15 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
   status,
   headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }
 });
+const env = (key: string) => Netlify.env.get(key) || '';
 
 export default async (request: Request) => {
   if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
 
   const production = Netlify.context?.deploy?.context === 'production';
-  const openrouter = Boolean(process.env.OPENROUTER_API_KEY);
-  const groq = Boolean(process.env.GROQ_API_KEY);
-  const benchmarkEnabled = !production && process.env.PARABLE_ENABLE_BENCHMARK_LANE === 'true';
+  const openrouter = Boolean(env('OPENROUTER_API_KEY'));
+  const groq = Boolean(env('GROQ_API_KEY'));
+  const benchmarkEnabled = !production && env('PARABLE_ENABLE_BENCHMARK_LANE') === 'true';
 
   return json({
     ai_runtime: {
@@ -27,7 +28,7 @@ export default async (request: Request) => {
         protected: {
           default_for_user_manuscripts: true,
           policy: 'OpenRouter requests require structured outputs, no provider data collection and zero-data-retention routing. If no compatible endpoint exists, PARABLE falls back locally rather than weakening privacy.',
-          model_router: process.env.PARABLE_PROTECTED_UNDERSTAND_MODEL || 'openrouter/free'
+          model_router: env('PARABLE_PROTECTED_UNDERSTAND_MODEL') || 'openrouter/free'
         },
         benchmark: {
           enabled: benchmarkEnabled,
