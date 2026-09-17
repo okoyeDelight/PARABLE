@@ -1,0 +1,118 @@
+@property --parable-trace-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
+
+/* Stage 1 visual lock: tighter Framer-like showcase proportions */
+.hero-film-wrap{width:min(1040px,92vw);margin-left:auto;margin-right:auto}
+.hero-film{min-height:0;aspect-ratio:16/9}
+
+/* Framer-like travelling edge light used only inside the hero product film. */
+.film-scene .scene-shell,
+.film-scene .margin-note,
+.film-scene .intel-node,
+.film-scene .hero-cover,
+.film-scene .director-controls,
+.film-scene .edit-preview,
+.film-scene .edit-timeline,
+.film-scene .finish-card{
+  position:relative;
+  isolation:isolate;
+}
+
+.film-scene .scene-shell::before,
+.film-scene .margin-note::before,
+.film-scene .intel-node::before,
+.film-scene .hero-cover::before,
+.film-scene .director-controls::before,
+.film-scene .edit-preview::before,
+.film-scene .edit-timeline::before,
+.film-scene .finish-card::before{
+  content:'';
+  position:absolute;
+  inset:-1px;
+  border-radius:inherit;
+  padding:1px;
+  pointer-events:none;
+  z-index:12;
+  opacity:.16;
+  background:conic-gradient(
+    from var(--parable-trace-angle),
+    transparent 0deg,
+    transparent 248deg,
+    rgba(65,87,255,.06) 266deg,
+    rgba(70,103,255,.42) 279deg,
+    rgba(112,86,255,.92) 292deg,
+    rgba(88,214,255,.98) 305deg,
+    rgba(255,255,255,1) 312deg,
+    rgba(102,226,255,.88) 319deg,
+    rgba(92,102,255,.36) 333deg,
+    transparent 348deg,
+    transparent 360deg
+  );
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;
+  mask-composite:exclude;
+  filter:drop-shadow(0 0 4px rgba(104,130,255,.85)) drop-shadow(0 0 11px rgba(90,180,255,.32));
+  transition:opacity .28s ease;
+}
+
+.film-scene.is-active .scene-shell::before,
+.film-scene.is-active .margin-note::before,
+.film-scene.is-active .intel-node::before,
+.film-scene.is-active .hero-cover::before,
+.film-scene.is-active .director-controls::before,
+.film-scene.is-active .edit-preview::before,
+.film-scene.is-active .edit-timeline::before,
+.film-scene.is-active .finish-card::before{
+  opacity:1;
+  animation:parableFramerTrace 3.8s linear infinite;
+}
+
+/* Small timing offsets stop every card from looking mechanically synchronized. */
+.film-scene.is-active .margin-note:nth-child(2)::before,
+.film-scene.is-active .intel-node:nth-of-type(2)::before,
+.film-scene.is-active .hero-cover:nth-of-type(2)::before,
+.film-scene.is-active .finish-card:nth-child(2)::before{animation-delay:-.72s}
+.film-scene.is-active .margin-note:nth-child(3)::before,
+.film-scene.is-active .intel-node:nth-of-type(3)::before,
+.film-scene.is-active .hero-cover:nth-of-type(3)::before,
+.film-scene.is-active .finish-card:nth-child(3)::before{animation-delay:-1.44s}
+.film-scene.is-active .intel-node:nth-of-type(4)::before,
+.film-scene.is-active .finish-card:nth-child(4)::before{animation-delay:-2.16s}
+.film-scene.is-active .intel-node:nth-of-type(5)::before,
+.film-scene.is-active .finish-card:nth-child(5)::before{animation-delay:-2.88s}
+
+/* restrained ambient bloom under the tracing edge */
+.film-scene.is-active .hero-cover,
+.film-scene.is-active .intel-node,
+.film-scene.is-active .margin-note,
+.film-scene.is-active .director-controls,
+.film-scene.is-active .edit-preview,
+.film-scene.is-active .edit-timeline{
+  box-shadow:0 18px 50px rgba(0,0,0,.34),0 0 18px rgba(73,96,255,.09),inset 0 0 18px rgba(105,135,255,.025);
+}
+
+@keyframes parableFramerTrace{to{--parable-trace-angle:360deg}}
+
+@media(max-width:720px){
+  .hero-film-wrap{width:calc(100% - 28px);margin-top:42px}
+  .hero-film{aspect-ratio:3/2;border-radius:22px 22px 8px 8px}
+  .film-topbar{height:34px;padding:0 11px}
+  .film-brand{font-size:8px;gap:5px}
+  .film-brand small,.film-topcenter{display:none}
+  .film-status{font-size:7px}
+  .mini-mark{width:12px;height:12px;border-radius:4px}
+  .film-stage{top:34px;bottom:30px}
+  .film-bottom{height:30px}
+  .film-play{width:42px;height:42px;font-size:14px}
+  .film-caption{max-width:90%;margin:10px auto 0;font-size:9px;line-height:1.45}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .film-scene.is-active .scene-shell::before,
+  .film-scene.is-active .margin-note::before,
+  .film-scene.is-active .intel-node::before,
+  .film-scene.is-active .hero-cover::before,
+  .film-scene.is-active .director-controls::before,
+  .film-scene.is-active .edit-preview::before,
+  .film-scene.is-active .edit-timeline::before,
+  .film-scene.is-active .finish-card::before{animation:none;opacity:.72}
+}
