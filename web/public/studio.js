@@ -8,9 +8,11 @@ const toast=$('#studioToast');
 let currentProjectId=null;
 let currentResult=null;
 let activeShot=null;
+let directionTimer=null;
 
 const escapeHtml=(v='')=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 const showToast=(message)=>{if(!toast)return;toast.textContent=message;toast.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>toast.classList.remove('show'),2200)};
+const ensureOption=(select,value)=>{if(!select||value===undefined||value===null)return;if(![...select.options].some(o=>o.value===String(value))){const option=document.createElement('option');option.value=String(value);option.textContent=String(value);select.append(option)}};
 
 function setStep(step){
   $$('.workflow-step').forEach(btn=>{
@@ -31,13 +33,26 @@ function renderIntelligence(data){
   $('#conflictText').textContent=intel.conflict;
   $('#worldText').textContent=intel.setting;
   $('#emotionalTurn').textContent=intel.emotional_turn;
-  $('#engineBadge').textContent=data.engine.version;
+
+  const engine=data.engine||{};
+  const isModel=engine.mode==='model';
+  $('#engineBadge').textContent=isModel?`${engine.provider} · ${engine.model}`:'structured fallback';
+  $('#modelMeta').textContent=isModel?`${String(engine.provider).toUpperCase()} / ${engine.model}`:'Local deterministic engine';
+  $('#versionMeta').textContent=`${engine.version||'unknown'} · ${data.story_version||'unversioned'}`;
+  $('#navEngineLabel').textContent=isModel?'Story Intelligence model live':'Story Intelligence fallback active';
+  $('#engineDot')?.classList.toggle('is-fallback',!isModel);
+
+  const review=data.review||data.production_bible?.review||{};
+  const confidence=Math.round((Number(review.confidence)||0)*100);
+  $('#confidenceText').textContent=`${confidence}% confidence`;
+  const flags=[...(review.uncertainties||[]),...(review.fidelity_warnings||[]),...(review.human_review_flags||[])].filter(Boolean).slice(0,3);
+  $('#reviewFlags').textContent=flags.length?flags.join(' · '):'No major review flags in this pass.';
 }
 
 function renderScreenplay(data){
   $('#sceneHeading').textContent=data.screenplay.heading;
-  $('#screenplayBeats').innerHTML=data.screenplay.beats.map(beat=>{
-    if(beat.type==='dialogue') return `<div class="beat dialogue"><b>${escapeHtml(beat.speaker)}</b><span>${escapeHtml(beat.text)}</span></div>`;
+  $('#screenplayBeats').innerHTML=(data.screenplay.beats||[]).map(beat=>{
+    if(beat.type==='dialogue') return `<div class="beat dialogue"><b>${escapeHtml(beat.speaker||'CHARACTER')}</b><span>${escapeHtml(beat.text)}</span></div>`;
     return `<p class="beat">${escapeHtml(beat.text)}</p>`;
   }).join('');
 }
@@ -45,22 +60,24 @@ function renderScreenplay(data){
 function selectShot(shot){
   activeShot=shot;
   $$('.shot-item').forEach(btn=>btn.classList.toggle('is-active',btn.dataset.shot===shot.id));
-  $('#previewShotId').textContent=shot.id.replace('_',' ').toUpperCase()+` · ${shot.shot_size.toUpperCase()}`;
+  $('#previewShotId').textContent=shot.id.replace('_',' ').toUpperCase()+` · ${String(shot.shot_size||'shot').toUpperCase()}`;
   $('#previewBeat').textContent=shot.beat;
-  $('#lensControl').value=String(shot.lens_mm);
-  const motion=$('#motionControl');if([...motion.options].some(o=>o.value===shot.motion))motion.value=shot.motion;
-  const light=$('#lightControl');if([...light.options].some(o=>o.value===shot.lighting))light.value=shot.lighting;
-  $('#performanceText').textContent=shot.performance;
-  $('#shotPreview').dataset.lens=String(shot.lens_mm);
+  const lens=$('#lensControl');ensureOption(lens,shot.lens_mm);lens.value=String(shot.lens_mm||50);
+  const motion=$('#motionControl');ensureOption(motion,shot.motion);motion.value=shot.motion||'Locked';
+  const light=$('#lightControl');ensureOption(light,shot.lighting);light.value=shot.lighting||'Natural environment';
+  $('#performanceText').textContent=shot.performance||'Keep the performance truthful to the beat.';
+  $('#shotPreview').dataset.lens=String(shot.lens_mm||50);
+  $('#directionSaveState').textContent='Director choices are versioned with this story.';
 }
 
 function renderDirect(data){
   $('#projectBadge').textContent=currentProjectId?`PROJECT · ${currentProjectId.slice(-6).toUpperCase()}`:'LIVE PROJECT';
-  $('#shotBrowser').innerHTML=data.shot_plan.map((shot,index)=>`<button type="button" class="shot-item${index===1?' is-active':''}" data-shot="${escapeHtml(shot.id)}"><small>${escapeHtml(shot.id.replace('_',' ').toUpperCase())}</small><b>${escapeHtml(shot.shot_size)}</b></button>`).join('');
+  const shots=data.shot_plan||[];
+  $('#shotBrowser').innerHTML=shots.map((shot,index)=>`<button type="button" class="shot-item${index===1?' is-active':''}" data-shot="${escapeHtml(shot.id)}"><small>${escapeHtml(shot.id.replace('_',' ').toUpperCase())}</small><b>${escapeHtml(shot.shot_size)}</b></button>`).join('');
   $$('.shot-item').forEach(btn=>btn.addEventListener('click',()=>{
-    const shot=data.shot_plan.find(s=>s.id===btn.dataset.shot);if(shot)selectShot(shot);
+    const shot=shots.find(s=>s.id===btn.dataset.shot);if(shot)selectShot(shot);
   }));
-  selectShot(data.shot_plan[1]||data.shot_plan[0]);
+  if(shots.length)selectShot(shots[1]||shots[0]);
 }
 
 function renderResult(data){
@@ -85,6 +102,34 @@ async function adaptProject(payload,projectId){
   return body;
 }
 
+async function persistDirection(){
+  if(!currentProjectId||!currentResult?.story_version||!activeShot)return;
+  $('#directionSaveState').textContent='Saving direction…';
+  const payload={
+    projectId:currentProjectId,
+    storyVersion:currentResult.story_version,
+    shotId:activeShot.id,
+    lens_mm:Number(activeShot.lens_mm||50),
+    motion:activeShot.motion||'',
+    lighting:activeShot.lighting||'',
+    performance:activeShot.performance||'',
+    blocking:activeShot.blocking||''
+  };
+  try{
+    const r=await fetch('/api/direction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const body=await r.json();if(!r.ok)throw new Error(body.error||'Could not save this directing choice');
+    $('#directionSaveState').textContent='Saved to this story version.';
+  }catch(err){
+    $('#directionSaveState').textContent='Not saved — retry by changing the control again.';
+    showToast(err.message||'Direction save failed.');
+  }
+}
+
+function scheduleDirectionSave(){
+  clearTimeout(directionTimer);
+  directionTimer=setTimeout(persistDirection,420);
+}
+
 form?.addEventListener('submit',async e=>{
   e.preventDefault();
   const payload=Object.fromEntries(new FormData(form).entries());
@@ -98,8 +143,11 @@ form?.addEventListener('submit',async e=>{
     }
     const result=await adaptProject(payload,currentProjectId);
     renderResult(result);
-    $('#formNote').textContent='This result came from the story currently in the editor. Change the text and run it again to verify the output changes.';
-    showToast('Story Intelligence complete.');
+    const model=result.engine?.mode==='model';
+    $('#formNote').textContent=model
+      ?`Model-backed Story Intelligence completed with ${result.engine.provider}. The source and this analysis were versioned together.`
+      :'Structured fallback completed. The production is real and versioned, but deeper model reasoning is waiting for a provider key.';
+    showToast(model?'Story Intelligence model pass complete.':'Structured Story Intelligence complete.');
   }catch(err){
     $('#formNote').textContent=err.message;showToast(err.message);
   }finally{
@@ -122,7 +170,7 @@ $('#copyScreenplay')?.addEventListener('click',async()=>{
 
 $('#lensControl')?.addEventListener('change',e=>{
   $('#shotPreview').dataset.lens=e.target.value;
-  if(activeShot)activeShot={...activeShot,lens_mm:Number(e.target.value)};
+  if(activeShot){activeShot.lens_mm=Number(e.target.value);scheduleDirectionSave();}
 });
-$('#motionControl')?.addEventListener('change',e=>{if(activeShot)activeShot={...activeShot,motion:e.target.value};showToast(`Motion: ${e.target.value}`)});
-$('#lightControl')?.addEventListener('change',e=>{if(activeShot)activeShot={...activeShot,lighting:e.target.value};showToast(`Light: ${e.target.value}`)});
+$('#motionControl')?.addEventListener('change',e=>{if(activeShot){activeShot.motion=e.target.value;scheduleDirectionSave();}showToast(`Motion: ${e.target.value}`)});
+$('#lightControl')?.addEventListener('change',e=>{if(activeShot){activeShot.lighting=e.target.value;scheduleDirectionSave();}showToast(`Light: ${e.target.value}`)});
