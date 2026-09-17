@@ -5,8 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#f4f1ea" />
   <title>PARABLE Studio — Story to Screen</title>
-  <meta name="description" content="A real PARABLE story-to-screen workflow: write, understand, adapt and direct." />
+  <meta name="description" content="A real PARABLE story-to-screen workflow: write, understand, adapt, direct and review." />
   <link rel="stylesheet" href="/studio.css" />
+  <link rel="stylesheet" href="/studio-review.css" />
 </head>
 <body>
   <header class="studio-nav">
@@ -55,7 +56,7 @@
     </aside>
 
     <section class="workbench" aria-live="polite">
-      <div class="workflow-bar">
+      <div class="workflow-bar workflow-bar-five">
         <button class="workflow-step is-active" data-step="write"><span>01</span><b>Write</b></button>
         <i></i>
         <button class="workflow-step" data-step="understand"><span>02</span><b>Understand</b></button>
@@ -63,6 +64,8 @@
         <button class="workflow-step" data-step="adapt"><span>03</span><b>Adapt</b></button>
         <i></i>
         <button class="workflow-step" data-step="direct"><span>04</span><b>Direct</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="review"><span>05</span><b>Review</b></button>
       </div>
 
       <div class="empty-state" id="emptyState">
@@ -132,6 +135,58 @@
               <label><span>Light</span><select id="lightControl"><option selected>Soft motivated key</option><option>Natural environment</option><option>Window / practical edge</option><option>Low-contrast practicals</option><option>Shape silhouette and negative space</option></select></label>
               <div class="performance-note"><small>PERFORMANCE</small><p id="performanceText">Hold one beat longer than comfortable.</p></div>
               <p class="save-state" id="directionSaveState">Director choices are versioned with this story.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="result-panel review-panel" data-panel="review" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">05 · REVIEW</p><h2>Film Quality Critic</h2></div>
+            <span class="engine-badge" id="criticEngineBadge">not run</span>
+          </div>
+
+          <div class="critic-intro" id="criticIntro">
+            <div>
+              <small>BEFORE RENDER</small>
+              <h3>Ask the film to defend its choices.</h3>
+              <p>PARABLE reviews story fidelity, screenplay filmability, coverage, performance, editing options, continuity and Christian-content integrity. It suggests changes without silently rewriting the author.</p>
+            </div>
+            <button type="button" class="critic-run" id="runCriticBtn"><span>Run Director Critic</span><b>→</b></button>
+          </div>
+
+          <div class="critic-result" id="criticResult" hidden>
+            <div class="critic-summary">
+              <div>
+                <small>CRITIC SUMMARY</small>
+                <p id="criticSummary"></p>
+              </div>
+              <div class="critic-readiness">
+                <small>READINESS</small>
+                <strong id="criticReadiness">—</strong>
+                <span id="criticConfidence">—</span>
+              </div>
+            </div>
+
+            <div class="critic-best">
+              <small>STRONGEST CHOICE</small>
+              <strong id="criticStrongChoice"></strong>
+              <p id="criticStrongWhy"></p>
+            </div>
+
+            <div class="critic-section">
+              <div class="critic-section-head"><small>HIGH-LEVERAGE CHANGES</small><span id="criticPriorityCount"></span></div>
+              <div class="critic-priorities" id="criticPriorities"></div>
+            </div>
+
+            <div class="critic-safety-grid">
+              <article><small>CONTINUITY RISKS</small><div id="criticContinuity"></div></article>
+              <article><small>FIDELITY RISKS</small><div id="criticFidelity"></div></article>
+              <article><small>HUMAN QUESTIONS</small><div id="criticQuestions"></div></article>
+            </div>
+
+            <div class="critic-actions">
+              <p id="criticState">Review is versioned with this story.</p>
+              <button type="button" class="copy-btn" id="rerunCriticBtn">Run again</button>
             </div>
           </div>
         </section>
