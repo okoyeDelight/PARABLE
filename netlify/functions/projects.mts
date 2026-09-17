@@ -53,6 +53,8 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
   }
 });
 
+const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
+
 function getStores() {
   const isProduction = Netlify.context?.deploy?.context === 'production';
   if (isProduction) {
@@ -77,7 +79,7 @@ async function listProjects(projectsStore: ReturnType<typeof getStore>) {
   await seedIfNeeded(projectsStore);
   const { blobs } = await projectsStore.list({ prefix: 'project/' });
   const projects = (await Promise.all(
-    blobs.map(({ key }) => projectsStore.get(key, { type: 'json' }))
+    blobs.slice(0, 200).map(({ key }) => projectsStore.get(key, { type: 'json' }))
   )).filter(Boolean) as typeof starterProjects;
   return projects.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
@@ -86,6 +88,17 @@ export default async (request: Request) => {
   const { projects, contexts } = getStores();
 
   if (request.method === 'GET') {
+    const url = new URL(request.url);
+    const projectId = String(url.searchParams.get('id') || '').trim();
+
+    if (projectId) {
+      if (!safeId(projectId)) return json({ error: 'Invalid project identifier.' }, 400);
+      const stored = await projects.get(`project/${projectId}`, { type: 'json' });
+      if (stored) return json(stored);
+      const starter = starterProjects.find((project) => project.id === projectId);
+      return starter ? json(starter) : json({ error: 'Project not found.' }, 404);
+    }
+
     return json(await listProjects(projects));
   }
 
