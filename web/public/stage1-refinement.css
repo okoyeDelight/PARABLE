@@ -179,6 +179,36 @@
   .trust-strip{height:72px;gap:11px;font-size:8px;letter-spacing:.09em;overflow:hidden}
   .trust-strip span:nth-of-type(3),.trust-strip span:nth-of-type(4){display:none}
   .scene-float-label{font-size:7px;max-width:76%;white-space:normal;text-align:center}
+
+  /* Preserve the compact Framer-like outer canvas while fitting the original
+     cinematic compositions inside it. Each scene gets a larger invisible
+     artboard and is scaled back into the same visible viewport. */
+  .film-scene{
+    inset:-12.5%;
+    transform-origin:50% 50%;
+    transform:scale(.8);
+  }
+  .film-scene.is-active{transform:scale(.8)}
+  .film-scene.is-before{transform:translate3d(-10px,-4px,-18px) scale(.785)}
+  .film-scene.is-after{transform:translate3d(10px,8px,-18px) scale(.785)}
+
+  /* Densest sequences get a little more breathing room so no labels, controls,
+     covers or timeline elements are clipped on narrow phones. */
+  .scene-write .scene-shell{inset:7% 5.5%}
+  .scene-understand .intelligence-orbit{left:5%;width:61%;top:6%;bottom:6%}
+  .scene-understand .intelligence-copy{right:4.5%;width:33%}
+  .scene-covers .hero-cover{width:168px;height:238px}
+  .scene-direct .director-layout{inset:5.5% 4.5%}
+  .scene-edit .edit-preview{left:5%;right:5%;top:5%}
+  .scene-edit .edit-timeline{left:5%;right:5%;bottom:7%}
+  .scene-finish .finish-copy{max-width:72%}
+}
+
+@media(max-width:390px){
+  .film-scene{inset:-15.4%;transform:scale(.765)}
+  .film-scene.is-active{transform:scale(.765)}
+  .film-scene.is-before{transform:translate3d(-8px,-3px,-14px) scale(.752)}
+  .film-scene.is-after{transform:translate3d(8px,6px,-14px) scale(.752)}
 }
 
 @media(prefers-reduced-motion:reduce){
