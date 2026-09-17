@@ -15,8 +15,8 @@
       <span>PARABLE</span>
     </a>
     <div class="nav-meta">
-      <span class="engine-dot"></span>
-      <span>Story Intelligence live</span>
+      <span class="engine-dot" id="engineDot"></span>
+      <span id="navEngineLabel">Story Intelligence ready</span>
     </div>
   </header>
 
@@ -76,7 +76,7 @@
         <section class="result-panel intelligence-panel" data-panel="understand">
           <div class="panel-head">
             <div><p class="eyebrow">02 · UNDERSTAND</p><h2>Story Intelligence</h2></div>
-            <span class="engine-badge" id="engineBadge">structured-v1</span>
+            <span class="engine-badge" id="engineBadge">waiting</span>
           </div>
           <div class="intel-grid">
             <article><small>CHARACTERS</small><div id="charactersList"></div></article>
@@ -87,6 +87,10 @@
           <div class="turn-card">
             <small>EMOTIONAL TURN</small>
             <p id="emotionalTurn"></p>
+          </div>
+          <div class="trust-strip">
+            <article><small>ENGINE</small><strong id="modelMeta">Not run yet</strong><p id="versionMeta"></p></article>
+            <article><small>FIDELITY CHECK</small><strong id="confidenceText">—</strong><p id="reviewFlags">PARABLE will show uncertainty instead of hiding it.</p></article>
           </div>
         </section>
 
@@ -125,8 +129,9 @@
             <div class="control-rack">
               <label><span>Lens</span><select id="lensControl"><option>24</option><option>35</option><option selected>50</option><option>85</option></select></label>
               <label><span>Motion</span><select id="motionControl"><option>Locked</option><option selected>Slow push-in</option><option>Slow drift</option><option>Gentle pull-back</option><option>Measured handheld</option></select></label>
-              <label><span>Light</span><select id="lightControl"><option selected>Soft motivated key</option><option>Natural environment</option><option>Window / practical edge</option><option>Low-contrast practicals</option></select></label>
+              <label><span>Light</span><select id="lightControl"><option selected>Soft motivated key</option><option>Natural environment</option><option>Window / practical edge</option><option>Low-contrast practicals</option><option>Shape silhouette and negative space</option></select></label>
               <div class="performance-note"><small>PERFORMANCE</small><p id="performanceText">Hold one beat longer than comfortable.</p></div>
+              <p class="save-state" id="directionSaveState">Director choices are versioned with this story.</p>
             </div>
           </div>
         </section>
