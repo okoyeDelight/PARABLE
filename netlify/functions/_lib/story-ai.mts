@@ -172,7 +172,7 @@ function timeoutSignal(ms: number) {
 }
 
 async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResult> {
-  const model = Deno.env.get('PARABLE_GROQ_MODEL') || 'openai/gpt-oss-120b';
+  const model = process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b';
   const timeout = timeoutSignal(28000);
   try {
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -210,7 +210,7 @@ async function callGroq(input: StoryInput, apiKey: string): Promise<ProviderResu
 }
 
 async function callGemini(input: StoryInput, apiKey: string): Promise<ProviderResult> {
-  const model = Deno.env.get('PARABLE_GEMINI_MODEL') || 'gemini-3.8-flash';
+  const model = process.env.PARABLE_GEMINI_MODEL || 'gemini-3.8-flash';
   const timeout = timeoutSignal(28000);
   try {
     const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
@@ -276,9 +276,9 @@ export function sanitizeModelResult(value: Record<string, any>) {
 }
 
 export async function runStoryModel(input: StoryInput): Promise<ProviderResult> {
-  const requested = (Deno.env.get('PARABLE_AI_PROVIDER') || 'auto').toLowerCase();
-  const groqKey = Deno.env.get('GROQ_API_KEY') || '';
-  const geminiKey = Deno.env.get('GEMINI_API_KEY') || '';
+  const requested = (process.env.PARABLE_AI_PROVIDER || 'auto').toLowerCase();
+  const groqKey = process.env.GROQ_API_KEY || '';
+  const geminiKey = process.env.GEMINI_API_KEY || '';
   const attempts: Array<() => Promise<ProviderResult>> = [];
 
   if ((requested === 'auto' || requested === 'groq') && groqKey) attempts.push(() => callGroq(input, groqKey));
