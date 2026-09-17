@@ -47,9 +47,9 @@ jobs:
           css = '''<style id="render-isolation">
           html,body{margin:0!important;width:960px!important;height:640px!important;overflow:hidden!important;background:#050505!important}
           .site-nav,.hero-copy,.film-aura,.film-caption,.trust-strip,.statement-section,.production-section,.story-dialog,.toast{display:none!important}
-          .hero-section{margin:0!important;padding:0!important;min-height:0!important;background:#050505!important}
-          .hero-film-wrap{display:block!important;margin:0!important;padding:0!important;width:960px!important;height:640px!important;max-width:none!important}
-          #filmFrame{position:fixed!important;inset:0!important;margin:0!important;width:960px!important;height:640px!important;max-width:none!important;min-height:0!important;aspect-ratio:auto!important;border-radius:0!important;transform:none!important}
+          .hero-section{margin:0!important;padding:0!important;min-height:0!important;background:#050505!important;width:960px!important;max-width:none!important}
+          .hero-film-wrap{display:block!important;visibility:visible!important;opacity:1!important;margin:0!important;padding:0!important;width:960px!important;height:640px!important;max-width:none!important}
+          #filmFrame{display:block!important;visibility:visible!important;opacity:1!important;position:fixed!important;inset:0!important;margin:0!important;width:960px!important;height:640px!important;max-width:none!important;min-height:640px!important;aspect-ratio:auto!important;border-radius:0!important;transform:none!important}
           #filmPlay{display:none!important}
           </style>'''
           s = s.replace('</head>', css + '</head>')
@@ -67,21 +67,47 @@ jobs:
           cat > ./render-hero.mjs <<'JS'
           import { chromium } from 'playwright';
           import fs from 'node:fs';
-          const browser = await chromium.launch({headless:true});
+
+          const browser = await chromium.launch({ headless: true });
           const context = await browser.newContext({
-            viewport:{width:960,height:640},
-            recordVideo:{dir:'/tmp/parable-video',size:{width:960,height:640}}
+            viewport: { width: 960, height: 640 },
+            recordVideo: { dir: '/tmp/parable-video', size: { width: 960, height: 640 } }
           });
           const page = await context.newPage();
+
           await page.route('**/*', async route => {
             const url = route.request().url();
             if (url.startsWith('http://127.0.0.1:4173/')) return route.continue();
             return route.abort();
           });
-          await page.goto('http://127.0.0.1:4173/', {waitUntil:'domcontentloaded', timeout:15000});
-          await page.waitForSelector('#filmFrame', {state:'visible', timeout:10000});
-          await page.waitForTimeout(400);
+
+          await page.goto('http://127.0.0.1:4173/', {
+            waitUntil: 'domcontentloaded',
+            timeout: 15000
+          });
+
+          await page.waitForSelector('#filmFrame', { state: 'attached', timeout: 10000 });
+          await page.evaluate(() => {
+            const html = document.documentElement;
+            const body = document.body;
+            const film = document.querySelector('#filmFrame');
+            const wrap = document.querySelector('#heroFilm');
+            const hero = document.querySelector('.hero-section');
+
+            html.style.cssText += ';margin:0;width:960px;height:640px;overflow:hidden;background:#050505';
+            body.style.cssText += ';margin:0;width:960px;height:640px;overflow:hidden;background:#050505';
+            if (hero) hero.style.cssText += ';display:block;width:960px;max-width:none;margin:0;padding:0;min-height:640px;visibility:visible;opacity:1';
+            if (wrap) wrap.style.cssText += ';display:block;width:960px;height:640px;max-width:none;margin:0;padding:0;visibility:visible;opacity:1';
+            if (film) film.style.cssText += ';display:block;position:fixed;inset:0;width:960px;height:640px;min-height:640px;max-width:none;margin:0;border-radius:0;transform:none;visibility:visible;opacity:1';
+
+            document.querySelectorAll('.site-nav,.hero-copy,.film-aura,.film-caption,.trust-strip,.statement-section,.production-section,.story-dialog,.toast').forEach(el => {
+              el.style.setProperty('display', 'none', 'important');
+            });
+          });
+
+          await page.waitForTimeout(500);
           await page.waitForTimeout(13800);
+
           const recording = page.video();
           await page.close();
           await context.close();
