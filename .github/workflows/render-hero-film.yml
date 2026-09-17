@@ -52,6 +52,7 @@ jobs:
           #filmFrame{display:block!important;visibility:visible!important;opacity:1!important;position:fixed!important;inset:0!important;margin:0!important;width:960px!important;height:640px!important;max-width:none!important;min-height:640px!important;aspect-ratio:auto!important;border-radius:0!important;transform:none!important}
           #filmPlay{display:none!important}
           </style>'''
+          s = s.replace('<head>', '<head><base href="http://127.0.0.1:4173/">')
           s = s.replace('</head>', css + '</head>')
           p.write_text(s)
           PY
@@ -61,6 +62,7 @@ jobs:
           python3 -m http.server 4173 --directory /tmp/parable-render/web/public >/tmp/parable-server.log 2>&1 &
           echo $! > /tmp/parable-server.pid
           sleep 1
+          curl -fsS http://127.0.0.1:4173/index.html | grep -q 'id="filmFrame"'
 
       - name: Record rich product film
         run: |
@@ -81,12 +83,10 @@ jobs:
             return route.abort();
           });
 
-          await page.goto('http://127.0.0.1:4173/', {
-            waitUntil: 'domcontentloaded',
-            timeout: 15000
-          });
-
+          const source = fs.readFileSync('/tmp/parable-render/web/public/index.html', 'utf8');
+          await page.setContent(source, { waitUntil: 'domcontentloaded', timeout: 15000 });
           await page.waitForSelector('#filmFrame', { state: 'attached', timeout: 10000 });
+
           await page.evaluate(() => {
             const html = document.documentElement;
             const body = document.body;
