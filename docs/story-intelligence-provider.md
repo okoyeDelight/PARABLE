@@ -34,7 +34,7 @@ With no provider secret configured, `/api/adapt` must fall back truthfully to th
 
 ## Current activation checkpoint
 
-The Deploy Preview has an `OPENROUTER_API_KEY` configured as a secret environment variable. The focused provider probe already proved the secret is visible to server functions and not to the client. Its first run exposed the routing conflict described above, so the preview now pins `nex-agi/nex-n2.5-mini:free` for the next real-model test.
+The Deploy Preview has an `OPENROUTER_API_KEY` configured as a secret environment variable. The focused provider probe proved the secret is visible to server functions and not to the client. Its first run exposed a routing conflict. Netlify environment inspection now confirms the Deploy Preview override is actually set to `nex-agi/nex-n2.5-mini:free`, while production still has no OpenRouter secret. This commit exists to force a clean preview rebuild with that corrected environment snapshot before rerunning the probe.
 
 ## Acceptance gate before merge
 
