@@ -27,6 +27,7 @@ export type UnderstandResult = {
 };
 
 type RunOptions = { lane?: AILane };
+const env = (key: string) => Netlify.env.get(key) || '';
 
 const text = (maxLength = 600) => ({ type: 'string', maxLength });
 const object = (properties: Record<string, any>, required = Object.keys(properties)) => ({
@@ -246,7 +247,7 @@ export function sanitizeUnderstanding(value: Record<string, any>, input: Underst
 
 export function benchmarkLaneEnabled() {
   const production = Netlify.context?.deploy?.context === 'production';
-  return !production && process.env.PARABLE_ENABLE_BENCHMARK_LANE === 'true';
+  return !production && env('PARABLE_ENABLE_BENCHMARK_LANE') === 'true';
 }
 
 function openRouterProvider(lane: AILane) {
@@ -268,7 +269,7 @@ function openRouterProvider(lane: AILane) {
 
 function modelForLane(lane: AILane) {
   if (lane === 'benchmark') return 'openrouter/free';
-  return String(process.env.PARABLE_PROTECTED_UNDERSTAND_MODEL || 'openrouter/free').trim() || 'openrouter/free';
+  return String(env('PARABLE_PROTECTED_UNDERSTAND_MODEL') || 'openrouter/free').trim() || 'openrouter/free';
 }
 
 async function callOpenRouter(input: UnderstandInput, apiKey: string, lane: AILane): Promise<UnderstandResult> {
@@ -286,7 +287,7 @@ async function callOpenRouter(input: UnderstandInput, apiKey: string, lane: AILa
         headers: {
           authorization: `Bearer ${apiKey}`,
           'content-type': 'application/json',
-          'HTTP-Referer': process.env.PARABLE_PUBLIC_URL || 'https://parable-studio.netlify.app',
+          'HTTP-Referer': env('PARABLE_PUBLIC_URL') || 'https://parable-studio.netlify.app',
           'X-OpenRouter-Title': 'PARABLE Story Understanding'
         },
         body: JSON.stringify({
@@ -339,7 +340,7 @@ async function callOpenRouter(input: UnderstandInput, apiKey: string, lane: AILa
 }
 
 async function callGroqProtected(input: UnderstandInput, apiKey: string): Promise<UnderstandResult> {
-  const model = process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b';
+  const model = env('PARABLE_GROQ_MODEL') || 'openai/gpt-oss-120b';
   const started = Date.now();
   const timeout = timeoutSignal(9500);
   try {
@@ -393,8 +394,8 @@ export async function runStoryUnderstanding(input: UnderstandInput, options: Run
     };
   }
 
-  const openrouterKey = process.env.OPENROUTER_API_KEY || '';
-  const groqKey = process.env.GROQ_API_KEY || '';
+  const openrouterKey = env('OPENROUTER_API_KEY');
+  const groqKey = env('GROQ_API_KEY');
   const errors: string[] = [];
 
   if (openrouterKey) {
