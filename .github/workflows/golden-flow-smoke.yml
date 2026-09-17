@@ -1,8 +1,8 @@
-name: PARABLE Golden Flow Smoke
+name: PARABLE Golden Flow Model Quality Gate
 
+# This is deliberately manual. The full gate makes four real-model calls and
+# should not burn the free development quota on every UI/docs commit.
 on:
-  push:
-    branches: [immersive-v2]
   workflow_dispatch:
 
 permissions:
@@ -145,6 +145,7 @@ jobs:
             console.log(`${fixture.title}: ${result.engine.provider}/${result.engine.model} (${result.engine.mode})`);
             if (result.engine.mode !== 'model') console.log(`${fixture.title} fallback reason: ${result.engine.fallback_reason || 'none reported'}`);
             if (requireRealModel) assert(result.engine.mode === 'model', `${fixture.title}: provider is configured but Story Intelligence fell back: ${result.engine.fallback_reason || 'no reason reported'}`);
+            await sleep(2500);
           }
 
           assert(new Set(runs.map(r => r.result.source_hash)).size === 3, 'Different stories produced duplicate source hashes.');
@@ -156,6 +157,7 @@ jobs:
             ...first.fixture,
             sourceText: `${first.fixture.sourceText}\n\nDaniel finally moved the empty chair beside his own and whispered, "I will still go."`
           };
+          await sleep(2500);
           const reanalysis = await post('/api/adapt', { ...changedFixture, projectId: first.project.id });
           assert(reanalysis.response.status === 201, `Re-analysis failed: ${reanalysis.response.status} ${JSON.stringify(reanalysis.body)}`);
           assert(reanalysis.body.story_version !== first.result.story_version, 'Changed manuscript did not produce a new story version.');
