@@ -14,6 +14,22 @@ const escapeHtml=(v='')=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;
 const showToast=(message)=>{if(!toast)return;toast.textContent=message;toast.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>toast.classList.remove('show'),2200)};
 const ensureOption=(select,value)=>{if(!select||value===undefined||value===null)return;if(![...select.options].some(o=>o.value===String(value))){const option=document.createElement('option');option.value=String(value);option.textContent=String(value);select.append(option)}};
 
+async function loadAiStatus(){
+  try{
+    const response=await fetch('/api/ai-status',{cache:'no-store'});
+    if(!response.ok)return;
+    const body=await response.json();
+    const status=body.story_intelligence||{};
+    const configured=status.configured_providers||{};
+    const provider=configured.groq?'Groq':configured.gemini?'Gemini':null;
+    $('#engineDot')?.classList.toggle('is-fallback',!status.ready);
+    $('#navEngineLabel').textContent=status.ready?`${provider||'Model'} Story Intelligence ready`:'Story Intelligence fallback ready';
+  }catch{
+    $('#engineDot')?.classList.add('is-fallback');
+    $('#navEngineLabel').textContent='Story Intelligence available';
+  }
+}
+
 function setStep(step){
   $$('.workflow-step').forEach(btn=>{
     btn.classList.toggle('is-active',btn.dataset.step===step);
@@ -174,3 +190,5 @@ $('#lensControl')?.addEventListener('change',e=>{
 });
 $('#motionControl')?.addEventListener('change',e=>{if(activeShot){activeShot.motion=e.target.value;scheduleDirectionSave();}showToast(`Motion: ${e.target.value}`)});
 $('#lightControl')?.addEventListener('change',e=>{if(activeShot){activeShot.lighting=e.target.value;scheduleDirectionSave();}showToast(`Light: ${e.target.value}`)});
+
+loadAiStatus();
