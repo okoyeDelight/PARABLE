@@ -172,3 +172,12 @@
   `;
   document.head.appendChild(style);
 })();
+
+(() => {
+  if (window.__parableCursorPassLoader || document.querySelector('script[data-parable-cursor-pass]')) return;
+  window.__parableCursorPassLoader = true;
+  const script = document.createElement('script');
+  script.src = '/cursor-pass.js';
+  script.dataset.parableCursorPass = '1';
+  document.body.appendChild(script);
+})();
