@@ -37,7 +37,13 @@ function stores() {
   };
 }
 
-const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim();
+const cleanMetadata = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim();
+const cleanManuscript = (value: unknown) => String(value ?? '')
+  .replace(/\r\n?/g, '\n')
+  .replace(/\t/g, '  ')
+  .replace(/[ \t]+$/gm, '')
+  .replace(/\n{4,}/g, '\n\n\n')
+  .trim();
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 
 function splitSentences(text: string) {
@@ -51,7 +57,7 @@ function splitSentences(text: string) {
 
 function extractCharacters(text: string) {
   const stop = new Set([
-    'The','A','An','He','She','They','It','I','We','You','Outside','Inside','Later','Then','When','After','Before','But','And','His','Her','Their','This','That','There','Here','God','Jesus','Lord'
+    'The','A','An','He','She','They','It','I','We','You','Outside','Inside','Later','Then','When','After','Before','But','And','His','Her','Their','This','That','There','Here','God','Jesus','Lord','Morning','Evening','Night','Day'
   ]);
   const counts = new Map<string, number>();
   const matches = text.match(/\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?\b/g) || [];
@@ -178,7 +184,7 @@ function deterministicResult(input: StoryInput, sourceHash: string) {
   };
   const storyBible = {
     premise: sentences[0] || input.sourceText.slice(0, 180),
-    logline: input.sourceText.slice(0, 180),
+    logline: input.sourceText.replace(/\s+/g, ' ').slice(0, 180),
     genre: 'Drama',
     tone: themes.join(', '),
     setting: input.setting || 'Not specified',
@@ -250,19 +256,17 @@ export default async (request: Request) => {
 
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
   const input: StoryInput = {
-    sourceText: clean(body.sourceText),
-    title: clean(body.title).slice(0, 160) || 'Untitled story',
-    setting: clean(body.setting).slice(0, 240),
-    primaryAudience: clean(body.primaryAudience).slice(0, 240)
+    sourceText: cleanManuscript(body.sourceText),
+    title: cleanMetadata(body.title).slice(0, 160) || 'Untitled story',
+    setting: cleanMetadata(body.setting).slice(0, 240),
+    primaryAudience: cleanMetadata(body.primaryAudience).slice(0, 240)
   };
-  const projectId = clean(body.projectId);
+  const projectId = cleanMetadata(body.projectId);
 
   if (projectId && !safeId(projectId)) return json({ error: 'Invalid project identifier.' }, 400);
-  if (input.sourceText.length < 20) {
-    return json({ error: 'Give PARABLE at least a few sentences to understand.' }, 400);
-  }
+  if (input.sourceText.length < 20) return json({ error: 'Give PARABLE at least a few sentences to understand.' }, 400);
   if (input.sourceText.length > 120000) {
-    return json({ error: 'This pass accepts up to 120,000 characters. Longer manuscripts will be chunked in the long-form pipeline.' }, 413);
+    return json({ error: 'This pass accepts up to 120,000 characters. Long-form chapter orchestration is a separate production stage.' }, 413);
   }
 
   const sourceHash = await sha256(`${input.title}\n${input.setting}\n${input.primaryAudience}\n${input.sourceText}`);
@@ -272,7 +276,7 @@ export default async (request: Request) => {
     ? normalizeModelOutput(modelRun.data, input, sourceHash)
     : deterministicResult(input, sourceHash);
   const now = new Date().toISOString();
-  const shotPlan = normalized.shot_plan as Shot[];
+  const shots = normalized.shot_plan as Shot[];
 
   const result = {
     id: `adapt_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
@@ -286,15 +290,16 @@ export default async (request: Request) => {
       mode: modelRun.engine.mode,
       provider: modelRun.engine.provider,
       model: modelRun.engine.model,
+      privacy_mode: modelRun.engine.privacy_mode || null,
       provider_ready: modelRun.engine.mode === 'model',
       fallback_reason: modelRun.engine.fallback_reason || null
     },
     ...normalized,
     director_defaults: {
-      lens_mm: shotPlan[1]?.lens_mm || shotPlan[0]?.lens_mm || 50,
-      motion: shotPlan[1]?.motion || shotPlan[0]?.motion || 'Slow push-in',
-      lighting: shotPlan[1]?.lighting || shotPlan[0]?.lighting || 'Soft motivated key',
-      performance: shotPlan[1]?.performance || shotPlan[0]?.performance || 'Restrained'
+      lens_mm: shots[1]?.lens_mm || shots[0]?.lens_mm || 50,
+      motion: shots[1]?.motion || shots[0]?.motion || 'Slow push-in',
+      lighting: shots[1]?.lighting || shots[0]?.lighting || 'Soft motivated key',
+      performance: shots[1]?.performance || shots[0]?.performance || 'Restrained'
     },
     created_at: now
   };
@@ -322,7 +327,8 @@ export default async (request: Request) => {
           provider: modelRun.engine.provider,
           model: modelRun.engine.model,
           version: modelRun.engine.version,
-          mode: modelRun.engine.mode
+          mode: modelRun.engine.mode,
+          privacy_mode: modelRun.engine.privacy_mode || null
         },
         status: 'shot_plan',
         progress: Math.max(Number(project.progress || 0), modelRun.engine.mode === 'model' ? 42 : 35),
