@@ -1,17 +1,29 @@
 @property --parable-trace-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
 
-/* Stage 1 visual lock: tighter Framer-like showcase proportions */
-.hero-film-wrap{width:min(1040px,92vw);margin-left:auto;margin-right:auto}
-.hero-film{min-height:0;aspect-ratio:16/9}
+/* Stage 1 visual lock: tighter showcase proportions and calmer Framer-like rhythm. */
+.hero-section{width:min(1180px,calc(100% - 40px));padding-top:142px}
+.hero-copy{max-width:930px}
+.hero-copy h1{font-size:clamp(54px,6.3vw,92px);line-height:.94;letter-spacing:-.058em;max-width:930px;text-wrap:balance}
+.hero-actions{margin-top:28px}
+.hero-film-wrap{width:min(1010px,90vw);margin:52px auto 0}
+.hero-film{min-height:0;aspect-ratio:16/9;border-radius:24px 24px 8px 8px;box-shadow:0 0 0 1px rgba(65,90,255,.11),0 0 42px rgba(54,86,255,.16),0 36px 90px rgba(0,0,0,.58)}
+.film-aura{inset:-48px 6% auto;height:320px;filter:blur(48px);opacity:.78}
+.film-topbar{height:50px;padding:0 15px}
+.film-stage{top:50px;bottom:40px}
+.film-bottom{height:40px}
+.film-caption{margin-top:12px;color:#62656d}
+.trust-strip{height:88px}
 
-/* Framer-like travelling edge light used only inside the hero product film. */
+/* Travelling edge light inside the film. The brightest point is a narrow comet, not a pulsing neon outline. */
 .film-scene .scene-shell,
 .film-scene .margin-note,
 .film-scene .intel-node,
 .film-scene .hero-cover,
+.film-scene .director-preview,
 .film-scene .director-controls,
 .film-scene .edit-preview,
 .film-scene .edit-timeline,
+.film-scene .preview-frame,
 .film-scene .finish-card{
   position:relative;
   isolation:isolate;
@@ -21,9 +33,11 @@
 .film-scene .margin-note::before,
 .film-scene .intel-node::before,
 .film-scene .hero-cover::before,
+.film-scene .director-preview::before,
 .film-scene .director-controls::before,
 .film-scene .edit-preview::before,
 .film-scene .edit-timeline::before,
+.film-scene .preview-frame::before,
 .film-scene .finish-card::before{
   content:'';
   position:absolute;
@@ -31,79 +45,140 @@
   border-radius:inherit;
   padding:1px;
   pointer-events:none;
-  z-index:12;
-  opacity:.16;
+  z-index:14;
+  opacity:.10;
   background:conic-gradient(
     from var(--parable-trace-angle),
     transparent 0deg,
-    transparent 248deg,
-    rgba(65,87,255,.06) 266deg,
-    rgba(70,103,255,.42) 279deg,
-    rgba(112,86,255,.92) 292deg,
-    rgba(88,214,255,.98) 305deg,
+    transparent 251deg,
+    rgba(69,83,255,.025) 264deg,
+    rgba(74,102,255,.18) 277deg,
+    rgba(94,103,255,.56) 289deg,
+    rgba(83,176,255,.84) 299deg,
+    rgba(125,233,255,.98) 307deg,
     rgba(255,255,255,1) 312deg,
-    rgba(102,226,255,.88) 319deg,
-    rgba(92,102,255,.36) 333deg,
-    transparent 348deg,
+    rgba(116,231,255,.96) 317deg,
+    rgba(84,158,255,.70) 324deg,
+    rgba(84,96,255,.26) 336deg,
+    transparent 349deg,
     transparent 360deg
   );
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
   -webkit-mask-composite:xor;
   mask-composite:exclude;
-  filter:drop-shadow(0 0 4px rgba(104,130,255,.85)) drop-shadow(0 0 11px rgba(90,180,255,.32));
-  transition:opacity .28s ease;
+  filter:drop-shadow(0 0 2px rgba(181,219,255,.96)) drop-shadow(0 0 7px rgba(100,176,255,.58)) drop-shadow(0 0 16px rgba(88,99,255,.20));
+  transition:opacity .34s ease;
+}
+
+.film-scene .scene-shell::after,
+.film-scene .hero-cover::after,
+.film-scene .director-preview::after,
+.film-scene .edit-preview::after{
+  content:'';
+  position:absolute;
+  inset:1px;
+  border-radius:inherit;
+  pointer-events:none;
+  z-index:13;
+  background:linear-gradient(118deg,transparent 18%,rgba(255,255,255,.035) 37%,rgba(128,180,255,.06) 46%,transparent 58%);
+  opacity:.34;
+  mix-blend-mode:screen;
+  transform:translateX(-38%);
 }
 
 .film-scene.is-active .scene-shell::before,
 .film-scene.is-active .margin-note::before,
 .film-scene.is-active .intel-node::before,
 .film-scene.is-active .hero-cover::before,
+.film-scene.is-active .director-preview::before,
 .film-scene.is-active .director-controls::before,
 .film-scene.is-active .edit-preview::before,
 .film-scene.is-active .edit-timeline::before,
+.film-scene.is-active .preview-frame::before,
 .film-scene.is-active .finish-card::before{
   opacity:1;
-  animation:parableFramerTrace 3.8s linear infinite;
+  animation:parableFramerTrace 3.65s linear infinite;
 }
 
-/* Small timing offsets stop every card from looking mechanically synchronized. */
+.film-scene.is-active .scene-shell::after,
+.film-scene.is-active .hero-cover::after,
+.film-scene.is-active .director-preview::after,
+.film-scene.is-active .edit-preview::after{
+  animation:parableSurfaceSweep 4.9s cubic-bezier(.22,.61,.36,1) infinite;
+}
+
+/* Small offsets keep the sequence organic instead of mechanically synchronized. */
 .film-scene.is-active .margin-note:nth-child(2)::before,
 .film-scene.is-active .intel-node:nth-of-type(2)::before,
 .film-scene.is-active .hero-cover:nth-of-type(2)::before,
-.film-scene.is-active .finish-card:nth-child(2)::before{animation-delay:-.72s}
+.film-scene.is-active .preview-frame:nth-child(2)::before,
+.film-scene.is-active .finish-card:nth-child(2)::before{animation-delay:-.68s}
 .film-scene.is-active .margin-note:nth-child(3)::before,
 .film-scene.is-active .intel-node:nth-of-type(3)::before,
 .film-scene.is-active .hero-cover:nth-of-type(3)::before,
-.film-scene.is-active .finish-card:nth-child(3)::before{animation-delay:-1.44s}
+.film-scene.is-active .preview-frame:nth-child(3)::before,
+.film-scene.is-active .finish-card:nth-child(3)::before{animation-delay:-1.36s}
 .film-scene.is-active .intel-node:nth-of-type(4)::before,
-.film-scene.is-active .finish-card:nth-child(4)::before{animation-delay:-2.16s}
+.film-scene.is-active .finish-card:nth-child(4)::before{animation-delay:-2.04s}
 .film-scene.is-active .intel-node:nth-of-type(5)::before,
-.film-scene.is-active .finish-card:nth-child(5)::before{animation-delay:-2.88s}
+.film-scene.is-active .finish-card:nth-child(5)::before{animation-delay:-2.72s}
 
-/* restrained ambient bloom under the tracing edge */
+/* restrained ambient bloom so the trace reads as premium edge light rather than neon */
 .film-scene.is-active .hero-cover,
 .film-scene.is-active .intel-node,
 .film-scene.is-active .margin-note,
+.film-scene.is-active .director-preview,
 .film-scene.is-active .director-controls,
 .film-scene.is-active .edit-preview,
-.film-scene.is-active .edit-timeline{
-  box-shadow:0 18px 50px rgba(0,0,0,.34),0 0 18px rgba(73,96,255,.09),inset 0 0 18px rgba(105,135,255,.025);
+.film-scene.is-active .edit-timeline,
+.film-scene.is-active .preview-frame{
+  box-shadow:0 18px 48px rgba(0,0,0,.34),0 0 14px rgba(73,96,255,.07),inset 0 0 18px rgba(112,154,255,.022);
 }
 
+/* Scene-specific polish */
+.scene-write.is-active .scene-shell{transform:translateY(-1px)}
+.scene-understand .intel-node{backdrop-filter:blur(8px)}
+.scene-covers .hero-cover{backdrop-filter:blur(2px)}
+.scene-direct .director-preview{overflow:hidden;border-radius:18px}
+.scene-direct .director-controls{border-radius:16px}
+.scene-edit .edit-preview,.scene-edit .edit-timeline{border-radius:16px}
+.scene-finish .finish-card{border-radius:16px;overflow:hidden}
+
 @keyframes parableFramerTrace{to{--parable-trace-angle:360deg}}
+@keyframes parableSurfaceSweep{0%,58%{transform:translateX(-52%);opacity:.04}72%{opacity:.34}100%{transform:translateX(58%);opacity:.02}}
+
+@media(max-width:920px){
+  .hero-section{width:min(100% - 30px,900px);padding-top:126px}
+  .hero-copy{max-width:790px}
+  .hero-copy h1{font-size:clamp(48px,8vw,76px);max-width:790px}
+  .hero-film-wrap{width:min(100%,860px);margin-top:46px}
+}
 
 @media(max-width:720px){
-  .hero-film-wrap{width:calc(100% - 28px);margin-top:42px}
-  .hero-film{aspect-ratio:3/2;border-radius:22px 22px 8px 8px}
-  .film-topbar{height:34px;padding:0 11px}
+  .site-nav{height:74px;width:calc(100% - 28px)}
+  .brand{font-size:15px}.brand-mark{width:28px;height:28px}.brand-mark i{height:6px}
+  .nav-text{display:none}.nav-primary{height:42px;padding:0 14px;border-radius:12px;font-size:12px}.menu-btn{width:42px;height:42px}
+  .hero-section{width:100%;padding:112px 18px 0}
+  .hero-copy{max-width:none}
+  .eyebrow{margin-bottom:14px;font-size:9px}
+  .hero-copy h1{font-size:clamp(43px,12.2vw,58px);line-height:.95;letter-spacing:-.055em;max-width:100%}
+  .hero-actions{margin-top:23px;gap:8px;flex-wrap:wrap}
+  .hero-primary,.hero-secondary{height:44px;padding:0 15px;border-radius:12px;font-size:12px}
+  .hero-film-wrap{width:100%;margin-top:36px}
+  .hero-film{aspect-ratio:3/2;border-radius:20px 20px 7px 7px;box-shadow:0 0 0 1px rgba(65,90,255,.09),0 0 28px rgba(54,86,255,.12),0 26px 62px rgba(0,0,0,.48)}
+  .film-aura{inset:-34px 3% auto;height:210px;filter:blur(38px)}
+  .film-topbar{height:34px;padding:0 10px}
   .film-brand{font-size:8px;gap:5px}
   .film-brand small,.film-topcenter{display:none}
   .film-status{font-size:7px}
   .mini-mark{width:12px;height:12px;border-radius:4px}
   .film-stage{top:34px;bottom:30px}
-  .film-bottom{height:30px}
-  .film-play{width:42px;height:42px;font-size:14px}
-  .film-caption{max-width:90%;margin:10px auto 0;font-size:9px;line-height:1.45}
+  .film-bottom{height:30px;padding:0 9px}
+  .film-play{width:40px;height:40px;font-size:13px}
+  .film-caption{max-width:92%;margin:9px auto 0;font-size:8px;line-height:1.45}
+  .trust-strip{height:72px;gap:11px;font-size:8px;letter-spacing:.09em;overflow:hidden}
+  .trust-strip span:nth-of-type(3),.trust-strip span:nth-of-type(4){display:none}
+  .scene-float-label{font-size:7px;max-width:76%;white-space:normal;text-align:center}
 }
 
 @media(prefers-reduced-motion:reduce){
@@ -111,8 +186,14 @@
   .film-scene.is-active .margin-note::before,
   .film-scene.is-active .intel-node::before,
   .film-scene.is-active .hero-cover::before,
+  .film-scene.is-active .director-preview::before,
   .film-scene.is-active .director-controls::before,
   .film-scene.is-active .edit-preview::before,
   .film-scene.is-active .edit-timeline::before,
-  .film-scene.is-active .finish-card::before{animation:none;opacity:.72}
+  .film-scene.is-active .preview-frame::before,
+  .film-scene.is-active .finish-card::before,
+  .film-scene.is-active .scene-shell::after,
+  .film-scene.is-active .hero-cover::after,
+  .film-scene.is-active .director-preview::after,
+  .film-scene.is-active .edit-preview::after{animation:none;opacity:.68}
 }
