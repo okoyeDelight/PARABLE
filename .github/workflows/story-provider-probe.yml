@@ -3,6 +3,12 @@ name: PARABLE Story Provider Probe
 on:
   push:
     branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/story-ai.mts'
+      - 'netlify/functions/adapt.mts'
+      - 'netlify/functions/ai-status.mts'
+      - 'docs/story-intelligence-provider.md'
+      - '.github/workflows/story-provider-probe.yml'
   workflow_dispatch:
 
 permissions:
@@ -18,7 +24,9 @@ jobs:
           PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
         run: |
           set -euo pipefail
-          sleep 50
+          # Netlify deploy previews can report the static bundle before the new
+          # function/environment snapshot is live. Give the server side time to settle.
+          sleep 65
           echo '--- AI STATUS ---'
           curl --fail-with-body --max-time 20 -sS "$PREVIEW_BASE/api/ai-status"
           echo
