@@ -6,7 +6,7 @@ PARABLE keeps the story-to-screen pipeline provider-agnostic. External model cre
 
 - `PARABLE_AI_PROVIDER=auto`
 - `PARABLE_AI_ORDER=openrouter,groq,gemini`
-- `PARABLE_OPENROUTER_MODEL=nex-agi/nex-n2.5-mini:free`
+- `PARABLE_OPENROUTER_MODEL=nvidia/nemotron-3-super-120b-a12b:free`
 - `PARABLE_GROQ_MODEL=openai/gpt-oss-120b`
 - `PARABLE_GROQ_REASONING=high`
 - `PARABLE_GEMINI_MODEL=gemini-3.8-flash`
@@ -35,9 +35,11 @@ With no provider secret configured, `/api/adapt` must fall back truthfully to th
 
 The Deploy Preview has an `OPENROUTER_API_KEY` configured as a secret environment variable and production still has no OpenRouter secret. The first real-model checkpoint succeeded with `nex-agi/nex-n2.5-mini:free`.
 
-A later experiment switched the preview to `dots-studio/dots-3-note-preview:free` because its public availability looked stronger. The deployed probe confirmed the Dots override was active, but the Story Intelligence request returned a 502 before a valid structured response arrived. A rerun was therefore used to distinguish a transient outage from a systematic synchronous-latency problem. Until Dots proves it can complete this full structured Story Intelligence workload inside the deployed request budget, PARABLE keeps Nex as the synchronous free primary rather than claiming Dots is production-ready.
+A Dots3 experiment failed the deployed synchronous probe with a 502. A subsequent Nex retry then hit a 504 under the same large structured payload. That proves the remaining problem is not simply “pick the model with the best availability”; PARABLE must optimize for synchronous end-to-end latency as well as correctness.
 
-Dots remains a candidate for slower asynchronous critic/review work, where a longer-running job can tolerate its latency without blocking the writer experience.
+The current preview therefore tests `nvidia/nemotron-3-super-120b-a12b:free`, which supports JSON-schema structured output and currently has materially lower median end-to-end latency than the Nex Pro family. This is still an experimental free development model, not a permanent production dependency.
+
+The next provider-router revision will prefer multiple free structured-output candidates and keep the local deterministic engine as the final emergency path. Slow models remain candidates for asynchronous critic/review work rather than blocking the writer experience.
 
 ## Acceptance gate before merge
 
