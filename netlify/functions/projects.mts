@@ -95,6 +95,8 @@ export default async (request: Request) => {
     if (!title) return json({ error: 'Story title is required.' }, 400);
 
     const sourceText = String(body.sourceText || '');
+    if (sourceText.length > 120000) return json({ error: 'Story input is too large for this project creation pass.' }, 413);
+
     const setting = String(body.setting || '').trim();
     const primaryAudience = String(body.primaryAudience || '').trim();
     const audienceScope = ['global', 'regional', 'local'].includes(String(body.audienceScope)) ? String(body.audienceScope) : 'global';
@@ -104,11 +106,11 @@ export default async (request: Request) => {
 
     const project = {
       id,
-      title,
+      title: title.slice(0, 160),
       logline: sourceText.trim().slice(0, 180) || 'New story waiting for its first creative analysis.',
       source_text: sourceText || null,
-      setting: setting || null,
-      primary_audience: primaryAudience || null,
+      setting: setting.slice(0, 240) || null,
+      primary_audience: primaryAudience.slice(0, 240) || null,
       audience_scope: audienceScope,
       story_period: storyPeriod,
       status: 'draft',
@@ -118,10 +120,10 @@ export default async (request: Request) => {
     };
 
     const projectContexts = [
-      { context_type: 'audience', label: 'Primary audience', scope_value: primaryAudience || audienceScope, status: 'planned' },
+      { context_type: 'audience', label: 'Primary audience', scope_value: primaryAudience.slice(0, 240) || audienceScope, status: 'planned' },
       { context_type: 'time', label: 'Story period', scope_value: storyPeriod, status: 'planned' }
     ];
-    if (setting) projectContexts.push({ context_type: 'location', label: 'Story setting', scope_value: setting, status: 'planned' });
+    if (setting) projectContexts.push({ context_type: 'location', label: 'Story setting', scope_value: setting.slice(0, 240), status: 'planned' });
 
     await Promise.all([
       projects.setJSON(`project/${id}`, project),
@@ -134,4 +136,11 @@ export default async (request: Request) => {
   return json({ error: 'Method not allowed' }, 405);
 };
 
-export const config = { path: '/api/projects' };
+export const config = {
+  path: '/api/projects',
+  rateLimit: {
+    windowLimit: 30,
+    windowSize: 60,
+    aggregateBy: ['ip', 'domain']
+  }
+};
