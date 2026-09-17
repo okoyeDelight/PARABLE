@@ -2,12 +2,6 @@
   const stage = document.querySelector('#filmStage');
   if (!stage) return;
 
-  /*
-    The hero scenes were authored against the wide inner film stage, not the
-    outer card. Keep that design space fixed and scale the WHOLE composition
-    like object-fit: contain. This prevents mobile media-query reflow from
-    changing the composition and then clipping it a second time.
-  */
   const ARTBOARD_W = 1000;
   const ARTBOARD_H = 475;
 
@@ -34,8 +28,6 @@
         transform:translate(-50%,-50%) scale(var(--film-fit))!important;
       }
 
-      /* Restore the original cinematic composition INSIDE the logical artboard.
-         Mobile should scale the scene, not redesign/crop the scene. */
       .film-stage-contained .write-shell{
         inset:5.8% 5.2%!important;
         grid-template-columns:58px minmax(0,1fr) 205px!important;
@@ -46,10 +38,7 @@
       .film-stage-contained .write-document h3{font-size:25px!important;}
       .film-stage-contained .writing-line{font-size:13px!important;}
       .film-stage-contained .writing-line.lead{font-size:16px!important;}
-      .film-stage-contained .write-margin{
-        display:flex!important;
-        padding:43px 18px!important;
-      }
+      .film-stage-contained .write-margin{display:flex!important;padding:43px 18px!important;}
       .film-stage-contained .scene-float-label{
         bottom:5.3%!important;
         font-size:9px!important;
@@ -69,8 +58,6 @@
       }
       .film-stage-contained .intelligence-copy h3{font-size:clamp(25px,3vw,44px)!important;}
       .film-stage-contained .intelligence-copy p{display:block!important;}
-
-      .film-stage-contained .hero-cover{width:190px!important;height:270px!important;padding:0!important;border-radius:17px!important;}
 
       .film-stage-contained .director-layout{
         inset:6%!important;
@@ -119,40 +106,41 @@
   document.head.appendChild(style);
 
   /*
-    Scene 03 premium stage.
-    The covers are treated like objects on a photographed set, not cards in a
-    carousel: shallow arc, one clear hero, restrained side depth, one moving
-    edge light, and a slow camera drift across the group.
+    Scene 03 final compositor.
+    This deliberately resets every legacy cover transform/entrance rule and
+    places the three posters on one fixed cinematic plane. The mobile viewport
+    scales the entire artboard, so this composition is identical on phone and
+    desktop instead of being re-laid-out by breakpoint CSS.
   */
   const coverStyle = document.createElement('style');
   coverStyle.id = 'parable-premium-cover-stage';
   coverStyle.textContent = `
     .film-stage-contained .scene-covers{
       background:
-        radial-gradient(ellipse 46% 46% at 50% 50%,rgba(72,83,255,.15),transparent 64%),
-        radial-gradient(ellipse 32% 36% at 63% 48%,rgba(111,70,221,.09),transparent 72%),
+        radial-gradient(ellipse 50% 60% at 50% 48%,rgba(58,76,255,.18),transparent 61%),
+        radial-gradient(ellipse 34% 42% at 63% 45%,rgba(117,67,220,.10),transparent 72%),
         linear-gradient(180deg,#08090d 0%,#050609 100%)!important;
     }
 
     .film-stage-contained .scene-covers .cover-space{
       position:absolute!important;
       inset:0!important;
-      perspective:1450px!important;
-      perspective-origin:50% 46%!important;
-      transform-style:preserve-3d!important;
       transform:none!important;
-      isolation:isolate;
+      perspective:1600px!important;
+      perspective-origin:50% 47%!important;
+      transform-style:preserve-3d!important;
+      isolation:isolate!important;
     }
 
     .film-stage-contained .scene-covers .cover-space::before{
       content:'';
       position:absolute;
-      left:16%;right:16%;top:18%;bottom:15%;
+      left:14%;right:14%;top:16%;bottom:10%;
       border-radius:50%;
       background:
-        radial-gradient(ellipse at 50% 48%,rgba(72,93,255,.20),rgba(80,54,185,.09) 34%,transparent 69%);
-      filter:blur(34px);
-      opacity:.82;
+        radial-gradient(ellipse at 50% 48%,rgba(85,101,255,.20),rgba(72,58,171,.08) 38%,transparent 70%);
+      filter:blur(30px);
+      opacity:.92;
       pointer-events:none;
       z-index:0;
     }
@@ -160,137 +148,149 @@
     .film-stage-contained .scene-covers .cover-space::after{
       content:'';
       position:absolute;
-      left:24%;right:24%;bottom:10%;height:42px;
+      left:13%;right:13%;bottom:5%;height:46px;
       border-radius:50%;
-      background:radial-gradient(ellipse,rgba(27,31,55,.55),rgba(5,6,10,0) 72%);
-      filter:blur(9px);
-      transform:scaleX(1.25);
-      opacity:.78;
+      background:radial-gradient(ellipse,rgba(24,28,50,.60),rgba(5,6,10,0) 73%);
+      filter:blur(10px);
+      opacity:.82;
       pointer-events:none;
       z-index:0;
     }
 
     .film-stage-contained .scene-covers .cover-glow{
-      opacity:.20!important;
-      filter:blur(72px)!important;
+      opacity:.17!important;
+      filter:blur(76px)!important;
     }
 
-    .film-stage-contained .scene-covers .hero-cover{
-      top:48%!important;
+    /* Hard reset: legacy .hero-cover opacity/coverArrive can no longer affect this shot. */
+    .film-stage-contained .scene-covers .hero-cover,
+    .film-stage-contained .scene-covers.is-active .hero-cover{
+      opacity:1!important;
+      animation:none!important;
       margin:0!important;
+      padding:0!important;
+      backface-visibility:hidden!important;
       transform-style:preserve-3d!important;
-      backface-visibility:hidden;
-      transition:filter .65s cubic-bezier(.22,1,.36,1),box-shadow .65s cubic-bezier(.22,1,.36,1)!important;
-      will-change:transform,translate,filter;
+      transform-origin:50% 50%!important;
+      will-change:translate,filter!important;
+      transition:none!important;
+    }
+
+    /* One horizontal cinematic plane — no stacking. */
+    .film-stage-contained .scene-covers .cover-left{
+      left:25%!important;
+      top:50%!important;
+      width:210px!important;
+      height:298px!important;
+      z-index:3!important;
+      transform:translate(-50%,-50%) translateZ(-36px) rotateY(8deg) rotateZ(-2deg)!important;
+      translate:0 2px;
+      filter:saturate(.82) brightness(.73) contrast(.98)!important;
+      box-shadow:0 28px 62px rgba(0,0,0,.48)!important;
+      animation:parableSideLeftDrift 5.8s ease-in-out infinite alternate!important;
     }
 
     .film-stage-contained .scene-covers .cover-center{
       left:50%!important;
-      top:46.5%!important;
-      z-index:6!important;
-      transform:translate(-50%,-50%) translateZ(96px) scale(1.07)!important;
-      filter:saturate(.98) brightness(1.02) contrast(1.02)!important;
-      box-shadow:
-        0 42px 90px rgba(0,0,0,.58),
-        0 0 0 1px rgba(172,196,255,.12),
-        0 0 32px rgba(83,107,255,.16)!important;
-      translate:0 -3px;
-      animation:parableHeroCoverFloat 4.8s ease-in-out 1.05s infinite alternate!important;
-    }
-
-    .film-stage-contained .scene-covers .cover-left{
-      left:27.5%!important;
       top:49%!important;
-      z-index:3!important;
-      transform:translate(-50%,-50%) translateZ(-42px) rotateY(14deg) rotateZ(-3deg) scale(.83)!important;
-      filter:saturate(.77) brightness(.67) contrast(.96)!important;
-      box-shadow:0 30px 62px rgba(0,0,0,.46)!important;
-      translate:0 3px;
-      animation:parableSideCoverLeftFloat 5.6s ease-in-out 1.15s infinite alternate!important;
+      width:270px!important;
+      height:382px!important;
+      z-index:7!important;
+      transform:translate(-50%,-50%) translateZ(92px)!important;
+      translate:0 -2px;
+      filter:saturate(.98) brightness(1.02) contrast(1.03)!important;
+      box-shadow:
+        0 44px 94px rgba(0,0,0,.60),
+        0 0 0 1px rgba(175,199,255,.13),
+        0 0 40px rgba(74,98,255,.16)!important;
+      animation:parableHeroDrift 5.1s ease-in-out infinite alternate!important;
     }
 
     .film-stage-contained .scene-covers .cover-right{
-      left:72.5%!important;
-      top:49%!important;
+      left:75%!important;
+      top:50%!important;
+      width:210px!important;
+      height:298px!important;
       z-index:3!important;
-      transform:translate(-50%,-50%) translateZ(-42px) rotateY(-14deg) rotateZ(3deg) scale(.83)!important;
-      filter:saturate(.77) brightness(.67) contrast(.96)!important;
-      box-shadow:0 30px 62px rgba(0,0,0,.46)!important;
-      translate:0 3px;
-      animation:parableSideCoverRightFloat 5.3s ease-in-out 1.2s infinite alternate!important;
+      transform:translate(-50%,-50%) translateZ(-36px) rotateY(-8deg) rotateZ(2deg)!important;
+      translate:0 2px;
+      filter:saturate(.82) brightness(.73) contrast(.98)!important;
+      box-shadow:0 28px 62px rgba(0,0,0,.48)!important;
+      animation:parableSideRightDrift 5.5s ease-in-out infinite alternate!important;
     }
 
-    /* Only the focal cover gets the bright Framer-like perimeter comet. */
+    /* Active focus hierarchy: only the hero poster gets the bright perimeter comet. */
     .film-stage-contained .scene-covers.is-active .cover-left::before,
     .film-stage-contained .scene-covers.is-active .cover-right::before{
-      opacity:.10!important;
-      filter:drop-shadow(0 0 2px rgba(155,190,255,.28)) drop-shadow(0 0 7px rgba(87,111,255,.10))!important;
+      opacity:.08!important;
+      animation:parableFramerTrace 5.2s linear infinite!important;
+      filter:drop-shadow(0 0 2px rgba(154,190,255,.22)) drop-shadow(0 0 7px rgba(78,99,255,.08))!important;
     }
     .film-stage-contained .scene-covers.is-active .cover-center::before{
       opacity:1!important;
-      filter:drop-shadow(0 0 2px rgba(220,239,255,.98)) drop-shadow(0 0 8px rgba(112,189,255,.68)) drop-shadow(0 0 18px rgba(83,102,255,.25))!important;
+      animation:parableFramerTrace 3.65s linear infinite!important;
+      filter:drop-shadow(0 0 2px rgba(224,241,255,.98)) drop-shadow(0 0 8px rgba(119,193,255,.72)) drop-shadow(0 0 20px rgba(78,98,255,.28))!important;
     }
 
-    /* One calm glass reflection instead of multiple competing effects. */
-    .film-stage-contained .scene-covers .hero-cover::after{
-      opacity:.16!important;
-    }
-    .film-stage-contained .scene-covers .cover-center::after{
-      opacity:.34!important;
-    }
+    .film-stage-contained .scene-covers .hero-cover::after{opacity:.13!important;}
+    .film-stage-contained .scene-covers .cover-center::after{opacity:.32!important;}
 
     .film-stage-contained .scene-covers .cover-copy{
-      padding:18px 17px 17px!important;
-      background:linear-gradient(180deg,transparent 0%,rgba(3,4,7,.12) 18%,rgba(3,4,7,.78) 59%,rgba(3,4,7,.96) 100%)!important;
+      padding:20px 18px 18px!important;
+      background:linear-gradient(180deg,transparent 0%,rgba(3,4,7,.10) 18%,rgba(3,4,7,.80) 59%,rgba(3,4,7,.97) 100%)!important;
     }
     .film-stage-contained .scene-covers .cover-copy small{
-      margin-bottom:38px!important;
-      opacity:.72;
+      margin-bottom:44px!important;
+      opacity:.72!important;
     }
-    .film-stage-contained .scene-covers .cover-copy b{
-      letter-spacing:-.045em!important;
-      text-wrap:balance;
+    .film-stage-contained .scene-covers .cover-center .cover-copy b{
+      font-size:30px!important;
+      line-height:.91!important;
+    }
+    .film-stage-contained .scene-covers .cover-left .cover-copy b,
+    .film-stage-contained .scene-covers .cover-right .cover-copy b{
+      font-size:22px!important;
+      line-height:.92!important;
     }
 
-    /* Atmospheric lens pass: deliberately slow and almost invisible. */
+    .film-stage-contained .scene-covers .scene-float-label{
+      bottom:3.6%!important;
+      z-index:12!important;
+      color:rgba(205,211,226,.56)!important;
+    }
+
     .film-stage-contained .scene-covers::after{
       content:'';
       position:absolute;
-      width:38%;height:150%;
-      left:-18%;top:-25%;
-      background:linear-gradient(96deg,transparent 25%,rgba(154,189,255,.025) 42%,rgba(255,255,255,.055) 49%,rgba(122,162,255,.025) 56%,transparent 72%);
+      width:35%;height:150%;
+      left:-22%;top:-25%;
+      background:linear-gradient(96deg,transparent 25%,rgba(154,189,255,.02) 42%,rgba(255,255,255,.055) 49%,rgba(122,162,255,.02) 56%,transparent 72%);
       filter:blur(5px);
       transform:rotate(9deg) translateX(-35%);
       mix-blend-mode:screen;
       pointer-events:none;
-      z-index:8;
+      z-index:9;
     }
     .film-stage-contained .scene-covers.is-active::after{
-      animation:parableCoverLensPass 4.8s cubic-bezier(.22,.61,.36,1) infinite;
+      animation:parableCoverLensPass 5.1s cubic-bezier(.22,.61,.36,1) infinite;
     }
 
-    @keyframes parableHeroCoverFloat{
-      from{translate:0 -3px;}
+    @keyframes parableHeroDrift{
+      from{translate:0 -2px;}
       to{translate:0 4px;}
     }
-    @keyframes parableSideCoverLeftFloat{
-      from{translate:0 3px;}
+    @keyframes parableSideLeftDrift{
+      from{translate:0 2px;}
       to{translate:-3px -2px;}
     }
-    @keyframes parableSideCoverRightFloat{
-      from{translate:0 3px;}
-      to{translate:3px -1px;}
+    @keyframes parableSideRightDrift{
+      from{translate:0 2px;}
+      to{translate:3px -2px;}
     }
     @keyframes parableCoverLensPass{
-      0%,54%{transform:rotate(9deg) translateX(-42%);opacity:0;}
-      66%{opacity:.72;}
-      100%{transform:rotate(9deg) translateX(360%);opacity:0;}
-    }
-
-    @media(max-width:720px){
-      .film-stage-contained .scene-covers .cover-left{left:28.5%!important;transform:translate(-50%,-50%) translateZ(-36px) rotateY(11deg) rotateZ(-2.4deg) scale(.84)!important;}
-      .film-stage-contained .scene-covers .cover-right{left:71.5%!important;transform:translate(-50%,-50%) translateZ(-36px) rotateY(-11deg) rotateZ(2.4deg) scale(.84)!important;}
-      .film-stage-contained .scene-covers .cover-center{transform:translate(-50%,-50%) translateZ(82px) scale(1.055)!important;}
+      0%,56%{transform:rotate(9deg) translateX(-45%);opacity:0;}
+      69%{opacity:.68;}
+      100%{transform:rotate(9deg) translateX(390%);opacity:0;}
     }
 
     @media(prefers-reduced-motion:reduce){
