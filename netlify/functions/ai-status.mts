@@ -20,26 +20,28 @@ export default async (request: Request) => {
     .map((value) => value.trim())
     .filter((value) => allowedProviders.includes(value));
   const order = [...configuredOrder, ...allowedProviders.filter((value) => !configuredOrder.includes(value))];
+  const openrouterModels = String(process.env.PARABLE_OPENROUTER_MODELS || process.env.PARABLE_OPENROUTER_MODEL || 'stealth/union-alpha,nex-agi/nex-n2.5-mini:free')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, 2);
 
   return json({
     story_intelligence: {
       ready: openrouter || groq || gemini,
       preferred,
       provider_order: order,
-      configured_providers: {
-        openrouter,
-        groq,
-        gemini
-      },
+      configured_providers: { openrouter, groq, gemini },
       provider_models: {
-        openrouter: process.env.PARABLE_OPENROUTER_MODEL || 'openrouter/free',
+        openrouter: openrouterModels,
         groq: process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b',
         gemini: process.env.PARABLE_GEMINI_MODEL || 'gemini-3.8-flash'
       },
       fallback_available: true,
-      version: 'story-intelligence-v5',
+      version: 'story-intelligence-v6',
       privacy: {
-        openrouter_data_collection_denied: true,
+        openrouter_no_training_routing_requested: true,
+        openrouter_note: 'Free development routing may still retain request data at a provider; confidential manuscripts require a stronger launch privacy tier.',
         gemini_store_disabled: true,
         secrets_exposed_to_client: false
       }
