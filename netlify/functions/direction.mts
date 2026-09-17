@@ -16,6 +16,7 @@ function store() {
 }
 
 const clean = (value: unknown) => String(value ?? '').trim();
+const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 const allowedLens = new Set([12, 14, 16, 18, 20, 24, 28, 32, 35, 40, 50, 65, 75, 85, 100, 135, 200]);
 
 export default async (request: Request) => {
@@ -27,11 +28,13 @@ export default async (request: Request) => {
     const url = new URL(request.url);
     const projectId = clean(url.searchParams.get('projectId'));
     const storyVersion = clean(url.searchParams.get('storyVersion'));
-    if (!projectId || !storyVersion) return json({ error: 'projectId and storyVersion are required.' }, 400);
+    if (!projectId || !storyVersion || !safeId(projectId) || !safeId(storyVersion)) {
+      return json({ error: 'A valid projectId and storyVersion are required.' }, 400);
+    }
 
     const prefix = `project/${projectId}/${storyVersion}/`;
     const { blobs } = await directions.list({ prefix });
-    const items = (await Promise.all(blobs.map(({ key }) => directions.get(key, { type: 'json' })))).filter(Boolean);
+    const items = (await Promise.all(blobs.slice(0, 100).map(({ key }) => directions.get(key, { type: 'json' })))).filter(Boolean);
     return json({ project_id: projectId, story_version: storyVersion, directions: items });
   }
 
@@ -45,8 +48,8 @@ export default async (request: Request) => {
   const blocking = clean(body.blocking);
   const lens = Number(body.lens_mm);
 
-  if (!projectId || !storyVersion || !shotId) {
-    return json({ error: 'projectId, storyVersion and shotId are required.' }, 400);
+  if (!projectId || !storyVersion || !shotId || !safeId(projectId) || !safeId(storyVersion) || !safeId(shotId)) {
+    return json({ error: 'Valid projectId, storyVersion and shotId are required.' }, 400);
   }
   if (!allowedLens.has(lens)) return json({ error: 'Unsupported lens value.' }, 400);
   if (motion.length > 120 || lighting.length > 160 || performance.length > 240 || blocking.length > 320) {
@@ -69,4 +72,11 @@ export default async (request: Request) => {
   return json(value, 201);
 };
 
-export const config = { path: '/api/direction' };
+export const config = {
+  path: '/api/direction',
+  rateLimit: {
+    windowLimit: 120,
+    windowSize: 60,
+    aggregateBy: ['ip', 'domain']
+  }
+};
