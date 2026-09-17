@@ -3,136 +3,135 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#f4f1ea" />
-  <meta name="color-scheme" content="light" />
+  <meta name="theme-color" content="#050505" />
+  <meta name="color-scheme" content="dark" />
   <title>PARABLE — Stories made visible</title>
+  <meta name="description" content="PARABLE is a story-to-screen studio for writers, directors and Christian storytellers." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="ambient ambient-one" aria-hidden="true"></div>
-  <div class="ambient ambient-two" aria-hidden="true"></div>
-  <div class="noise" aria-hidden="true"></div>
+  <div class="page-grain" aria-hidden="true"></div>
 
-  <header class="global-nav">
-    <a class="brand" href="#" aria-label="PARABLE home">
-      <span class="brand-symbol">P</span>
-      <span class="brand-word">PARABLE</span>
+  <header class="site-nav" id="siteNav">
+    <a class="brand" href="#top" aria-label="PARABLE home">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>PARABLE</span>
     </a>
-    <nav class="desktop-nav" aria-label="Studio navigation">
-      <button class="nav-link active">Studio</button>
-      <button class="nav-link">Stories</button>
-      <button class="nav-link">Worlds</button>
-      <button class="nav-link">Writers</button>
-    </nav>
-    <div class="nav-actions">
-      <button class="glass-icon" id="searchBtn" aria-label="Search"><span>⌕</span></button>
-      <button id="newStoryBtn" class="create-btn"><span>＋</span><b>New story</b></button>
+    <div class="nav-right">
+      <button class="nav-text" id="studioJump">Enter studio</button>
+      <button class="nav-primary" id="newStoryBtn">Start a story</button>
+      <button class="menu-btn" id="menuBtn" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open menu"><span></span><span></span><span></span></button>
     </div>
   </header>
 
-  <main class="studio-shell">
-    <section class="welcome reveal">
-      <p class="kicker">Your studio</p>
-      <h1>Good evening.<br><em>What are we bringing to life?</em></h1>
-    </section>
+  <div class="mobile-menu" id="mobileMenu" hidden>
+    <button data-jump="#heroFilm">How it works</button>
+    <button data-jump="#productions">Productions</button>
+    <button id="mobileNewStory">Start a story</button>
+  </div>
 
-    <section id="featuredStage" class="featured-stage reveal" aria-live="polite">
-      <div class="featured-loading">Preparing your studio…</div>
-    </section>
-
-    <section class="shelf-section reveal">
-      <div class="section-title-row">
-        <div>
-          <p class="kicker">Continue creating</p>
-          <h2>Your productions</h2>
+  <main id="top">
+    <section class="hero-section">
+      <div class="hero-copy">
+        <p class="eyebrow">STORY → SCREEN</p>
+        <h1>PARABLE is the story studio for every step from idea to screen</h1>
+        <div class="hero-actions">
+          <button class="hero-primary" id="heroStart">Start a story</button>
+          <button class="hero-secondary" id="heroStudio">Enter studio <span>↓</span></button>
         </div>
-        <button class="quiet-action" id="seeAllBtn">See all <span>→</span></button>
       </div>
-      <div class="story-shelf-wrap">
-        <div id="storyShelf" class="story-shelf"><div class="shelf-loading">Loading stories…</div></div>
+
+      <section class="hero-film-wrap" id="heroFilm" aria-label="PARABLE product film prototype">
+        <div class="film-aura" aria-hidden="true"></div>
+        <div class="hero-film" id="filmFrame">
+          <div class="film-topbar">
+            <div class="film-brand"><span class="mini-mark"></span><b>PARABLE</b><small>Story Studio</small></div>
+            <div class="film-status"><span></span>Live production</div>
+          </div>
+
+          <div class="film-workspace">
+            <aside class="script-pane">
+              <div class="pane-label">MANUSCRIPT</div>
+              <h3>The Altar</h3>
+              <p class="script-line strong">The room fell quiet.</p>
+              <p class="script-line">Daniel looked at the empty chair across from him.</p>
+              <p class="script-line">Outside, rain touched the windows like fingertips.</p>
+              <div class="analysis-chip"><i></i><span>Story intelligence</span></div>
+              <div class="ghost-lines"><span></span><span></span><span></span></div>
+            </aside>
+
+            <div class="cinema-pane">
+              <div class="cinema-toolbar">
+                <span class="active">Story</span><span>World</span><span>Scene</span><span>Screen</span>
+              </div>
+              <div class="scene-stage">
+                <div class="scene-grid" aria-hidden="true"></div>
+                <div class="scene-light light-a" aria-hidden="true"></div>
+                <div class="scene-light light-b" aria-hidden="true"></div>
+                <div class="cover cover-back" id="filmCover3"><small>PARABLE ORIGINAL</small><b>The Watchman</b></div>
+                <div class="cover cover-mid" id="filmCover2"><small>PARABLE ORIGINAL</small><b>Before I Said Yes</b></div>
+                <div class="cover cover-front" id="filmCover1"><small>PARABLE ORIGINAL</small><b>The Altar</b><em>Story → Screen</em></div>
+                <div class="scene-caption"><span>SCENE 07</span><strong>Silence becomes the turning point.</strong></div>
+              </div>
+              <div class="timeline">
+                <div class="timeline-ruler"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="track"><span class="clip clip-a">INT. ROOM</span><span class="clip clip-b">REACTION</span><span class="clip clip-c">REVEAL</span></div>
+                <div class="playhead"></div>
+              </div>
+            </div>
+
+            <aside class="director-pane">
+              <div class="pane-label">AI DIRECTOR</div>
+              <div class="director-card"><span>Shot</span><strong>Slow push-in</strong></div>
+              <div class="director-card"><span>Lens</span><strong>50 mm</strong></div>
+              <div class="director-card"><span>Light</span><strong>Window soft</strong></div>
+              <div class="director-card"><span>Emotion</span><strong>Held breath</strong></div>
+              <div class="director-note"><i></i><p>Delay the reveal. Let the reaction land first.</p></div>
+            </aside>
+          </div>
+
+          <button class="film-play" id="filmPlay" type="button" aria-label="Play or pause PARABLE product film" aria-pressed="true"><span class="pause-icon">Ⅱ</span><span class="play-icon">▶</span></button>
+          <div class="film-progress" aria-hidden="true"><span></span></div>
+        </div>
+        <p class="film-caption">A live motion prototype of the PARABLE studio. The final cinematic footage will replace this slot after visual approval.</p>
+      </section>
+
+      <div class="trust-strip" aria-label="PARABLE workflow">
+        <span>WRITE</span><i></i><span>ADAPT</span><i></i><span>DIRECT</span><i></i><span>GENERATE</span><i></i><span>FINISH</span>
       </div>
     </section>
 
-    <section class="context-section reveal">
-      <div class="section-title-row compact">
-        <div>
-          <p class="kicker">Studio intelligence</p>
-          <h2>Everything behind the frame.</h2>
-        </div>
-        <p class="section-copy">Separate creative brains work together so the story stays human, grounded and directable.</p>
+    <section class="statement-section" id="productions">
+      <div class="statement-inner">
+        <p class="eyebrow">THE STUDIO</p>
+        <h2>A studio that works alongside the writer, not instead of the writer.</h2>
+        <button class="quiet-cta" id="statementStart">Start with your story <span>→</span></button>
       </div>
-      <div id="engineRail" class="engine-rail"></div>
     </section>
 
-    <section class="now-section reveal">
-      <div class="now-card">
-        <div class="now-orb" aria-hidden="true"><span></span></div>
-        <div class="now-copy">
-          <p class="kicker">Living context</p>
-          <h2>The world outside your script keeps moving.</h2>
-          <p>PARABLE is being built to understand place, culture and the current moment before it adapts a story — without making the writer become a prompt engineer.</p>
-        </div>
-        <button class="round-arrow" aria-label="Explore context">↗</button>
+    <section class="production-section">
+      <div class="production-head">
+        <div><p class="eyebrow">IN DEVELOPMENT</p><h2>Stories already becoming worlds.</h2></div>
+        <p>These come directly from the PARABLE backend. Stage 2 will turn this rail into the spatial Spline-style story universe.</p>
       </div>
+      <div class="production-rail" id="productionRail"><div class="loading-card">Loading productions…</div></div>
     </section>
   </main>
 
-  <nav class="mobile-dock" aria-label="Mobile navigation">
-    <button class="dock-item active"><span>◐</span><small>Studio</small></button>
-    <button class="dock-item"><span>▤</span><small>Stories</small></button>
-    <button class="dock-create" id="mobileNewStory" aria-label="New story">＋</button>
-    <button class="dock-item"><span>⌖</span><small>Worlds</small></button>
-    <button class="dock-item"><span>◌</span><small>Writers</small></button>
-  </nav>
-
-  <div id="storyView" class="story-view" aria-hidden="true">
-    <div class="story-view-backdrop"></div>
-    <article class="story-view-panel">
-      <button id="closeStoryView" class="story-close" aria-label="Close story">×</button>
-      <div id="storyViewArt" class="story-view-art"></div>
-      <div class="story-view-body">
-        <div class="story-view-meta"><span id="detailStatus"></span><span id="detailUpdated"></span></div>
-        <h2 id="detailTitle"></h2>
-        <p id="detailLogline" class="detail-logline"></p>
-        <div class="detail-context">
-          <div><small>World</small><strong id="detailSetting"></strong></div>
-          <div><small>Audience</small><strong id="detailAudience"></strong></div>
-          <div><small>Development</small><strong id="detailProgress"></strong></div>
-        </div>
-        <div class="detail-progress"><span id="detailProgressBar"></span></div>
-        <div class="detail-actions">
-          <button class="detail-primary">Continue story <span>→</span></button>
-          <button class="detail-secondary">•••</button>
-        </div>
-      </div>
-    </article>
-  </div>
-
   <dialog id="storyDialog" class="story-dialog">
     <form id="storyForm" method="dialog">
-      <div class="sheet-handle" aria-hidden="true"></div>
-      <div class="dialog-head">
-        <div><p class="kicker">New production</p><h2>Begin with the story.</h2></div>
-        <button type="button" id="closeDialog" class="dialog-close" aria-label="Close">×</button>
-      </div>
-      <p class="dialog-copy">Write normally. PARABLE will understand the world around the story later — culture, location, audience and the moment it belongs to.</p>
+      <div class="dialog-top"><div><p class="eyebrow">NEW PRODUCTION</p><h2>Begin with the story.</h2></div><button type="button" id="closeDialog" class="dialog-close" aria-label="Close">×</button></div>
+      <p class="dialog-copy">Write naturally. PARABLE will build the production intelligence around your story without turning you into a prompt engineer.</p>
       <div class="form-stack">
         <label><span>Title</span><input name="title" required placeholder="The Altar" autocomplete="off" /></label>
         <label><span>Story, synopsis or rough idea</span><textarea name="sourceText" rows="6" placeholder="Start wherever the story begins…"></textarea></label>
-        <div class="form-grid">
-          <label><span>Story setting</span><input name="setting" placeholder="Benin City, Nigeria" /></label>
-          <label><span>Primary audience</span><input name="primaryAudience" placeholder="Global Christian young adults" /></label>
-        </div>
-        <div class="segmented-row">
-          <label><span>Audience reach</span><select name="audienceScope"><option value="global">Global</option><option value="regional">Regional</option><option value="local">Local</option></select></label>
-          <label><span>Time</span><select name="storyPeriod"><option value="present">Present day</option><option value="historical">Historical</option><option value="future">Future</option></select></label>
-        </div>
+        <div class="form-grid"><label><span>Story setting</span><input name="setting" placeholder="Benin City, Nigeria" /></label><label><span>Primary audience</span><input name="primaryAudience" placeholder="Global Christian young adults" /></label></div>
+        <div class="form-grid"><label><span>Audience reach</span><select name="audienceScope"><option value="global">Global</option><option value="regional">Regional</option><option value="local">Local</option></select></label><label><span>Story period</span><select name="storyPeriod"><option value="present">Present day</option><option value="historical">Historical</option><option value="future">Future</option></select></label></div>
       </div>
-      <div class="context-whisper"><span>✦</span><p>Location and cultural grounding will become richer as the studio intelligence comes online.</p></div>
-      <div class="dialog-actions"><button type="button" id="cancelDialog" class="cancel-btn">Cancel</button><button type="submit" class="submit-btn">Create production <span>→</span></button></div>
+      <div class="dialog-actions"><button type="button" id="cancelDialog" class="dialog-cancel">Cancel</button><button type="submit" class="dialog-submit">Create production <span>→</span></button></div>
     </form>
   </dialog>
 
