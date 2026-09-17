@@ -27,4 +27,11 @@ export default async (request: Request) => {
   });
 };
 
-export const config = { path: '/api/ai-status' };
+export const config = {
+  path: '/api/ai-status',
+  rateLimit: {
+    windowLimit: 120,
+    windowSize: 60,
+    aggregateBy: ['ip', 'domain']
+  }
+};
