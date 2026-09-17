@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#050505" />
-  <meta name="color-scheme" content="dark" />
+  <meta name="color-scheme" content="light" />
   <title>PARABLE — Stories made visible</title>
   <meta name="description" content="PARABLE is a story-to-screen studio for writers, directors and Christian storytellers." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -21,7 +21,7 @@
       <span>PARABLE</span>
     </a>
     <div class="nav-right">
-      <button class="nav-text" id="studioJump">Enter studio</button>
+      <button class="nav-text" id="studioJump">Studio</button>
       <button class="nav-primary" id="newStoryBtn">Start a story</button>
       <button class="menu-btn" id="menuBtn" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open menu"><span></span><span></span><span></span></button>
     </div>
@@ -40,82 +40,143 @@
         <h1>PARABLE is the story studio for every step from idea to screen</h1>
         <div class="hero-actions">
           <button class="hero-primary" id="heroStart">Start a story</button>
-          <button class="hero-secondary" id="heroStudio">Enter studio <span>↓</span></button>
+          <button class="hero-secondary" id="heroStudio">See the studio <span>↓</span></button>
         </div>
       </div>
 
-      <section class="hero-film-wrap" id="heroFilm" aria-label="PARABLE product film prototype">
+      <section class="hero-film-wrap" id="heroFilm" aria-label="PARABLE cinematic product film">
         <div class="film-aura" aria-hidden="true"></div>
-        <div class="hero-film" id="filmFrame">
+        <div class="hero-film" id="filmFrame" data-scene="1">
+          <canvas id="filmFx" class="film-fx" aria-hidden="true"></canvas>
+          <div class="film-vignette" aria-hidden="true"></div>
+
           <div class="film-topbar">
             <div class="film-brand"><span class="mini-mark"></span><b>PARABLE</b><small>Story Studio</small></div>
+            <div class="film-topcenter"><span id="filmPhase">Write</span></div>
             <div class="film-status"><span></span>Live production</div>
           </div>
 
-          <div class="film-workspace">
-            <aside class="script-pane">
-              <div class="pane-label">MANUSCRIPT</div>
-              <h3>The Altar</h3>
-              <p class="script-line strong">The room fell quiet.</p>
-              <p class="script-line">Daniel looked at the empty chair across from him.</p>
-              <p class="script-line">Outside, rain touched the windows like fingertips.</p>
-              <div class="analysis-chip"><i></i><span>Story intelligence</span></div>
-              <div class="ghost-lines"><span></span><span></span><span></span></div>
-            </aside>
+          <div class="film-stage" id="filmStage">
+            <section class="film-scene scene-write is-active" aria-hidden="false">
+              <div class="scene-shell write-shell">
+                <div class="write-sidebar"><span class="ui-dot"></span><span></span><span></span><span></span><span></span></div>
+                <div class="write-document">
+                  <div class="micro-label">MANUSCRIPT · THE ALTAR</div>
+                  <h3>Chapter seven</h3>
+                  <p class="writing-line lead">The room fell quiet.</p>
+                  <p class="writing-line">Daniel looked at the empty chair across from him.</p>
+                  <p class="writing-line">Outside, rain touched the windows like fingertips.</p>
+                  <p class="writing-line dim">He had prayed for an answer. He had not expected silence.</p>
+                  <span class="writing-caret" aria-hidden="true"></span>
+                </div>
+                <div class="write-margin">
+                  <div class="margin-note"><i></i><span>Conflict detected</span></div>
+                  <div class="margin-note"><i></i><span>Emotional turn</span></div>
+                  <div class="margin-note"><i></i><span>Faith thread</span></div>
+                </div>
+              </div>
+              <div class="scene-float-label">Write naturally. PARABLE begins listening.</div>
+            </section>
 
-            <div class="cinema-pane">
-              <div class="cinema-toolbar">
-                <span class="active">Story</span><span>World</span><span>Scene</span><span>Screen</span>
+            <section class="film-scene scene-understand" aria-hidden="true">
+              <div class="intelligence-orbit" aria-hidden="true">
+                <div class="orbit orbit-a"></div><div class="orbit orbit-b"></div><div class="orbit orbit-c"></div>
+                <div class="core-mark"><span class="mini-mark large"></span></div>
+                <div class="intel-node n1"><small>CHARACTER</small><b>Daniel</b></div>
+                <div class="intel-node n2"><small>THEME</small><b>Surrender</b></div>
+                <div class="intel-node n3"><small>WORLD</small><b>Awka · Present</b></div>
+                <div class="intel-node n4"><small>CONFLICT</small><b>Calling vs fear</b></div>
+                <div class="intel-node n5"><small>FAITH THREAD</small><b>Waiting</b></div>
               </div>
-              <div class="scene-stage">
-                <div class="scene-grid" aria-hidden="true"></div>
-                <div class="scene-light light-a" aria-hidden="true"></div>
-                <div class="scene-light light-b" aria-hidden="true"></div>
-                <div class="cover cover-back" id="filmCover3"><small>PARABLE ORIGINAL</small><b>The Watchman</b></div>
-                <div class="cover cover-mid" id="filmCover2"><small>PARABLE ORIGINAL</small><b>Before I Said Yes</b></div>
-                <div class="cover cover-front" id="filmCover1"><small>PARABLE ORIGINAL</small><b>The Altar</b><em>Story → Screen</em></div>
-                <div class="scene-caption"><span>SCENE 07</span><strong>Silence becomes the turning point.</strong></div>
-              </div>
-              <div class="timeline">
-                <div class="timeline-ruler"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                <div class="track"><span class="clip clip-a">INT. ROOM</span><span class="clip clip-b">REACTION</span><span class="clip clip-c">REVEAL</span></div>
-                <div class="playhead"></div>
-              </div>
-            </div>
+              <div class="intelligence-copy"><span>STORY INTELLIGENCE</span><h3>PARABLE understands the story before it touches the screen.</h3><p>Characters, themes, world, conflict and spiritual context stay connected.</p></div>
+            </section>
 
-            <aside class="director-pane">
-              <div class="pane-label">AI DIRECTOR</div>
-              <div class="director-card"><span>Shot</span><strong>Slow push-in</strong></div>
-              <div class="director-card"><span>Lens</span><strong>50 mm</strong></div>
-              <div class="director-card"><span>Light</span><strong>Window soft</strong></div>
-              <div class="director-card"><span>Emotion</span><strong>Held breath</strong></div>
-              <div class="director-note"><i></i><p>Delay the reveal. Let the reaction land first.</p></div>
-            </aside>
+            <section class="film-scene scene-covers" aria-hidden="true">
+              <div class="cover-space">
+                <div class="cover-glow g1"></div><div class="cover-glow g2"></div>
+                <article class="hero-cover cover-left" id="heroCoverB"><small>PARABLE ORIGINAL</small><b>Before I Said Yes</b><em>Love · Calling · Conviction</em></article>
+                <article class="hero-cover cover-center" id="heroCoverA"><small>PARABLE ORIGINAL</small><b>The Altar</b><em>Faith · Drama</em></article>
+                <article class="hero-cover cover-right" id="heroCoverC"><small>PARABLE ORIGINAL</small><b>The Watchman</b><em>Campus · Mystery</em></article>
+              </div>
+              <div class="scene-float-label">One manuscript becomes a world you can enter.</div>
+            </section>
+
+            <section class="film-scene scene-direct" aria-hidden="true">
+              <div class="director-layout">
+                <div class="director-preview">
+                  <div class="camera-grid"></div>
+                  <div class="window-light"></div>
+                  <div class="actor-silhouette"></div>
+                  <div class="focus-box"><span></span><span></span><span></span><span></span></div>
+                  <div class="shot-caption"><small>SCENE 07 · SHOT 12</small><strong id="sceneStoryTitle">The Altar</strong></div>
+                </div>
+                <div class="director-controls">
+                  <p>AI DIRECTOR</p>
+                  <div><span>Camera</span><b>Slow push-in</b></div>
+                  <div><span>Lens</span><b>50 mm · shallow</b></div>
+                  <div><span>Light</span><b>Window soft · dusk</b></div>
+                  <div><span>Performance</span><b>Hold the breath</b></div>
+                  <blockquote>Delay the reveal. Let the reaction land first.</blockquote>
+                </div>
+              </div>
+            </section>
+
+            <section class="film-scene scene-edit" aria-hidden="true">
+              <div class="edit-preview">
+                <div class="preview-frame pf-a"><span>01</span></div>
+                <div class="preview-frame pf-b"><span>02</span></div>
+                <div class="preview-frame pf-c"><span>03</span></div>
+                <div class="edit-playhead"></div>
+              </div>
+              <div class="edit-timeline">
+                <div class="timecodes"><span>00:00</span><span>00:03</span><span>00:06</span><span>00:09</span></div>
+                <div class="video-track"><i class="clip-a"></i><i class="clip-b"></i><i class="clip-c"></i></div>
+                <div class="audio-track"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+              </div>
+              <div class="edit-copy"><span>EDIT</span><strong>Every beat stays directable.</strong></div>
+            </section>
+
+            <section class="film-scene scene-finish" aria-hidden="true">
+              <div class="finish-mosaic" aria-hidden="true">
+                <div class="finish-card fc-a"><span></span></div>
+                <div class="finish-card fc-b"><span></span></div>
+                <div class="finish-card fc-c"><span></span></div>
+                <div class="finish-card fc-d"><span></span></div>
+                <div class="finish-card fc-e"><span></span></div>
+              </div>
+              <div class="finish-copy"><span class="mini-mark finish-mark"></span><h3>Stories made visible.</h3><p>From the first line to the final frame.</p></div>
+            </section>
           </div>
 
           <button class="film-play" id="filmPlay" type="button" aria-label="Play or pause PARABLE product film" aria-pressed="true"><span class="pause-icon">Ⅱ</span><span class="play-icon">▶</span></button>
-          <div class="film-progress" aria-hidden="true"><span></span></div>
+
+          <div class="film-bottom">
+            <div class="film-counter" id="filmCounter">01 / 06</div>
+            <div class="film-progress" aria-hidden="true"><span id="filmProgressBar"></span></div>
+            <div class="film-note">Original PARABLE motion system · rendered live</div>
+          </div>
         </div>
-        <p class="film-caption">A live motion prototype of the PARABLE studio. The final cinematic footage will replace this slot after visual approval.</p>
+        <p class="film-caption">This is not generated footage. It is PARABLE's own cinematic product film running live in the browser.</p>
       </section>
 
       <div class="trust-strip" aria-label="PARABLE workflow">
-        <span>WRITE</span><i></i><span>ADAPT</span><i></i><span>DIRECT</span><i></i><span>GENERATE</span><i></i><span>FINISH</span>
+        <span>WRITE</span><i></i><span>UNDERSTAND</span><i></i><span>BUILD THE WORLD</span><i></i><span>DIRECT</span><i></i><span>FINISH</span>
       </div>
     </section>
 
     <section class="statement-section" id="productions">
       <div class="statement-inner">
-        <p class="eyebrow">THE STUDIO</p>
+        <p class="eyebrow dark">THE STUDIO</p>
         <h2>A studio that works alongside the writer, not instead of the writer.</h2>
+        <p class="statement-copy">PARABLE keeps authorship with the storyteller while giving every production a director, story brain, cultural context and visual world.</p>
         <button class="quiet-cta" id="statementStart">Start with your story <span>→</span></button>
       </div>
     </section>
 
     <section class="production-section">
       <div class="production-head">
-        <div><p class="eyebrow">IN DEVELOPMENT</p><h2>Stories already becoming worlds.</h2></div>
-        <p>These come directly from the PARABLE backend. Stage 2 will turn this rail into the spatial Spline-style story universe.</p>
+        <div><p class="eyebrow dark">IN DEVELOPMENT</p><h2>Stories already becoming worlds.</h2></div>
+        <p>These are live from the PARABLE backend. The next build stage will turn this rail into the interactive spatial cover system from your Spline reference.</p>
       </div>
       <div class="production-rail" id="productionRail"><div class="loading-card">Loading productions…</div></div>
     </section>
@@ -123,7 +184,7 @@
 
   <dialog id="storyDialog" class="story-dialog">
     <form id="storyForm" method="dialog">
-      <div class="dialog-top"><div><p class="eyebrow">NEW PRODUCTION</p><h2>Begin with the story.</h2></div><button type="button" id="closeDialog" class="dialog-close" aria-label="Close">×</button></div>
+      <div class="dialog-top"><div><p class="eyebrow dark">NEW PRODUCTION</p><h2>Begin with the story.</h2></div><button type="button" id="closeDialog" class="dialog-close" aria-label="Close">×</button></div>
       <p class="dialog-copy">Write naturally. PARABLE will build the production intelligence around your story without turning you into a prompt engineer.</p>
       <div class="form-stack">
         <label><span>Title</span><input name="title" required placeholder="The Altar" autocomplete="off" /></label>
@@ -136,6 +197,7 @@
   </dialog>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/hero-film.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
