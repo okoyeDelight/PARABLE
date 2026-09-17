@@ -246,8 +246,7 @@ export function sanitizeUnderstanding(value: Record<string, any>, input: Underst
 }
 
 export function benchmarkLaneEnabled() {
-  const production = Netlify.context?.deploy?.context === 'production';
-  return !production && env('PARABLE_ENABLE_BENCHMARK_LANE') === 'true';
+  return Netlify.context?.deploy?.context === 'deploy-preview';
 }
 
 function openRouterProvider(lane: AILane) {
