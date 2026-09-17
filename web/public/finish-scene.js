@@ -1,183 +1,114 @@
 (() => {
-  const scene = document.querySelector('.scene-finish');
-  const mosaic = scene?.querySelector('.finish-mosaic');
-  const copy = scene?.querySelector('.finish-copy');
-  if (!scene || !mosaic || !copy || scene.dataset.premiumFinish === '1') return;
-  scene.dataset.premiumFinish = '1';
+  const mobile = matchMedia('(max-width:720px)').matches;
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  const constrained = mobile || !!conn?.saveData || ['slow-2g','2g','3g'].includes(conn?.effectiveType);
 
-  const cloneVisual = (selector, className) => {
-    const source = document.querySelector(selector);
-    if (!source) return null;
-    const clone = source.cloneNode(true);
-    clone.removeAttribute('id');
-    clone.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
-    clone.className = className;
-    clone.setAttribute('aria-hidden', 'true');
-    return clone;
+  if (constrained) {
+    document.documentElement.classList.add('parable-mobile-perf');
+    const perf = document.createElement('style');
+    perf.id = 'parable-runtime-performance';
+    perf.textContent = `
+      .parable-mobile-perf .page-grain,
+      .parable-mobile-perf .film-aura,
+      .parable-mobile-perf .film-fx{display:none!important}
+      .parable-mobile-perf .film-topbar,
+      .parable-mobile-perf .film-bottom,
+      .parable-mobile-perf .film-play,
+      .parable-mobile-perf .shot-caption,
+      .parable-mobile-perf .demo-ui-action,
+      .parable-mobile-perf .demo-intel-inspector,
+      .parable-mobile-perf .demo-lens-menu,
+      .parable-mobile-perf .demo-world-chip,
+      .parable-mobile-perf .demo-cut-toast{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+      .parable-mobile-perf .hero-film{box-shadow:0 0 0 1px rgba(59,89,255,.1),0 18px 54px rgba(0,0,0,.48)!important}
+      .parable-mobile-perf .film-scene:not(.is-active),
+      .parable-mobile-perf .film-scene:not(.is-active) *{animation-play-state:paused!important}
+      .parable-mobile-perf .statement-section,
+      .parable-mobile-perf .production-section{content-visibility:auto;contain-intrinsic-size:900px}
+      .parable-mobile-perf .scene-covers .cover-glow,
+      .parable-mobile-perf .cut-film-grain{display:none!important}
+      .parable-mobile-perf .director-preview,
+      .parable-mobile-perf .preview-frame{will-change:auto!important}
+    `;
+    document.head.appendChild(perf);
+
+    const canvas = document.querySelector('#filmFx');
+    if (canvas) {
+      canvas.style.display = 'none';
+      canvas.width = 1;
+      canvas.height = 1;
+    }
+  }
+
+  const loadOnce = (src, id) => {
+    if (document.getElementById(id) || document.querySelector(`script[src="${src}"]`)) return;
+    const script = document.createElement('script');
+    script.id = id;
+    script.src = src;
+    script.async = true;
+    document.body.appendChild(script);
   };
 
-  mosaic.innerHTML = `
-    <div class="final-frame final-frame-manuscript"></div>
-    <div class="final-frame final-frame-director"></div>
-    <div class="final-frame final-frame-before"></div>
-    <div class="final-frame final-frame-watchman"></div>
-    <div class="final-frame final-frame-main"></div>
-    <div class="final-atmosphere" aria-hidden="true"></div>`;
+  const buildFinish = () => {
+    const scene = document.querySelector('.scene-finish');
+    const mosaic = scene?.querySelector('.finish-mosaic');
+    const copy = scene?.querySelector('.finish-copy');
+    if (!scene || !mosaic || !copy || scene.dataset.fastFinish === '1') return;
+    scene.dataset.fastFinish = '1';
 
-  const manuscript = cloneVisual('.scene-write .write-document', 'final-clone final-manuscript-clone');
-  const director = cloneVisual('.scene-direct .director-preview', 'final-clone final-director-clone');
-  const before = cloneVisual('.scene-covers .cover-before .cover-art', 'final-clone final-cover-clone');
-  const watchman = cloneVisual('.scene-covers .cover-watchman .cover-art', 'final-clone final-cover-clone');
-  const main = cloneVisual('.scene-edit .cut-shot-altar', 'final-clone final-main-clone');
+    mosaic.innerHTML = `
+      <div class="finish-lite fl-manuscript"><span>MANUSCRIPT</span></div>
+      <div class="finish-lite fl-director"><span>DIRECT</span></div>
+      <div class="finish-lite fl-before"><span>BEFORE I SAID YES</span></div>
+      <div class="finish-lite fl-watchman"><span>THE WATCHMAN</span></div>
+      <div class="finish-lite fl-main"><i></i><span>THE ALTAR · FINAL CUT</span></div>`;
+    copy.innerHTML = `<span class="mini-mark finish-mark"></span><p class="finish-lite-kicker">PARABLE · STORY → SCREEN</p><h3>Stories made visible.</h3><p>From the first line to the final frame.</p>`;
 
-  const slots = [
-    ['.final-frame-manuscript', manuscript],
-    ['.final-frame-director', director],
-    ['.final-frame-before', before],
-    ['.final-frame-watchman', watchman],
-    ['.final-frame-main', main]
-  ];
-  slots.forEach(([selector, node]) => {
-    if (node) scene.querySelector(selector)?.appendChild(node);
-  });
+    const style = document.createElement('style');
+    style.id = 'parable-fast-finish';
+    style.textContent = `
+      .scene-finish{background:radial-gradient(ellipse at 50% 48%,rgba(65,79,180,.18),transparent 60%),#06070a!important}
+      .scene-finish .finish-mosaic{position:absolute;inset:0;perspective:1100px;overflow:hidden}
+      .finish-lite{position:absolute;border:1px solid rgba(255,255,255,.1);border-radius:13px;overflow:hidden;box-shadow:0 20px 52px rgba(0,0,0,.44);opacity:.44;background:#0b0d12}
+      .finish-lite span{position:absolute;left:10px;bottom:9px;font-size:5px;letter-spacing:.12em;color:rgba(255,255,255,.58);z-index:2}
+      .fl-main{left:50%;top:49%;width:43%;height:58%;transform:translate(-50%,-50%);z-index:5;opacity:.9;background:linear-gradient(112deg,#070a0f 0%,#172033 48%,#080a0e 100%);box-shadow:0 30px 78px rgba(0,0,0,.58),0 0 28px rgba(76,102,255,.12)}
+      .fl-main:before{content:'';position:absolute;right:11%;top:7%;width:25%;height:58%;border:1px solid rgba(208,221,255,.15);background:linear-gradient(155deg,#77849e,#27334a 40%,#0a0f18)}
+      .fl-main:after{content:'';position:absolute;left:52%;bottom:5%;width:14%;height:58%;border-radius:46% 46% 8% 8%;background:linear-gradient(95deg,#040506,#111621 55%,#06080d)}
+      .fl-main i{position:absolute;left:17%;bottom:16%;width:28%;height:18%;background:linear-gradient(180deg,#463625,#1a120c 62%,#0c0906);box-shadow:0 14px 30px rgba(0,0,0,.55)}
+      .fl-director{left:8%;top:16%;width:25%;height:34%;transform:rotate(-2deg);background:linear-gradient(135deg,#0a0d14,#1a2337 58%,#080a0e)}
+      .fl-director:after{content:'';position:absolute;width:34%;height:78%;left:43%;bottom:-5%;border-radius:45% 45% 8% 8%;background:linear-gradient(100deg,#050608,#252c3d 58%,#090b10)}
+      .fl-before{right:8%;top:14%;width:20%;height:37%;transform:rotate(2deg);background:linear-gradient(145deg,#6c354f,#2b1725 55%,#0b090d)}
+      .fl-watchman{right:9%;bottom:10%;width:23%;height:29%;transform:rotate(-2deg);background:linear-gradient(145deg,#173344,#0d1b26 56%,#06090d)}
+      .fl-manuscript{left:9%;bottom:10%;width:23%;height:29%;transform:rotate(2deg);background:linear-gradient(145deg,#151820,#0a0c11)}
+      .fl-manuscript:before{content:'Chapter seven\A\A The room fell quiet.\A Daniel looked at the empty chair.';white-space:pre;position:absolute;left:12%;top:15%;font-size:6px;line-height:1.55;color:rgba(235,237,243,.55)}
+      .scene-finish .finish-copy{z-index:10!important;width:62%!important;text-shadow:0 7px 28px rgba(0,0,0,.72)!important}
+      .finish-lite-kicker{font-size:6px!important;letter-spacing:.17em!important;color:rgba(216,221,235,.55)!important;margin:0 0 9px!important}
+      .scene-finish.is-active .finish-lite{animation:finishLiteIn .68s cubic-bezier(.16,1,.3,1) both}
+      .scene-finish.is-active .fl-main{animation-delay:.12s}
+      .scene-finish.is-active .fl-before{animation-delay:.08s}.scene-finish.is-active .fl-watchman{animation-delay:.16s}.scene-finish.is-active .fl-manuscript{animation-delay:.2s}
+      @keyframes finishLiteIn{from{opacity:0;filter:blur(5px);translate:0 8px}to{filter:none;translate:0 0}}
+    `;
+    document.head.appendChild(style);
+  };
 
-  copy.innerHTML = `
-    <span class="mini-mark finish-mark"></span>
-    <p class="final-kicker">PARABLE · STORY → SCREEN</p>
-    <h3>Stories made visible.</h3>
-    <p class="final-subline">From the first line to the final frame.</p>`;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, constrained ? 420 : 120));
+    idle(() => loadOnce('/cursor-pass.js','parable-lazy-cursor'), {timeout: constrained ? 900 : 400});
+    setTimeout(buildFinish, constrained ? 4200 : 900);
+  }));
 
-  const style = document.createElement('style');
-  style.id = 'parable-premium-finish-scene';
-  style.textContent = `
-    .film-stage-contained .scene-finish{
-      overflow:hidden!important;
-      background:
-        radial-gradient(ellipse 52% 50% at 50% 46%,rgba(62,77,178,.17),transparent 68%),
-        radial-gradient(ellipse 30% 35% at 70% 42%,rgba(118,68,198,.08),transparent 72%),
-        linear-gradient(180deg,#08090d 0%,#050609 100%)!important;
+  if (constrained) {
+    const hero = document.querySelector('#heroFilm');
+    const play = document.querySelector('#filmPlay');
+    if (hero && play && 'IntersectionObserver' in window) {
+      let autoPaused = false;
+      const io = new IntersectionObserver(([entry]) => {
+        const film = document.querySelector('#filmFrame');
+        if (!film) return;
+        if (!entry.isIntersecting && !film.classList.contains('paused')) { play.click(); autoPaused = true; }
+        else if (entry.isIntersecting && autoPaused && film.classList.contains('paused')) { play.click(); autoPaused = false; }
+      }, {rootMargin:'160px 0px 160px 0px',threshold:.01});
+      io.observe(hero);
     }
-
-    .film-stage-contained .scene-finish .finish-mosaic{
-      position:absolute!important;inset:0!important;perspective:1400px!important;
-      transform-style:preserve-3d!important;overflow:hidden!important;
-    }
-
-    .film-stage-contained .scene-finish .final-frame{
-      position:absolute!important;overflow:hidden!important;border-radius:15px!important;
-      border:1px solid rgba(255,255,255,.095)!important;background:#08090c!important;
-      box-shadow:0 24px 64px rgba(0,0,0,.50)!important;opacity:0;
-      transform-origin:50% 50%;backface-visibility:hidden;
-    }
-
-    .film-stage-contained .scene-finish .final-frame-main{
-      left:50%!important;top:49%!important;width:44%!important;height:58%!important;
-      transform:translate(-50%,-50%) translateZ(76px) scale(.94)!important;z-index:6!important;
-      border-color:rgba(124,155,255,.22)!important;
-      box-shadow:0 34px 88px rgba(0,0,0,.62),0 0 34px rgba(70,95,255,.12)!important;
-    }
-    .film-stage-contained .scene-finish .final-frame-director{
-      left:7.5%!important;top:16%!important;width:27%!important;height:35%!important;
-      transform:rotateY(10deg) rotateZ(-2deg) translateZ(-28px)!important;z-index:3!important;
-    }
-    .film-stage-contained .scene-finish .final-frame-before{
-      right:8%!important;top:13%!important;width:20%!important;height:39%!important;
-      transform:rotateY(-10deg) rotateZ(2deg) translateZ(-34px)!important;z-index:2!important;
-    }
-    .film-stage-contained .scene-finish .final-frame-watchman{
-      right:9%!important;bottom:9%!important;width:24%!important;height:31%!important;
-      transform:rotateY(-9deg) rotateZ(-2deg) translateZ(-40px)!important;z-index:2!important;
-    }
-    .film-stage-contained .scene-finish .final-frame-manuscript{
-      left:9%!important;bottom:9%!important;width:24%!important;height:31%!important;
-      transform:rotateY(8deg) rotateZ(2deg) translateZ(-38px)!important;z-index:2!important;
-    }
-
-    .film-stage-contained .scene-finish .final-clone{
-      position:absolute!important;inset:0!important;width:100%!important;height:100%!important;
-      transform:none!important;margin:0!important;max-width:none!important;max-height:none!important;
-    }
-    .film-stage-contained .scene-finish .final-main-clone{transform:scale(1.035)!important;transform-origin:52% 50%!important;}
-    .film-stage-contained .scene-finish .final-director-clone{border:0!important;border-radius:0!important;}
-    .film-stage-contained .scene-finish .final-manuscript-clone{padding:8% 9%!important;background:#0d1016!important;overflow:hidden!important;}
-    .film-stage-contained .scene-finish .final-manuscript-clone .micro-label{font-size:5px!important;margin-bottom:9px!important;}
-    .film-stage-contained .scene-finish .final-manuscript-clone h3{font-size:13px!important;margin:0 0 9px!important;}
-    .film-stage-contained .scene-finish .final-manuscript-clone .writing-line{font-size:6px!important;line-height:1.45!important;margin:0 0 5px!important;opacity:.66!important;transform:none!important;}
-    .film-stage-contained .scene-finish .final-manuscript-clone .writing-line.lead{font-size:7px!important;opacity:.92!important;}
-    .film-stage-contained .scene-finish .final-manuscript-clone .writing-caret{display:none!important;}
-
-    .film-stage-contained .scene-finish .final-cover-clone{border-radius:0!important;}
-    .film-stage-contained .scene-finish .final-director-clone .focus-box{opacity:.42!important;}
-    .film-stage-contained .scene-finish .final-director-clone .shot-caption{transform:scale(.78);transform-origin:left bottom;}
-
-    .film-stage-contained .scene-finish .final-atmosphere{
-      position:absolute;inset:0;z-index:7;pointer-events:none;
-      background:
-        radial-gradient(ellipse 38% 44% at 50% 50%,transparent 10%,rgba(4,5,8,.10) 64%,rgba(4,5,8,.48) 100%),
-        linear-gradient(180deg,rgba(7,8,11,.06),rgba(7,8,11,.22));
-    }
-    .film-stage-contained .scene-finish .final-atmosphere::before{
-      content:'';position:absolute;width:42%;height:160%;left:-24%;top:-30%;
-      background:linear-gradient(96deg,transparent 30%,rgba(255,255,255,.035) 48%,rgba(125,166,255,.025) 54%,transparent 72%);
-      transform:rotate(8deg);filter:blur(5px);mix-blend-mode:screen;
-    }
-
-    .film-stage-contained .scene-finish .finish-copy{
-      z-index:12!important;left:50%!important;top:50%!important;width:62%!important;
-      transform:translate(-50%,-50%)!important;text-align:center!important;
-      text-shadow:0 8px 28px rgba(0,0,0,.72)!important;pointer-events:none;
-    }
-    .film-stage-contained .scene-finish .finish-mark{width:29px!important;height:29px!important;border-radius:8px!important;margin:0 auto 11px!important;opacity:.92;}
-    .film-stage-contained .scene-finish .final-kicker{
-      margin:0 0 10px!important;font-size:6px!important;letter-spacing:.18em!important;
-      color:rgba(211,217,233,.58)!important;
-    }
-    .film-stage-contained .scene-finish .finish-copy h3{
-      margin:0!important;font-size:clamp(38px,5.3vw,72px)!important;line-height:.90!important;
-      letter-spacing:-.06em!important;color:#fff!important;text-wrap:balance;
-    }
-    .film-stage-contained .scene-finish .final-subline{
-      margin:13px 0 0!important;font-size:9px!important;color:rgba(221,224,233,.72)!important;
-    }
-
-    .scene-finish.is-active .final-frame-main{animation:parableFinalMainIn 1.45s cubic-bezier(.16,1,.3,1) both;}
-    .scene-finish.is-active .final-frame-director{animation:parableFinalSideIn .78s .06s cubic-bezier(.16,1,.3,1) both;}
-    .scene-finish.is-active .final-frame-before{animation:parableFinalSideIn .78s .14s cubic-bezier(.16,1,.3,1) both;}
-    .scene-finish.is-active .final-frame-watchman{animation:parableFinalSideIn .78s .21s cubic-bezier(.16,1,.3,1) both;}
-    .scene-finish.is-active .final-frame-manuscript{animation:parableFinalSideIn .78s .28s cubic-bezier(.16,1,.3,1) both;}
-    .scene-finish.is-active .finish-copy{animation:parableFinalCopyIn .8s .48s cubic-bezier(.16,1,.3,1) both;}
-    .scene-finish.is-active .final-main-clone{animation:parableFinalCamera 2s ease-out both;}
-    .scene-finish.is-active .final-atmosphere::before{animation:parableFinalLightPass 2s ease-out both;}
-
-    @keyframes parableFinalMainIn{
-      0%{opacity:0;translate:0 16px;filter:blur(8px);}
-      48%{opacity:.74;filter:blur(0);}
-      100%{opacity:.92;translate:0 0;filter:blur(0);}
-    }
-    @keyframes parableFinalSideIn{
-      0%{opacity:0;scale:.93;filter:blur(7px);}
-      100%{opacity:.48;scale:1;filter:blur(0);}
-    }
-    @keyframes parableFinalCopyIn{
-      0%{opacity:0;translate:0 12px;filter:blur(6px);}
-      100%{opacity:1;translate:0 0;filter:blur(0);}
-    }
-    @keyframes parableFinalCamera{from{transform:scale(1.015)!important;}to{transform:scale(1.075)!important;}}
-    @keyframes parableFinalLightPass{from{transform:rotate(8deg) translateX(-18%);opacity:0;}45%{opacity:.75;}to{transform:rotate(8deg) translateX(320%);opacity:0;}}
-
-    @media(prefers-reduced-motion:reduce){
-      .scene-finish .final-frame,.scene-finish .finish-copy,.scene-finish .final-main-clone,.scene-finish .final-atmosphere::before{animation:none!important;opacity:1!important;filter:none!important;}
-      .scene-finish .final-frame:not(.final-frame-main){opacity:.46!important;}
-    }
-  `;
-  document.head.appendChild(style);
-})();
-
-(() => {
-  if (window.__parableCursorPassLoader || document.querySelector('script[data-parable-cursor-pass]')) return;
-  window.__parableCursorPassLoader = true;
-  const script = document.createElement('script');
-  script.src = '/cursor-pass.js';
-  script.dataset.parableCursorPass = '1';
-  document.body.appendChild(script);
+  }
 })();
