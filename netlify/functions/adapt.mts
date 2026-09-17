@@ -157,40 +157,64 @@ function deterministicResult(input: StoryInput, sourceHash: string) {
   const screenplay = screenplayBeats(sentences, input.setting, characters);
   const shots = shotPlan(sentences);
   const safeCharacters = characters.length ? characters : [{ name: 'Primary character', role: 'Primary character' }];
+  const detailedCharacters = safeCharacters.map((character) => ({
+    ...character,
+    desire: 'Requires model review',
+    fear: 'Requires model review',
+    wound: 'Requires model review',
+    belief: 'Requires model review',
+    arc: 'Requires model review',
+    knowledge_state: 'Only facts explicit in the submitted manuscript are assumed.',
+    source_basis: basis(character.name, 'explicit', .72)
+  }));
+  const detailedThemes = themes.map((name) => ({ name, meaning: 'Theme detected from manuscript language.', source_basis: basis(name, 'inferred', .65) }));
+  const continuityLedger = safeCharacters.map((character) => ({ entity: character.name, fact: `${character.name} appears in the submitted manuscript.`, source_basis: basis(character.name, 'explicit', .9) }));
+  const review = {
+    confidence: .48,
+    uncertainties: ['Deterministic fallback is active; deeper character and scene reasoning requires an external model provider.'],
+    fidelity_warnings: [],
+    human_review_flags: ['Review screenplay adaptation before render.']
+  };
+  const storyBible = {
+    premise: sentences[0] || input.sourceText.slice(0, 180),
+    logline: input.sourceText.slice(0, 180),
+    genre: 'Drama',
+    tone: themes.join(', '),
+    setting: input.setting || 'Not specified',
+    story_period: 'present',
+    target_audience: input.primaryAudience || 'Not specified',
+    core_conflict: conflict,
+    stakes: 'Requires model review for deeper stakes analysis.',
+    emotional_turn: sentences[Math.min(2, Math.max(0, sentences.length - 1))] || input.sourceText.slice(0, 180)
+  };
+  const productionBible = {
+    story_bible: storyBible,
+    characters: detailedCharacters,
+    themes: detailedThemes,
+    spiritual_context: { christian_context: 'Detected conservatively from manuscript language.', scripture_mentions: [], theology_review_flags: [] },
+    scenes: [{ id: 'scene_1', heading: screenplay.heading, objective: 'Requires model review', obstacle: conflict, turn: sentences[2] || sentences[0] || '', reveal: '', emotional_state: themes[0] || 'Unresolved', source_basis: basis(sentences[0] || '', 'inferred', .6) }],
+    screenplay,
+    shot_plan: shots,
+    continuity_ledger: continuityLedger,
+    review
+  };
 
   return {
-    production_bible: {
-      story_bible: {
-        premise: sentences[0] || input.sourceText.slice(0, 180),
-        logline: input.sourceText.slice(0, 180),
-        genre: 'Drama',
-        tone: themes.join(', '),
-        setting: input.setting || 'Not specified',
-        story_period: 'present',
-        target_audience: input.primaryAudience || 'Not specified',
-        core_conflict: conflict,
-        stakes: 'Requires model review for deeper stakes analysis.',
-        emotional_turn: sentences[Math.min(2, Math.max(0, sentences.length - 1))] || input.sourceText.slice(0, 180)
-      },
-      characters: safeCharacters.map((character) => ({
-        ...character,
-        desire: 'Requires model review',
-        fear: 'Requires model review',
-        wound: 'Requires model review',
-        belief: 'Requires model review',
-        arc: 'Requires model review',
-        knowledge_state: 'Only facts explicit in the submitted manuscript are assumed.',
-        source_basis: basis(character.name, 'explicit', .72)
-      })),
-      themes: themes.map((name) => ({ name, meaning: 'Theme detected from manuscript language.', source_basis: basis(name, 'inferred', .65) })),
-      spiritual_context: { christian_context: 'Detected conservatively from manuscript language.', scripture_mentions: [], theology_review_flags: [] },
-      scenes: [{ id: 'scene_1', heading: screenplay.heading, objective: 'Requires model review', obstacle: conflict, turn: sentences[2] || sentences[0] || '', reveal: '', emotional_state: themes[0] || 'Unresolved', source_basis: basis(sentences[0] || '', 'inferred', .6) }],
-      screenplay,
-      shot_plan: shots,
-      continuity_ledger: safeCharacters.map((character) => ({ entity: character.name, fact: `${character.name} appears in the submitted manuscript.`, source_basis: basis(character.name, 'explicit', .9) })),
-      review: { confidence: .48, uncertainties: ['Deterministic fallback is active; deeper character and scene reasoning requires an external model provider.'], fidelity_warnings: [], human_review_flags: ['Review screenplay adaptation before render.'] }
+    production_bible: productionBible,
+    source_hash: sourceHash,
+    story_intelligence: {
+      characters: safeCharacters.map((c) => ({ ...c, desire: '', fear: '', arc: '' })),
+      themes,
+      conflict,
+      setting: storyBible.setting,
+      primary_audience: storyBible.target_audience,
+      emotional_turn: storyBible.emotional_turn,
+      source_sentence_count: sentences.length
     },
-    source_hash: sourceHash
+    screenplay,
+    shot_plan: shots,
+    continuity_ledger: continuityLedger,
+    review
   };
 }
 
