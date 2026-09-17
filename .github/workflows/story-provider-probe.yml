@@ -5,6 +5,7 @@ on:
     branches: [immersive-v2]
     paths:
       - 'netlify/functions/_lib/story-ai.mts'
+      - 'netlify/functions/_lib/story-router.mts'
       - 'netlify/functions/adapt.mts'
       - 'netlify/functions/ai-status.mts'
       - 'docs/story-intelligence-provider.md'
@@ -33,4 +34,4 @@ jobs:
           echo '--- STORY MODEL PROBE ---'
           payload='{"title":"Provider Probe","sourceText":"Daniel sat beside the rain-streaked window. He had prayed for direction all night. When dawn came, he folded the letter in his hand and said, \"I will go.\"","setting":"Awka, Nigeria","primaryAudience":"Global Christian young adults","audienceScope":"global","storyPeriod":"present"}'
           response=$(curl --fail-with-body --max-time 40 -sS -X POST "$PREVIEW_BASE/api/adapt" -H 'content-type: application/json' --data "$payload")
-          node -e 'const x=JSON.parse(process.argv[1]); console.log(JSON.stringify({engine:x.engine,story_version:x.story_version,characters:x.story_intelligence?.characters?.map(c=>c.name),shots:x.shot_plan?.map(s=>({beat:s.beat,lens:s.lens_mm,motion:s.motion})),review:x.production_bible?.review},null,2)); if(x.engine?.mode!=="model") { console.error("REAL MODEL NOT ACTIVE:",x.engine?.fallback_reason); process.exit(2); }' "$response"
+          node -e 'const x=JSON.parse(process.argv[1]); console.log(JSON.stringify({engine:x.engine,story_version:x.story_version,characters:x.story_intelligence?.characters?.map(c=>c.name),shots:x.shot_plan?.map(s=>({beat:s.beat,lens:s.lens_mm,motion:s.motion,purpose:s.purpose})),review:x.production_bible?.review},null,2)); if(x.engine?.mode!=="model") { console.error("REAL MODEL NOT ACTIVE:",x.engine?.fallback_reason); process.exit(2); } if(!String(x.engine?.version||"").includes("v7.1")) { console.error("WRONG ROUTER VERSION:",x.engine?.version); process.exit(3); }' "$response"
