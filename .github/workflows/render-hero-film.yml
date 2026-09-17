@@ -73,7 +73,14 @@ jobs:
             recordVideo:{dir:'/tmp/parable-video',size:{width:960,height:640}}
           });
           const page = await context.newPage();
-          await page.goto('http://127.0.0.1:4173/', {waitUntil:'networkidle'});
+          await page.route('**/*', async route => {
+            const url = route.request().url();
+            if (url.startsWith('http://127.0.0.1:4173/')) return route.continue();
+            return route.abort();
+          });
+          await page.goto('http://127.0.0.1:4173/', {waitUntil:'domcontentloaded', timeout:15000});
+          await page.waitForSelector('#filmFrame', {state:'visible', timeout:10000});
+          await page.waitForTimeout(400);
           await page.waitForTimeout(13800);
           const recording = page.video();
           await page.close();
