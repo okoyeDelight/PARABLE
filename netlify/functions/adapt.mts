@@ -38,6 +38,7 @@ function stores() {
 }
 
 const clean = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim();
+const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 
 function splitSentences(text: string) {
   return text
@@ -250,12 +251,13 @@ export default async (request: Request) => {
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
   const input: StoryInput = {
     sourceText: clean(body.sourceText),
-    title: clean(body.title) || 'Untitled story',
-    setting: clean(body.setting),
-    primaryAudience: clean(body.primaryAudience)
+    title: clean(body.title).slice(0, 160) || 'Untitled story',
+    setting: clean(body.setting).slice(0, 240),
+    primaryAudience: clean(body.primaryAudience).slice(0, 240)
   };
   const projectId = clean(body.projectId);
 
+  if (projectId && !safeId(projectId)) return json({ error: 'Invalid project identifier.' }, 400);
   if (input.sourceText.length < 20) {
     return json({ error: 'Give PARABLE at least a few sentences to understand.' }, 400);
   }
@@ -332,4 +334,11 @@ export default async (request: Request) => {
   return json(result, 201);
 };
 
-export const config = { path: '/api/adapt' };
+export const config = {
+  path: '/api/adapt',
+  rateLimit: {
+    windowLimit: 12,
+    windowSize: 60,
+    aggregateBy: ['ip', 'domain']
+  }
+};
