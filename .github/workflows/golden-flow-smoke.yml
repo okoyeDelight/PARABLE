@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Wait for matching Netlify preview and test real flow
+      - name: Wait for Netlify preview and test real flow
         env:
           PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
           COMMIT_SHA: ${{ github.sha }}
@@ -38,15 +38,15 @@ jobs:
               const text = await response.text();
               if (response.ok && text.includes('/api/direction') && text.includes('story_version')) {
                 previewReady = true;
-                console.log(`Preview ready on attempt ${attempt}.`);
+                console.log(`Static preview ready on attempt ${attempt}.`);
                 break;
               }
             } catch (error) {
-              console.log(`Preview attempt ${attempt}: ${error.message}`);
+              console.log(`Static preview attempt ${attempt}: ${error.message}`);
             }
             await sleep(8000);
           }
-          if (!previewReady) throw new Error('Latest PARABLE preview did not become ready in time.');
+          if (!previewReady) throw new Error('PARABLE preview did not become ready in time.');
 
           const fixture = {
             title: `Golden Flow CI ${sha.slice(0, 7)}`,
@@ -57,25 +57,42 @@ jobs:
             storyPeriod: 'present'
           };
 
-          const projectCall = await jsonFetch('/api/projects', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(fixture)
-          });
-          if (projectCall.response.status !== 201 || !projectCall.body?.id) {
-            throw new Error(`Project creation failed: ${projectCall.response.status} ${JSON.stringify(projectCall.body)}`);
-          }
-          console.log(`Project created: ${projectCall.body.id}`);
+          let project = null;
+          let result = null;
+          for (let attempt = 1; attempt <= 30; attempt++) {
+            try {
+              if (!project) {
+                const projectCall = await jsonFetch('/api/projects', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify(fixture)
+                });
+                if (projectCall.response.status === 201 && projectCall.body?.id) {
+                  project = projectCall.body;
+                  console.log(`Project created: ${project.id}`);
+                } else {
+                  throw new Error(`Project API ${projectCall.response.status}`);
+                }
+              }
 
-          const adaptCall = await jsonFetch('/api/adapt', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ ...fixture, projectId: projectCall.body.id })
-          });
-          if (adaptCall.response.status !== 201) {
-            throw new Error(`Adaptation failed: ${adaptCall.response.status} ${JSON.stringify(adaptCall.body)}`);
+              const adaptCall = await jsonFetch('/api/adapt', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ ...fixture, projectId: project.id })
+              });
+              if (adaptCall.response.status === 201 && adaptCall.body?.story_version && adaptCall.body?.source_hash) {
+                result = adaptCall.body;
+                console.log(`Latest function bundle ready on attempt ${attempt}.`);
+                break;
+              }
+              console.log(`Adaptation attempt ${attempt}: ${adaptCall.response.status} ${JSON.stringify(adaptCall.body).slice(0, 220)}`);
+            } catch (error) {
+              console.log(`Function attempt ${attempt}: ${error.message}`);
+            }
+            await sleep(8000);
           }
-          const result = adaptCall.body;
+          if (!project || !result) throw new Error('Latest Golden Flow functions did not become ready in time.');
+
           const checks = [
             ['story_version', Boolean(result.story_version)],
             ['source_hash', typeof result.source_hash === 'string' && result.source_hash.length === 64],
@@ -93,7 +110,7 @@ jobs:
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
-              projectId: projectCall.body.id,
+              projectId: project.id,
               storyVersion: result.story_version,
               shotId: shot.id,
               lens_mm: Number(shot.lens_mm),
@@ -107,7 +124,7 @@ jobs:
             throw new Error(`Direction persistence failed: ${directionCall.response.status} ${JSON.stringify(directionCall.body)}`);
           }
 
-          const directionRead = await jsonFetch(`/api/direction?projectId=${encodeURIComponent(projectCall.body.id)}&storyVersion=${encodeURIComponent(result.story_version)}`);
+          const directionRead = await jsonFetch(`/api/direction?projectId=${encodeURIComponent(project.id)}&storyVersion=${encodeURIComponent(result.story_version)}`);
           if (!directionRead.response.ok || !Array.isArray(directionRead.body?.directions) || directionRead.body.directions.length < 1) {
             throw new Error(`Direction readback failed: ${directionRead.response.status} ${JSON.stringify(directionRead.body)}`);
           }
