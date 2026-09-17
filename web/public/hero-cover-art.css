@@ -1,5 +1,5 @@
 /* PARABLE Stage 1 / Scene 03 — cinematic cover art */
-.scene-covers .hero-cover{padding:0!important;overflow:hidden!important;background:#080a10!important;}
+.scene-covers .hero-cover{padding:0!important;overflow:hidden!important;background:#080a10!important;opacity:1!important;visibility:visible!important;}
 .scene-covers .cover-art{position:absolute;inset:0;overflow:hidden;border-radius:inherit;}
 .scene-covers .cover-copy{position:absolute;left:0;right:0;bottom:0;z-index:8;padding:18px 17px 17px;background:linear-gradient(180deg,transparent 0%,rgba(4,5,8,.18) 10%,rgba(4,5,8,.82) 55%,rgba(4,5,8,.97) 100%);text-shadow:0 3px 18px rgba(0,0,0,.8)}
 .scene-covers .cover-copy small{display:block;font-size:6px;letter-spacing:.17em;color:rgba(255,255,255,.62);margin:0 0 42px}
