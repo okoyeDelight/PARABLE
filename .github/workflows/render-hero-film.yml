@@ -1,0 +1,111 @@
+name: Render PARABLE hero film
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - '.github/workflows/render-hero-film.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: parable-hero-render
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout current branch
+        uses: actions/checkout@v4
+        with:
+          ref: immersive-v2
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install render tools
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Prepare rich render source
+        run: |
+          git worktree add /tmp/parable-render 2f0032f170a7ca752c06ed5edccc81d248eb481f
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/parable-render/web/public/index.html')
+          s = p.read_text()
+          css = '''<style id="render-isolation">
+          html,body{margin:0!important;width:960px!important;height:640px!important;overflow:hidden!important;background:#050505!important}
+          .site-nav,.hero-copy,.film-aura,.film-caption,.trust-strip,.statement-section,.production-section,.story-dialog,.toast{display:none!important}
+          .hero-section{margin:0!important;padding:0!important;min-height:0!important;background:#050505!important}
+          .hero-film-wrap{display:block!important;margin:0!important;padding:0!important;width:960px!important;height:640px!important;max-width:none!important}
+          #filmFrame{position:fixed!important;inset:0!important;margin:0!important;width:960px!important;height:640px!important;max-width:none!important;min-height:0!important;aspect-ratio:auto!important;border-radius:0!important;transform:none!important}
+          #filmPlay{display:none!important}
+          </style>'''
+          s = s.replace('</head>', css + '</head>')
+          p.write_text(s)
+          PY
+
+      - name: Start local render server
+        run: |
+          python3 -m http.server 4173 --directory /tmp/parable-render/web/public >/tmp/parable-server.log 2>&1 &
+          echo $! > /tmp/parable-server.pid
+          sleep 1
+
+      - name: Record rich product film
+        run: |
+          cat > /tmp/render-hero.mjs <<'JS'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs';
+          const browser = await chromium.launch({headless:true});
+          const context = await browser.newContext({
+            viewport:{width:960,height:640},
+            recordVideo:{dir:'/tmp/parable-video',size:{width:960,height:640}}
+          });
+          const page = await context.newPage();
+          await page.goto('http://127.0.0.1:4173/', {waitUntil:'networkidle'});
+          await page.waitForTimeout(13800);
+          const recording = page.video();
+          await page.close();
+          await context.close();
+          const recordedPath = await recording.path();
+          fs.copyFileSync(recordedPath, '/tmp/parable-rich.webm');
+          await browser.close();
+          JS
+          node /tmp/render-hero.mjs
+
+      - name: Encode web hero media
+        run: |
+          mkdir -p web/public/media
+          ffmpeg -y -ss 0.55 -i /tmp/parable-rich.webm -t 13.0 \
+            -vf "fps=30,scale=960:640:flags=lanczos" -an \
+            -c:v libx264 -preset slow -crf 26 -pix_fmt yuv420p -movflags +faststart \
+            web/public/media/parable-hero.mp4
+          SIZE=$(stat -c%s web/public/media/parable-hero.mp4)
+          echo "Encoded hero size: $SIZE bytes"
+          if [ "$SIZE" -gt 3500000 ]; then
+            mv web/public/media/parable-hero.mp4 /tmp/hero-large.mp4
+            ffmpeg -y -i /tmp/hero-large.mp4 -an -c:v libx264 -preset slow -crf 30 -pix_fmt yuv420p -movflags +faststart web/public/media/parable-hero.mp4
+          fi
+
+      - name: Commit rendered hero
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/public/media/parable-hero.mp4
+          if git diff --cached --quiet; then
+            echo "Hero media unchanged"
+            exit 0
+          fi
+          git commit -m "chore: render PARABLE hero film [skip ci]"
+          git push origin HEAD:immersive-v2
