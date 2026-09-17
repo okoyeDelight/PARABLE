@@ -1,5 +1,6 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
-import { runStoryModel, sha256, type StoryInput } from './_lib/story-ai.mts';
+import { sha256, type StoryInput } from './_lib/story-ai.mts';
+import { runStoryModel } from './_lib/story-router.mts';
 
 type Shot = {
   id: string;
