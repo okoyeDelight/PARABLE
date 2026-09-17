@@ -1,152 +1,121 @@
 (() => {
   const film = document.querySelector('#filmFrame');
-  const stage = document.querySelector('#filmStage');
-  const play = document.querySelector('#filmPlay');
-  const phase = document.querySelector('#filmPhase');
-  const counter = document.querySelector('#filmCounter');
-  const progress = document.querySelector('#filmProgressBar');
-  const canvas = document.querySelector('#filmFx');
-  if (!film || !stage || !play || !phase || !counter || !progress) return;
+  if (!film || window.__parableVideoFirst) return;
+  window.__parableVideoFirst = true;
 
-  document.documentElement.classList.add('parable-mobile-safe');
-  if (canvas) {
-    canvas.width = 1;
-    canvas.height = 1;
-    canvas.style.display = 'none';
-  }
+  const VIDEO_SRC = '/media/parable-hero.mp4';
+  const POSTER_SRC = '/media/parable-hero-poster.svg';
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  const scenes = [...stage.querySelectorAll('.film-scene')];
-  const labels = ['Write','Understand','Shape the world','Direct','Cut','Bring it to screen'];
-  const sceneMs = 2200;
-  let index = 0;
-  let playing = true;
-  let timer = null;
-  let visible = true;
+  film.classList.add('parable-video-first');
+  film.innerHTML = `
+    <div class="parable-hero-media">
+      <img class="parable-hero-poster" src="${POSTER_SRC}" alt="" decoding="async" />
+      <video class="parable-hero-video" muted playsinline loop preload="none" poster="${POSTER_SRC}" aria-label="PARABLE story-to-screen product film"></video>
+      <div class="parable-video-status"><span></span> PARABLE product film</div>
+      <button class="parable-video-toggle" type="button" aria-label="Pause PARABLE product film" aria-pressed="true"><span class="pause">Ⅱ</span><span class="play">▶</span></button>
+    </div>`;
+
+  const media = film.querySelector('.parable-hero-media');
+  const video = film.querySelector('.parable-hero-video');
+  const poster = film.querySelector('.parable-hero-poster');
+  const toggle = film.querySelector('.parable-video-toggle');
+  let loaded = false;
+  let visible = false;
   let userPaused = false;
 
   const style = document.createElement('style');
-  style.id = 'parable-mobile-safe-style';
+  style.id = 'parable-video-first-style';
   style.textContent = `
-    .film-fx{display:none!important}
+    .hero-film.parable-video-first{
+      position:relative!important;overflow:hidden!important;padding:0!important;
+      background:#07080b!important;aspect-ratio:1.5!important;min-height:0!important;height:auto!important;
+      border:1px solid rgba(92,111,255,.38)!important;border-radius:22px!important;
+      box-shadow:0 20px 70px rgba(0,0,0,.52),0 0 34px rgba(72,90,255,.12)!important;
+      contain:layout paint style!important;
+    }
+    .parable-hero-media{position:absolute;inset:0;background:#07080b;overflow:hidden}
+    .parable-hero-video,.parable-hero-poster{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+    .parable-hero-video{opacity:0;transition:opacity .28s ease;background:#07080b}
+    .parable-hero-video.is-ready{opacity:1}
+    .parable-hero-poster{opacity:1;transition:opacity .28s ease}
+    .parable-hero-poster.is-hidden{opacity:0;pointer-events:none}
+    .parable-video-status{position:absolute;z-index:3;left:18px;top:16px;display:flex;align-items:center;gap:7px;font:500 11px/1.2 'DM Sans',system-ui,sans-serif;color:rgba(244,246,251,.76);text-shadow:0 2px 8px rgba(0,0,0,.55)}
+    .parable-video-status span{width:8px;height:8px;border-radius:50%;background:#70e5b4;box-shadow:0 0 12px rgba(112,229,180,.58)}
+    .parable-video-toggle{position:absolute;z-index:4;right:18px;top:50%;transform:translateY(-50%);width:54px;height:54px;border-radius:50%;border:1px solid rgba(255,255,255,.20);background:rgba(10,12,17,.66);color:#fff;display:grid;place-items:center;font:500 18px/1 system-ui;box-shadow:0 12px 30px rgba(0,0,0,.34);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px)}
+    .parable-video-toggle .play{display:none;font-size:14px;margin-left:2px}.parable-video-toggle.is-paused .pause{display:none}.parable-video-toggle.is-paused .play{display:inline}
     @media(max-width:720px){
-      html.parable-mobile-safe .page-grain{display:none!important}
-      html.parable-mobile-safe .film-aura{filter:none!important;opacity:.34!important}
-      html.parable-mobile-safe .hero-film,
-      html.parable-mobile-safe .film-stage{contain:layout paint style!important}
-      html.parable-mobile-safe .film-vignette{opacity:.42!important}
-      html.parable-mobile-safe .film-scene:not(.is-active),
-      html.parable-mobile-safe .film-scene:not(.is-active) *{animation:none!important;transition:none!important}
-      html.parable-mobile-safe .film-scene:not(.is-active){visibility:hidden!important;pointer-events:none!important}
-      html.parable-mobile-safe .film-scene.is-active{visibility:visible!important}
-      html.parable-mobile-safe .cut-film-grain,
-      html.parable-mobile-safe .final-atmosphere::before,
-      html.parable-mobile-safe .scene-covers::after{display:none!important}
-      html.parable-mobile-safe .statement-section,
-      html.parable-mobile-safe .production-section{content-visibility:auto;contain-intrinsic-size:900px}
-      html.parable-mobile-safe .mobile-demo-pointer{position:absolute;z-index:95;width:17px;height:22px;left:0;top:0;opacity:0;pointer-events:none;transform:translate3d(-30px,-30px,0);transition:transform .42s cubic-bezier(.22,.82,.24,1),opacity .14s ease;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))}
-      html.parable-mobile-safe .mobile-demo-pointer.is-visible{opacity:.9}
-      html.parable-mobile-safe .mobile-demo-pointer svg{width:100%;height:100%;display:block}
-      html.parable-mobile-safe .mobile-click-ring{position:absolute;left:2px;top:2px;width:7px;height:7px;border:1px solid rgba(255,255,255,.72);border-radius:50%;opacity:0}
-      html.parable-mobile-safe .mobile-demo-pointer.is-clicking .mobile-click-ring{animation:mobileClickRing .34s ease-out}
-      @keyframes mobileClickRing{0%{opacity:.9;transform:scale(.25)}100%{opacity:0;transform:scale(3)}}
+      .hero-film.parable-video-first{aspect-ratio:1.5!important;border-radius:17px!important;box-shadow:0 14px 42px rgba(0,0,0,.48),0 0 18px rgba(72,90,255,.10)!important}
+      .parable-video-status{left:13px;top:12px;font-size:9px}.parable-video-status span{width:7px;height:7px}
+      .parable-video-toggle{right:13px;width:48px;height:48px;backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(10,12,17,.82)}
     }
   `;
   document.head.appendChild(style);
 
-  const cursor = document.createElement('div');
-  cursor.className = 'mobile-demo-pointer';
-  cursor.setAttribute('aria-hidden','true');
-  cursor.innerHTML = `<svg viewBox="0 0 24 30"><path d="M2.2 2.2 2.5 24l5.4-5.2 3.4 8.5 4.2-1.8-3.5-8.2 7.5-.2Z" fill="#fff" stroke="#090a0d" stroke-width="1.25" stroke-linejoin="round"/></svg><span class="mobile-click-ring"></span>`;
-  stage.appendChild(cursor);
-
-  const moveCursor = (x,y,click=false) => {
-    const r = stage.getBoundingClientRect();
-    const t = `translate3d(${Math.round(r.width*x/100)}px,${Math.round(r.height*y/100)}px,0)`;
-    cursor.style.transform = t;
-    cursor.classList.add('is-visible');
-    if (click) {
-      setTimeout(()=>cursor.classList.add('is-clicking'),260);
-      setTimeout(()=>cursor.classList.remove('is-clicking'),560);
-    }
+  const setPausedUI = (paused) => {
+    toggle.classList.toggle('is-paused', paused);
+    toggle.setAttribute('aria-pressed', String(!paused));
+    toggle.setAttribute('aria-label', paused ? 'Play PARABLE product film' : 'Pause PARABLE product film');
   };
 
-  const cursorCue = (i) => {
-    cursor.classList.remove('is-visible','is-clicking');
-    const cues = [[67,25,true],[58,31,true],[51,50,true],[79,48,true],[51,77,true],[50,80,true]];
-    const cue = cues[i];
-    if (!cue) return;
-    setTimeout(()=>moveCursor(cue[0],cue[1],cue[2]),360);
+  const ensureLoaded = () => {
+    if (loaded) return;
+    loaded = true;
+    video.src = VIDEO_SRC;
+    video.load();
   };
 
-  const showScene = (next) => {
-    index = (next + scenes.length) % scenes.length;
-    scenes.forEach((scene,i) => {
-      const active = i === index;
-      scene.classList.toggle('is-active',active);
-      scene.classList.toggle('is-before',i < index);
-      scene.classList.toggle('is-after',i > index);
-      scene.setAttribute('aria-hidden',active?'false':'true');
-    });
-    film.dataset.scene = String(index + 1);
-    phase.textContent = labels[index];
-    counter.textContent = `${String(index+1).padStart(2,'0')} / ${String(scenes.length).padStart(2,'0')}`;
-    progress.style.transform = `scaleX(${(index+1)/scenes.length})`;
-    cursorCue(index);
+  const tryPlay = async () => {
+    if (reduced || userPaused || !visible) return;
+    ensureLoaded();
+    try { await video.play(); setPausedUI(false); } catch (_) { setPausedUI(true); }
   };
 
-  const schedule = () => {
-    clearTimeout(timer);
-    if (!playing || !visible || document.hidden) return;
-    timer = setTimeout(() => { showScene(index + 1); schedule(); }, sceneMs);
-  };
-
-  const setPlaying = (value, fromUser=false) => {
-    playing = value;
-    if (fromUser) userPaused = !value;
-    film.classList.toggle('paused',!playing);
-    play.setAttribute('aria-pressed',String(playing));
-    if (!playing) {
-      clearTimeout(timer);
-      cursor.classList.remove('is-visible');
-    } else {
-      cursorCue(index);
-      schedule();
-    }
-  };
-
-  play.addEventListener('click',()=>setPlaying(!playing,true));
-
-  const io = new IntersectionObserver(([entry])=>{
-    visible = !!entry?.isIntersecting;
-    if (!visible) {
-      clearTimeout(timer);
-      cursor.classList.remove('is-visible');
-    } else if (!userPaused) {
-      playing = true;
-      film.classList.remove('paused');
-      schedule();
-      cursorCue(index);
-    }
-  },{threshold:.08});
-  io.observe(film);
-
-  document.addEventListener('visibilitychange',()=>{
-    if (document.hidden) clearTimeout(timer);
-    else if (playing && visible) schedule();
+  video.addEventListener('canplay', () => {
+    video.classList.add('is-ready');
+    poster.classList.add('is-hidden');
+    tryPlay();
+  }, {once:false});
+  video.addEventListener('error', () => {
+    video.classList.remove('is-ready');
+    poster.classList.remove('is-hidden');
+    setPausedUI(true);
   });
 
-  showScene(0);
-  schedule();
+  toggle.addEventListener('click', () => {
+    ensureLoaded();
+    if (video.paused) {
+      userPaused = false;
+      tryPlay();
+    } else {
+      userPaused = true;
+      video.pause();
+      setPausedUI(true);
+    }
+  });
+
+  const io = new IntersectionObserver(([entry]) => {
+    if (!entry) return;
+    visible = entry.isIntersecting;
+    if (entry.isIntersecting) {
+      ensureLoaded();
+      tryPlay();
+    } else {
+      video.pause();
+      setPausedUI(true);
+    }
+  }, {rootMargin:'320px 0px 320px 0px',threshold:.08});
+  io.observe(film);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { video.pause(); setPausedUI(true); }
+    else if (visible) tryPlay();
+  });
+
+  if (reduced) setPausedUI(true);
 
   window.ParableHeroFilm = {
-    setStories(stories=[]){
-      ['#heroCoverA','#heroCoverB','#heroCoverC'].forEach((selector,i)=>{
-        const title = document.querySelector(selector)?.querySelector('b');
-        if (title && stories[i]) title.textContent = stories[i].title;
-      });
-      const sceneTitle = document.querySelector('#sceneStoryTitle');
-      if (sceneTitle && stories[0]) sceneTitle.textContent = stories[0].title;
-    },
-    destroy(){ clearTimeout(timer); io.disconnect(); }
+    setStories(){},
+    destroy(){ io.disconnect(); video.pause(); }
   };
 })();
