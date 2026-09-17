@@ -168,8 +168,16 @@ jobs:
           const directionRead = await jsonFetch(`/api/direction?projectId=${encodeURIComponent(first.project.id)}&storyVersion=${encodeURIComponent(reanalysis.body.story_version)}`);
           assert(directionRead.response.ok && Array.isArray(directionRead.body?.directions) && directionRead.body.directions.length >= 1, 'Direction readback failed.');
 
-          const projectsRead = await jsonFetch('/api/projects');
-          const storedProject = Array.isArray(projectsRead.body) ? projectsRead.body.find(p => p.id === first.project.id) : null;
+          let storedProject = null;
+          for (let attempt = 1; attempt <= 6; attempt++) {
+            const projectRead = await jsonFetch(`/api/projects?id=${encodeURIComponent(first.project.id)}`);
+            if (projectRead.response.ok && projectRead.body?.story_version === reanalysis.body.story_version) {
+              storedProject = projectRead.body;
+              break;
+            }
+            console.log(`Project readback attempt ${attempt}: ${projectRead.response.status} ${JSON.stringify(projectRead.body).slice(0, 180)}`);
+            await sleep(1500);
+          }
           assert(storedProject?.story_version === reanalysis.body.story_version, 'Project did not advance to the latest story version.');
           assert(String(storedProject?.source_text || '').includes('\n\n'), 'Manuscript paragraph formatting was not preserved in persistence.');
 
