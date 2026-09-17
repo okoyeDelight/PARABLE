@@ -1,4 +1,5 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
+import { runStoryModel, sha256, type StoryInput } from './_lib/story-ai.mts';
 
 type Shot = {
   id: string;
@@ -9,6 +10,9 @@ type Shot = {
   lighting: string;
   performance: string;
   purpose: string;
+  blocking?: string;
+  continuity_notes?: string;
+  source_basis?: Record<string, unknown>;
 };
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
@@ -41,7 +45,7 @@ function splitSentences(text: string) {
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
     .filter(Boolean)
-    .slice(0, 12);
+    .slice(0, 18);
 }
 
 function extractCharacters(text: string) {
@@ -57,7 +61,7 @@ function extractCharacters(text: string) {
   }
   return [...counts.entries()]
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
+    .slice(0, 6)
     .map(([name], index) => ({ name, role: index === 0 ? 'Primary character' : 'Story character' }));
 }
 
@@ -98,19 +102,24 @@ function inferTimeOfDay(text: string) {
   return 'DAY';
 }
 
+function basis(evidence: string, kind: 'explicit' | 'inferred' | 'creative-adaptation' = 'explicit', confidence = .8) {
+  return { basis: kind, evidence, confidence };
+}
+
 function screenplayBeats(sentences: string[], setting: string, characters: { name: string }[]) {
   const heading = `INT. ${setting ? setting.toUpperCase() : 'STORY LOCATION'} - ${inferTimeOfDay(sentences.join(' '))}`;
-  const beats = sentences.slice(0, 6).map((sentence, index) => {
+  const beats = sentences.slice(0, 8).map((sentence, index) => {
     const quote = sentence.match(/[“\"]([^”\"]+)[”\"]/);
     if (quote) {
       return {
         type: 'dialogue',
         speaker: characters[0]?.name || 'CHARACTER',
         text: quote[1],
-        source_index: index
+        source_index: index,
+        source_basis: basis(sentence)
       };
     }
-    return { type: 'action', text: sentence, source_index: index };
+    return { type: 'action', speaker: '', text: sentence, source_index: index, source_basis: basis(sentence) };
   });
   return { heading, beats };
 }
@@ -133,73 +142,164 @@ function shotPlan(sentences: string[]): Shot[] {
     motion: t[2],
     lighting: t[3],
     performance: t[4],
-    purpose: t[5]
+    purpose: t[5],
+    blocking: 'Preserve the physical relationship established by the previous shot.',
+    continuity_notes: 'Check eyeline, screen direction, props and emotional intensity before rendering.',
+    source_basis: basis(source[index % source.length], index < source.length ? 'explicit' : 'creative-adaptation', index < source.length ? .82 : .62)
   }));
+}
+
+function deterministicResult(input: StoryInput, sourceHash: string) {
+  const sentences = splitSentences(input.sourceText);
+  const characters = extractCharacters(input.sourceText);
+  const themes = extractThemes(input.sourceText);
+  const conflict = inferConflict(input.sourceText, themes);
+  const screenplay = screenplayBeats(sentences, input.setting, characters);
+  const shots = shotPlan(sentences);
+  const safeCharacters = characters.length ? characters : [{ name: 'Primary character', role: 'Primary character' }];
+
+  return {
+    production_bible: {
+      story_bible: {
+        premise: sentences[0] || input.sourceText.slice(0, 180),
+        logline: input.sourceText.slice(0, 180),
+        genre: 'Drama',
+        tone: themes.join(', '),
+        setting: input.setting || 'Not specified',
+        story_period: 'present',
+        target_audience: input.primaryAudience || 'Not specified',
+        core_conflict: conflict,
+        stakes: 'Requires model review for deeper stakes analysis.',
+        emotional_turn: sentences[Math.min(2, Math.max(0, sentences.length - 1))] || input.sourceText.slice(0, 180)
+      },
+      characters: safeCharacters.map((character) => ({
+        ...character,
+        desire: 'Requires model review',
+        fear: 'Requires model review',
+        wound: 'Requires model review',
+        belief: 'Requires model review',
+        arc: 'Requires model review',
+        knowledge_state: 'Only facts explicit in the submitted manuscript are assumed.',
+        source_basis: basis(character.name, 'explicit', .72)
+      })),
+      themes: themes.map((name) => ({ name, meaning: 'Theme detected from manuscript language.', source_basis: basis(name, 'inferred', .65) })),
+      spiritual_context: { christian_context: 'Detected conservatively from manuscript language.', scripture_mentions: [], theology_review_flags: [] },
+      scenes: [{ id: 'scene_1', heading: screenplay.heading, objective: 'Requires model review', obstacle: conflict, turn: sentences[2] || sentences[0] || '', reveal: '', emotional_state: themes[0] || 'Unresolved', source_basis: basis(sentences[0] || '', 'inferred', .6) }],
+      screenplay,
+      shot_plan: shots,
+      continuity_ledger: safeCharacters.map((character) => ({ entity: character.name, fact: `${character.name} appears in the submitted manuscript.`, source_basis: basis(character.name, 'explicit', .9) })),
+      review: { confidence: .48, uncertainties: ['Deterministic fallback is active; deeper character and scene reasoning requires an external model provider.'], fidelity_warnings: [], human_review_flags: ['Review screenplay adaptation before render.'] }
+    },
+    source_hash: sourceHash
+  };
+}
+
+function normalizeModelOutput(modelData: Record<string, any>, input: StoryInput, sourceHash: string) {
+  const bible = modelData.story_bible || {};
+  const characters = Array.isArray(modelData.characters) ? modelData.characters : [];
+  const themes = Array.isArray(modelData.themes) ? modelData.themes : [];
+  const screenplay = modelData.screenplay || { heading: '', beats: [] };
+  const shots = Array.isArray(modelData.shot_plan) ? modelData.shot_plan : [];
+
+  return {
+    production_bible: modelData,
+    source_hash: sourceHash,
+    story_intelligence: {
+      characters: characters.map((c: any) => ({ name: c.name || 'Unnamed character', role: c.role || 'Story character', desire: c.desire || '', fear: c.fear || '', arc: c.arc || '' })),
+      themes: themes.map((t: any) => t.name || String(t)).filter(Boolean),
+      conflict: bible.core_conflict || 'Unresolved conflict',
+      setting: bible.setting || input.setting || 'Not specified',
+      primary_audience: bible.target_audience || input.primaryAudience || 'Not specified',
+      emotional_turn: bible.emotional_turn || '',
+      source_sentence_count: splitSentences(input.sourceText).length
+    },
+    screenplay,
+    shot_plan: shots,
+    continuity_ledger: modelData.continuity_ledger || [],
+    review: modelData.review || { confidence: 0, uncertainties: [], fidelity_warnings: [], human_review_flags: [] }
+  };
 }
 
 export default async (request: Request) => {
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
   const body = await request.json().catch(() => ({})) as Record<string, unknown>;
-  const sourceText = clean(body.sourceText);
-  const title = clean(body.title) || 'Untitled story';
-  const setting = clean(body.setting);
-  const primaryAudience = clean(body.primaryAudience);
+  const input: StoryInput = {
+    sourceText: clean(body.sourceText),
+    title: clean(body.title) || 'Untitled story',
+    setting: clean(body.setting),
+    primaryAudience: clean(body.primaryAudience)
+  };
   const projectId = clean(body.projectId);
 
-  if (sourceText.length < 20) {
+  if (input.sourceText.length < 20) {
     return json({ error: 'Give PARABLE at least a few sentences to understand.' }, 400);
   }
+  if (input.sourceText.length > 120000) {
+    return json({ error: 'This pass accepts up to 120,000 characters. Longer manuscripts will be chunked in the long-form pipeline.' }, 413);
+  }
 
-  const sentences = splitSentences(sourceText);
-  const characters = extractCharacters(sourceText);
-  const themes = extractThemes(sourceText);
-  const conflict = inferConflict(sourceText, themes);
-  const screenplay = screenplayBeats(sentences, setting, characters);
-  const shots = shotPlan(sentences);
+  const sourceHash = await sha256(`${input.title}\n${input.setting}\n${input.primaryAudience}\n${input.sourceText}`);
+  const storyVersion = `story_${sourceHash.slice(0, 12)}`;
+  const modelRun = await runStoryModel(input);
+  const normalized = modelRun.data
+    ? normalizeModelOutput(modelRun.data, input, sourceHash)
+    : deterministicResult(input, sourceHash);
   const now = new Date().toISOString();
+  const shotPlan = normalized.shot_plan as Shot[];
 
   const result = {
     id: `adapt_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`,
     project_id: projectId || null,
-    title,
+    title: input.title,
+    story_version: storyVersion,
+    source_hash: sourceHash,
     engine: {
       name: 'PARABLE Story Intelligence',
-      version: 'structured-v1',
-      mode: 'deterministic-production',
-      provider_ready: true
+      version: modelRun.engine.version,
+      mode: modelRun.engine.mode,
+      provider: modelRun.engine.provider,
+      model: modelRun.engine.model,
+      provider_ready: modelRun.engine.mode === 'model',
+      fallback_reason: modelRun.engine.fallback_reason || null
     },
-    story_intelligence: {
-      characters: characters.length ? characters : [{ name: 'Primary character', role: 'Primary character' }],
-      themes,
-      conflict,
-      setting: setting || 'Not specified',
-      primary_audience: primaryAudience || 'Not specified',
-      emotional_turn: sentences[Math.min(2, Math.max(0, sentences.length - 1))] || sourceText.slice(0, 180),
-      source_sentence_count: sentences.length
-    },
-    screenplay,
-    shot_plan: shots,
+    ...normalized,
     director_defaults: {
-      lens_mm: shots[1]?.lens_mm || 50,
-      motion: shots[1]?.motion || 'Slow push-in',
-      lighting: shots[1]?.lighting || 'Soft motivated key',
-      performance: shots[1]?.performance || 'Restrained'
+      lens_mm: shotPlan[1]?.lens_mm || shotPlan[0]?.lens_mm || 50,
+      motion: shotPlan[1]?.motion || shotPlan[0]?.motion || 'Slow push-in',
+      lighting: shotPlan[1]?.lighting || shotPlan[0]?.lighting || 'Soft motivated key',
+      performance: shotPlan[1]?.performance || shotPlan[0]?.performance || 'Restrained'
     },
     created_at: now
   };
 
   const { adaptations, projects } = stores();
-  const key = projectId ? `project/${projectId}/latest` : `adaptation/${result.id}`;
-  await adaptations.setJSON(key, result);
+  const latestKey = projectId ? `project/${projectId}/latest` : `adaptation/${result.id}`;
+  const versionKey = projectId ? `project/${projectId}/versions/${storyVersion}` : `adaptation/${result.id}/version/${storyVersion}`;
+  await Promise.all([
+    adaptations.setJSON(latestKey, result),
+    adaptations.setJSON(versionKey, result)
+  ]);
 
   if (projectId) {
     const project = await projects.get(`project/${projectId}`, { type: 'json' }) as Record<string, unknown> | null;
     if (project) {
       await projects.setJSON(`project/${projectId}`, {
         ...project,
+        title: input.title,
+        source_text: input.sourceText,
+        source_hash: sourceHash,
+        story_version: storyVersion,
+        setting: input.setting || project.setting || null,
+        primary_audience: input.primaryAudience || project.primary_audience || null,
+        story_engine: {
+          provider: modelRun.engine.provider,
+          model: modelRun.engine.model,
+          version: modelRun.engine.version,
+          mode: modelRun.engine.mode
+        },
         status: 'shot_plan',
-        progress: Math.max(Number(project.progress || 0), 35),
+        progress: Math.max(Number(project.progress || 0), modelRun.engine.mode === 'model' ? 42 : 35),
         updated_at: now
       });
     }
