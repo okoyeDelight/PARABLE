@@ -1,0 +1,110 @@
+name: PARABLE AI V8 Benchmark
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/ai-health-store.mts'
+      - 'netlify/functions/_lib/benchmarks.mts'
+      - 'netlify/functions/_lib/understand-ai.mts'
+      - 'netlify/functions/_lib/critic-ai.mts'
+      - 'netlify/functions/ai-benchmark.mts'
+      - 'netlify/functions/ai-health.mts'
+      - 'netlify/functions/ai-status.mts'
+      - 'netlify/functions/director-critic.mts'
+      - '.github/workflows/ai-v8-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-ai-v8-benchmark
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run isolated synthetic Story + Critic benchmark
+        env:
+          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
+        run: |
+          set -euo pipefail
+          sleep 70
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const assert = (condition, message) => { if (!condition) throw new Error(message); };
+
+          async function get(path) {
+            const r = await fetch(`${base}${path}`, { cache: 'no-store' });
+            const text = await r.text();
+            let body; try { body = JSON.parse(text); } catch { body = text; }
+            return { r, body };
+          }
+
+          async function post(body) {
+            const r = await fetch(`${base}/api/ai-benchmark`, {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+            });
+            const text = await r.text();
+            let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
+            return { r, body: parsed };
+          }
+
+          async function benchmark(fixture, stage) {
+            let last;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+              last = await post({ fixture, stage });
+              console.log(`${fixture}/${stage} attempt ${attempt}: ${last.r.status} ${JSON.stringify(last.body).slice(0, 900)}`);
+              if (last.r.ok && last.body?.passed) return last.body;
+              if (attempt < 2) await sleep(4500);
+            }
+            throw new Error(`${fixture}/${stage} did not get a real model result: ${JSON.stringify(last?.body).slice(0, 1200)}`);
+          }
+
+          const status = await get('/api/ai-status');
+          assert(status.r.ok, `AI status failed: ${status.r.status}`);
+          assert(status.body?.ai_runtime?.version === 'parable-ai-v8', `wrong runtime: ${JSON.stringify(status.body)}`);
+          assert(status.body?.story_understanding?.lanes?.benchmark?.enabled === true, 'benchmark lane is not enabled on deploy preview');
+          assert(status.body?.story_understanding?.lanes?.protected?.default_for_user_manuscripts === true, 'protected manuscript lane is not default');
+          console.log(`AI status: ${JSON.stringify(status.body)}`);
+
+          const ids = ['altar', 'yes', 'watchman'];
+          const storyRuns = [];
+          for (const id of ids) {
+            const run = await benchmark(id, 'story');
+            assert(run.engine?.mode === 'model', `${id}: story did not use a model`);
+            assert(run.engine?.privacy_lane === 'benchmark', `${id}: wrong story privacy lane`);
+            assert(run.engine?.privacy_mode === 'benchmark-free-routing-synthetic-only', `${id}: story privacy mode was not explicit`);
+            assert(run.result?.story_bible?.premise && run.result?.story_bible?.core_conflict, `${id}: incomplete Story Bible`);
+            assert(Array.isArray(run.result?.characters) && run.result.characters.length > 0, `${id}: no grounded characters`);
+            assert(Array.isArray(run.result?.scenes) && run.result.scenes.length > 0, `${id}: no scene understanding`);
+            storyRuns.push(run);
+            await sleep(2500);
+          }
+
+          const conflicts = new Set(storyRuns.map(x => String(x.result.story_bible.core_conflict).toLowerCase().replace(/\s+/g, ' ').trim()));
+          assert(conflicts.size >= 2, 'three genres collapsed into effectively identical core-conflict output');
+
+          for (const id of ids) {
+            const run = await benchmark(id, 'critic');
+            assert(run.engine?.mode === 'model', `${id}: critic did not use a model`);
+            assert(run.engine?.privacy_lane === 'benchmark', `${id}: wrong critic privacy lane`);
+            assert(run.engine?.privacy_mode === 'benchmark-free-routing-synthetic-only', `${id}: critic privacy mode was not explicit`);
+            assert(run.result?.summary && run.result?.readiness, `${id}: critic output incomplete`);
+            assert(Array.isArray(run.result?.priorities), `${id}: critic priorities missing`);
+            await sleep(2500);
+          }
+
+          const health = await get('/api/ai-health');
+          assert(health.r.ok, `AI health failed: ${health.r.status}`);
+          const recent = health.body?.health?.recent || [];
+          assert(recent.some(x => x.stage === 'story-understanding' && x.lane === 'benchmark' && x.ok), 'health has no successful Story Understanding benchmark event');
+          assert(recent.some(x => x.stage === 'film-critic' && x.lane === 'benchmark' && x.ok), 'health has no successful Film Critic benchmark event');
+          assert(recent.every(x => !('prompt' in x) && !('manuscript' in x)), 'health telemetry leaked story content');
+
+          console.log('PARABLE AI V8 benchmark passed: protected lane preserved; 3 synthetic genres used dynamic free routing; Story Understanding + Film Critic both returned grounded model output; health/failover telemetry active.');
+          NODE
