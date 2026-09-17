@@ -1,14 +1,12 @@
-name: PARABLE Story Provider Probe
+name: PARABLE Story Understanding Provider Probe
 
 on:
   push:
     branches: [immersive-v2]
     paths:
-      - 'netlify/functions/_lib/story-ai.mts'
-      - 'netlify/functions/_lib/story-router.mts'
-      - 'netlify/functions/adapt.mts'
+      - 'netlify/functions/_lib/understand-ai.mts'
+      - 'netlify/functions/understand.mts'
       - 'netlify/functions/ai-status.mts'
-      - 'docs/story-intelligence-provider.md'
       - '.github/workflows/story-provider-probe.yml'
   workflow_dispatch:
 
@@ -20,18 +18,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - name: Probe deployed Story Intelligence provider
+      - name: Probe deployed Story Understanding provider
         env:
           PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
         run: |
           set -euo pipefail
-          # Netlify deploy previews can report the static bundle before the new
-          # function/environment snapshot is live. Give the server side time to settle.
+          # Give the deploy preview enough time to pick up new function bundles.
           sleep 65
-          echo '--- AI STATUS ---'
-          curl --fail-with-body --max-time 20 -sS "$PREVIEW_BASE/api/ai-status"
-          echo
-          echo '--- STORY MODEL PROBE ---'
-          payload='{"title":"Provider Probe","sourceText":"Daniel sat beside the rain-streaked window. He had prayed for direction all night. When dawn came, he folded the letter in his hand and said, \"I will go.\"","setting":"Awka, Nigeria","primaryAudience":"Global Christian young adults","audienceScope":"global","storyPeriod":"present"}'
-          response=$(curl --fail-with-body --max-time 40 -sS -X POST "$PREVIEW_BASE/api/adapt" -H 'content-type: application/json' --data "$payload")
-          node -e 'const x=JSON.parse(process.argv[1]); console.log(JSON.stringify({engine:x.engine,story_version:x.story_version,characters:x.story_intelligence?.characters?.map(c=>c.name),shots:x.shot_plan?.map(s=>({beat:s.beat,lens:s.lens_mm,motion:s.motion,purpose:s.purpose})),review:x.production_bible?.review},null,2)); if(x.engine?.mode!=="model") { console.error("REAL MODEL NOT ACTIVE:",x.engine?.fallback_reason); process.exit(2); } if(!String(x.engine?.version||"").includes("v7.1")) { console.error("WRONG ROUTER VERSION:",x.engine?.version); process.exit(3); }' "$response"
+          echo '--- STORY UNDERSTANDING MODEL PROBE ---'
+          payload='{"title":"Provider Probe","sourceText":"Daniel sat beside the rain-streaked window. He had prayed for direction all night. When dawn came, he folded the letter in his hand and said, \"I will go.\"","setting":"Awka, Nigeria","primaryAudience":"Global Christian young adults"}'
+          response=$(curl --fail-with-body --max-time 40 -sS -X POST "$PREVIEW_BASE/api/understand" -H 'content-type: application/json' --data "$payload")
+          node -e 'const x=JSON.parse(process.argv[1]); console.log(JSON.stringify({engine:x.engine,story_version:x.story_version,bible:x.story_bible,characters:x.characters?.map(c=>c.name),themes:x.themes?.map(t=>t.name),scenes:x.scenes?.map(s=>({id:s.id,objective:s.objective,turn:s.turn})),review:x.review},null,2)); if(x.engine?.mode!=="model") { console.error("REAL MODEL NOT ACTIVE:",x.engine?.fallback_reason); process.exit(2); } if(x.engine?.version!=="story-understanding-v1") { console.error("WRONG UNDERSTANDING VERSION:",x.engine?.version); process.exit(3); } if(!x.story_bible?.premise || !x.story_bible?.core_conflict || !Array.isArray(x.characters) || !x.characters.length || !Array.isArray(x.scenes) || !x.scenes.length) { console.error("INCOMPLETE UNDERSTANDING PAYLOAD"); process.exit(4); }' "$response"
