@@ -7,10 +7,11 @@ const env = (key: string) => Netlify.env.get(key) || '';
 export default async (request: Request) => {
   if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
 
-  const production = Netlify.context?.deploy?.context === 'production';
+  const deployContext = Netlify.context?.deploy?.context || 'unknown';
+  const production = deployContext === 'production';
   const openrouter = Boolean(env('OPENROUTER_API_KEY'));
   const groq = Boolean(env('GROQ_API_KEY'));
-  const benchmarkEnabled = !production && env('PARABLE_ENABLE_BENCHMARK_LANE') === 'true';
+  const benchmarkEnabled = deployContext === 'deploy-preview';
 
   return json({
     ai_runtime: {
@@ -33,7 +34,7 @@ export default async (request: Request) => {
         benchmark: {
           enabled: benchmarkEnabled,
           synthetic_only: true,
-          policy: 'Deploy-preview CI fixtures may use the dynamic free router without protected-manuscript routing constraints. Arbitrary manuscript text cannot enter this lane through /api/ai-benchmark.',
+          policy: 'Only hardcoded PARABLE CI fixtures can enter the benchmark lane, and that endpoint is exposed only on Deploy Previews. Real manuscripts never use this lane.',
           model_router: 'openrouter/free'
         }
       },
@@ -47,7 +48,7 @@ export default async (request: Request) => {
       fallback_available: true
     },
     environment: {
-      deploy_context: Netlify.context?.deploy?.context || 'unknown',
+      deploy_context: deployContext,
       production,
       benchmark_enabled: benchmarkEnabled
     }
