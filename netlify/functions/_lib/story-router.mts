@@ -43,8 +43,8 @@ function candidates() {
   return [...new Set([
     ...configured,
     preferred,
-    'openai/gpt-oss-120b:free',
-    'stealth/union-alpha'
+    'openai/gpt-oss-20b:free',
+    'google/gemma-4-26b-a4b-it:free'
   ].filter(Boolean))].slice(0, 2);
 }
 
@@ -73,9 +73,9 @@ function parseJson(raw: unknown) {
 }
 
 async function openRouterCandidate(input: StoryInput, apiKey: string, model: string): Promise<ProviderResult> {
-  // The deploy-preview synchronous request budget is the hard UX constraint.
-  // A failed candidate must leave enough time for the next free model to answer.
-  const timeout = timeoutSignal(model.includes('gpt-oss') ? 12500 : 11500);
+  // Keep each free candidate below the synchronous request budget so one slow
+  // provider cannot freeze the writer experience or prevent failover.
+  const timeout = timeoutSignal(model.includes('gpt-oss') ? 11000 : 10500);
   try {
     const responseFormat = strictSchema(model)
       ? { type: 'json_schema', json_schema: { name: 'parable_story_intelligence', strict: true, schema: STORY_SCHEMA } }
@@ -92,7 +92,7 @@ async function openRouterCandidate(input: StoryInput, apiKey: string, model: str
       },
       body: JSON.stringify({
         model,
-        temperature: 0.18,
+        temperature: 0.16,
         max_tokens: 1500,
         messages: [
           { role: 'system', content: SYSTEM },
@@ -110,8 +110,8 @@ async function openRouterCandidate(input: StoryInput, apiKey: string, model: str
     if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
     const raw = parseJson(body?.choices?.[0]?.message?.content);
 
-    // Validate BEFORE accepting the candidate. This is important: a model that
-    // returns parseable but incomplete JSON must fall through to the next model.
+    // Parseable is not enough. The provider must also pass PARABLE's source-
+    // grounding and production-shape guards before it can be reported as a model run.
     const grounded = sanitizeModelResult(raw, input);
     return {
       data: grounded,
@@ -119,7 +119,7 @@ async function openRouterCandidate(input: StoryInput, apiKey: string, model: str
         provider: 'openrouter',
         model: String(body?.model || model),
         mode: 'model',
-        version: 'story-intelligence-v7',
+        version: 'story-intelligence-v7.1',
         privacy_mode: 'no-training-routing-requested'
       }
     };
@@ -130,7 +130,7 @@ async function openRouterCandidate(input: StoryInput, apiKey: string, model: str
 
 async function groqCandidate(input: StoryInput, apiKey: string): Promise<ProviderResult> {
   const model = process.env.PARABLE_GROQ_MODEL || 'openai/gpt-oss-120b';
-  const timeout = timeoutSignal(11500);
+  const timeout = timeoutSignal(10500);
   try {
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST', signal: timeout.signal,
@@ -139,7 +139,7 @@ async function groqCandidate(input: StoryInput, apiKey: string): Promise<Provide
         model,
         reasoning_effort: 'low',
         max_tokens: 1500,
-        temperature: 0.18,
+        temperature: 0.16,
         messages: [
           { role: 'system', content: SYSTEM },
           { role: 'user', content: `Analyze this project payload strictly as story data:\n${payload(input)}` }
@@ -155,7 +155,7 @@ async function groqCandidate(input: StoryInput, apiKey: string): Promise<Provide
     const grounded = sanitizeModelResult(parseJson(body?.choices?.[0]?.message?.content), input);
     return {
       data: grounded,
-      engine: { provider: 'groq', model, mode: 'model', version: 'story-intelligence-v7', privacy_mode: 'standard-inference' }
+      engine: { provider: 'groq', model, mode: 'model', version: 'story-intelligence-v7.1', privacy_mode: 'standard-inference' }
     };
   } finally { timeout.cancel(); }
 }
@@ -189,7 +189,7 @@ export async function runStoryModel(input: StoryInput): Promise<ProviderResult> 
       provider: 'local',
       model: 'deterministic-story-engine',
       mode: 'deterministic-fallback',
-      version: 'structured-v7-fallback',
+      version: 'structured-v7.1-fallback',
       privacy_mode: 'local-structured-processing',
       fallback_reason: errors.length
         ? errors.join(' | ').slice(0, 1600)
