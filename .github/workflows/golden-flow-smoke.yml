@@ -1,0 +1,116 @@
+name: PARABLE Golden Flow Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  golden-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Wait for matching Netlify preview and test real flow
+        env:
+          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const sha = process.env.COMMIT_SHA;
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+          async function jsonFetch(path, options = {}) {
+            const response = await fetch(`${base}${path}`, options);
+            const text = await response.text();
+            let body = null;
+            try { body = JSON.parse(text); } catch { body = text; }
+            return { response, body };
+          }
+
+          let previewReady = false;
+          for (let attempt = 1; attempt <= 30; attempt++) {
+            try {
+              const response = await fetch(`${base}/studio.js?commit=${sha}`, { cache: 'no-store' });
+              const text = await response.text();
+              if (response.ok && text.includes('/api/direction') && text.includes('story_version')) {
+                previewReady = true;
+                console.log(`Preview ready on attempt ${attempt}.`);
+                break;
+              }
+            } catch (error) {
+              console.log(`Preview attempt ${attempt}: ${error.message}`);
+            }
+            await sleep(8000);
+          }
+          if (!previewReady) throw new Error('Latest PARABLE preview did not become ready in time.');
+
+          const fixture = {
+            title: `Golden Flow CI ${sha.slice(0, 7)}`,
+            sourceText: 'Mara stopped beneath the campus chapel light. The envelope in her hand carried her name, but the handwriting belonged to someone she had not seen in three years. She whispered a prayer, opened it, and found only one sentence: Do not go home tonight.',
+            setting: 'University campus, Nigeria',
+            primaryAudience: 'Global Christian young adults',
+            audienceScope: 'global',
+            storyPeriod: 'present'
+          };
+
+          const projectCall = await jsonFetch('/api/projects', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(fixture)
+          });
+          if (projectCall.response.status !== 201 || !projectCall.body?.id) {
+            throw new Error(`Project creation failed: ${projectCall.response.status} ${JSON.stringify(projectCall.body)}`);
+          }
+          console.log(`Project created: ${projectCall.body.id}`);
+
+          const adaptCall = await jsonFetch('/api/adapt', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ ...fixture, projectId: projectCall.body.id })
+          });
+          if (adaptCall.response.status !== 201) {
+            throw new Error(`Adaptation failed: ${adaptCall.response.status} ${JSON.stringify(adaptCall.body)}`);
+          }
+          const result = adaptCall.body;
+          const checks = [
+            ['story_version', Boolean(result.story_version)],
+            ['source_hash', typeof result.source_hash === 'string' && result.source_hash.length === 64],
+            ['engine', Boolean(result.engine?.mode && result.engine?.version)],
+            ['characters', Array.isArray(result.story_intelligence?.characters) && result.story_intelligence.characters.length > 0],
+            ['screenplay', Array.isArray(result.screenplay?.beats) && result.screenplay.beats.length > 0],
+            ['shot_plan', Array.isArray(result.shot_plan) && result.shot_plan.length > 0],
+            ['production_bible', Boolean(result.production_bible?.review)]
+          ];
+          for (const [name, pass] of checks) if (!pass) throw new Error(`Golden Flow contract failed: ${name}`);
+          console.log(`Adaptation engine: ${result.engine.provider}/${result.engine.model} (${result.engine.mode})`);
+
+          const shot = result.shot_plan[0];
+          const directionCall = await jsonFetch('/api/direction', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              projectId: projectCall.body.id,
+              storyVersion: result.story_version,
+              shotId: shot.id,
+              lens_mm: Number(shot.lens_mm),
+              motion: shot.motion,
+              lighting: shot.lighting,
+              performance: shot.performance,
+              blocking: shot.blocking || ''
+            })
+          });
+          if (directionCall.response.status !== 201 || directionCall.body?.shot_id !== shot.id) {
+            throw new Error(`Direction persistence failed: ${directionCall.response.status} ${JSON.stringify(directionCall.body)}`);
+          }
+
+          const directionRead = await jsonFetch(`/api/direction?projectId=${encodeURIComponent(projectCall.body.id)}&storyVersion=${encodeURIComponent(result.story_version)}`);
+          if (!directionRead.response.ok || !Array.isArray(directionRead.body?.directions) || directionRead.body.directions.length < 1) {
+            throw new Error(`Direction readback failed: ${directionRead.response.status} ${JSON.stringify(directionRead.body)}`);
+          }
+
+          console.log('PARABLE Golden Flow smoke test passed: write -> project -> understand/adapt -> direct -> persist/readback.');
+          NODE
