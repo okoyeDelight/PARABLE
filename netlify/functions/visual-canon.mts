@@ -16,6 +16,11 @@ import {
   type VisualCanon
 } from './_lib/render-foundation.mts';
 import type { ContinuitySnapshot } from './_lib/continuity-core.mts';
+import {
+  readCanonAssetMetadata,
+  validateRightsForReference
+} from './_lib/canon-assets.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -61,6 +66,14 @@ export default async (request: Request) => {
     const projectId = clean(url.searchParams.get('projectId'), 96);
     if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const authoritative = await readAuthoritativeProjectState<VisualCanon>(projectId, 'visual-canon:latest');
     if (authoritative?.value) {
       return json({
@@ -82,6 +95,18 @@ export default async (request: Request) => {
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
   if (!['bootstrap', 'add_reference', 'approve_reference', 'update_style'].includes(action)) {
     return json({ error: 'Unsupported Visual Canon action.' }, 400);
+  }
+
+  try {
+    await authorizeProject(
+      request,
+      projectId,
+      action === 'approve_reference' ? 'rights:approve' : 'project:edit'
+    );
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
   }
 
   let lease: ProjectMutationLease | null = null;
@@ -147,6 +172,7 @@ export default async (request: Request) => {
       const referenceKind = clean(body.referenceKind, 80);
       const uri = clean(body.uri, 1800);
       const rightsStatus = clean(body.rightsStatus || 'unverified', 40) as RightsStatus;
+      const assetSha256 = clean(body.assetSha256, 64).toLowerCase();
       const source = clean(body.source || 'human-upload', 40);
       const renderUsage = clean(body.renderUsage || (
         referenceKind === 'actor-face' || referenceKind === 'actor-visual'
@@ -200,6 +226,54 @@ export default async (request: Request) => {
         }, 409);
       }
 
+      const inspirationOnly = renderUsage === 'inspiration-only' || renderUsage === 'benchmark-only';
+      let vaultAsset = null as Awaited<ReturnType<typeof readCanonAssetMetadata>>;
+
+      if (assetSha256) {
+        if (!/^[a-f0-9]{64}$/.test(assetSha256)) {
+          await abortProjectMutation(lease).catch(() => false);
+          return json({ error: 'assetSha256 must be a 64-character SHA-256 digest.' }, 400);
+        }
+        vaultAsset = await readCanonAssetMetadata(projectId, assetSha256);
+        if (!vaultAsset) {
+          await abortProjectMutation(lease).catch(() => false);
+          return json({
+            error: 'The immutable canon asset was not found in this project vault.',
+            code: 'CANON_ASSET_NOT_FOUND'
+          }, 404);
+        }
+        if (vaultAsset.reference_kind !== referenceKind || vaultAsset.render_usage !== renderUsage) {
+          await abortProjectMutation(lease).catch(() => false);
+          return json({
+            error: 'The vault asset was registered for a different reference kind or render usage.',
+            code: 'CANON_ASSET_USAGE_MISMATCH'
+          }, 409);
+        }
+      }
+
+      if (!inspirationOnly && rightsStatus === 'approved') {
+        if (!vaultAsset) {
+          await abortProjectMutation(lease).catch(() => false);
+          return json({
+            error: 'Approved production references must point to an immutable vaulted asset.',
+            code: 'CANON_VAULT_REQUIRED'
+          }, 409);
+        }
+        const rightsValidation = validateRightsForReference({
+          referenceKind,
+          renderUsage,
+          rights: vaultAsset.rights
+        });
+        if (!rightsValidation.allowed) {
+          await abortProjectMutation(lease).catch(() => false);
+          return json({
+            error: 'Vaulted rights provenance does not permit this production use.',
+            code: 'RIGHTS_PROVENANCE_INCOMPLETE',
+            blockers: rightsValidation.blockers
+          }, 409);
+        }
+      }
+
       const entities = [...canon.characters, ...canon.locations, ...canon.props];
       const entity = entities.find((item) =>
         (entityId && item.id === entityId) ||
@@ -210,27 +284,65 @@ export default async (request: Request) => {
         return json({ error: 'The target entity was not found in the Visual Canon.' }, 404);
       }
 
-      const duplicate = entity.references.find((ref) => ref.kind === referenceKind && ref.uri === uri);
+      const logicalUri = vaultAsset ? ('parable://canon/' + vaultAsset.sha256) : uri;
+      const duplicate = entity.references.find((ref) =>
+        (assetSha256 && ref.asset_sha256 === assetSha256) ||
+        (ref.kind === referenceKind && ref.uri === logicalUri)
+      );
       if (!duplicate) {
         entity.references.push({
           id: 'ref_' + entity.id + '_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16),
           kind: referenceKind as any,
-          uri,
+          uri: logicalUri,
           label: clean(body.label, 220) || (entity.name + ' · ' + referenceKind.replaceAll('-', ' ')),
-          rights_status: rightsStatus,
+          rights_status: vaultAsset?.rights.status || rightsStatus,
           approved_by_human: true,
           source: source as any,
           render_usage: renderUsage as any,
           origin: origin as any,
-          source_title: clean(body.sourceTitle, 260) || undefined,
-          source_creator: clean(body.sourceCreator, 260) || undefined,
-          source_url: clean(body.sourceUrl, 1800) || undefined,
+          source_title: clean(body.sourceTitle, 260) || vaultAsset?.source_title || undefined,
+          source_creator: clean(body.sourceCreator, 260) || vaultAsset?.source_creator || undefined,
+          source_url: clean(body.sourceUrl, 1800) || vaultAsset?.source_url || undefined,
+          asset_sha256: vaultAsset?.sha256,
+          immutable_asset_uri: vaultAsset ? ('parable://canon/' + vaultAsset.sha256) : undefined,
+          rights_provenance: vaultAsset?.rights ? {
+            status: vaultAsset.rights.status,
+            basis: vaultAsset.rights.basis,
+            rights_holder: vaultAsset.rights.rights_holder,
+            likeness_permission: vaultAsset.rights.likeness_permission,
+            voice_permission: vaultAsset.rights.voice_permission,
+            ai_generation_permission: vaultAsset.rights.ai_generation_permission,
+            commercial_use: vaultAsset.rights.commercial_use,
+            territories: vaultAsset.rights.territories,
+            expires_at: vaultAsset.rights.expires_at,
+            evidence_sha256: vaultAsset.rights.evidence_sha256,
+            declared_by_actor_id: vaultAsset.rights.declared_by_actor_id,
+            declared_at: vaultAsset.rights.declared_at,
+            revoked_at: vaultAsset.rights.revoked_at
+          } : undefined,
           notes: clean(body.notes, 500) || undefined
         });
       } else {
-        duplicate.rights_status = rightsStatus;
+        duplicate.rights_status = vaultAsset?.rights.status || rightsStatus;
         duplicate.approved_by_human = true;
         duplicate.render_usage = renderUsage as any;
+        duplicate.asset_sha256 = vaultAsset?.sha256 || duplicate.asset_sha256;
+        duplicate.immutable_asset_uri = vaultAsset ? ('parable://canon/' + vaultAsset.sha256) : duplicate.immutable_asset_uri;
+        duplicate.rights_provenance = vaultAsset?.rights ? {
+          status: vaultAsset.rights.status,
+          basis: vaultAsset.rights.basis,
+          rights_holder: vaultAsset.rights.rights_holder,
+          likeness_permission: vaultAsset.rights.likeness_permission,
+          voice_permission: vaultAsset.rights.voice_permission,
+          ai_generation_permission: vaultAsset.rights.ai_generation_permission,
+          commercial_use: vaultAsset.rights.commercial_use,
+          territories: vaultAsset.rights.territories,
+          expires_at: vaultAsset.rights.expires_at,
+          evidence_sha256: vaultAsset.rights.evidence_sha256,
+          declared_by_actor_id: vaultAsset.rights.declared_by_actor_id,
+          declared_at: vaultAsset.rights.declared_at,
+          revoked_at: vaultAsset.rights.revoked_at
+        } : duplicate.rights_provenance;
         duplicate.origin = origin as any;
         duplicate.source_title = clean(body.sourceTitle, 260) || duplicate.source_title;
         duplicate.source_creator = clean(body.sourceCreator, 260) || duplicate.source_creator;
@@ -257,6 +369,50 @@ export default async (request: Request) => {
       if (!found) {
         await abortProjectMutation(lease).catch(() => false);
         return json({ error: 'Reference was not found in the current Visual Canon.' }, 404);
+      }
+
+      if (
+        rightsStatus === 'approved' &&
+        found.reference.render_usage !== 'inspiration-only' &&
+        found.reference.render_usage !== 'benchmark-only'
+      ) {
+        const hash = clean(found.reference.asset_sha256, 64).toLowerCase();
+        const vaultAsset = hash ? await readCanonAssetMetadata(projectId, hash) : null;
+        if (!vaultAsset) {
+          await abortProjectMutation(lease).catch(() => false);
+          return json({
+            error: 'Production references cannot be approved until the exact bytes are stored in the immutable canon vault.',
+            code: 'CANON_VAULT_REQUIRED'
+          }, 409);
+        }
+        const validation = validateRightsForReference({
+          referenceKind: found.reference.kind,
+          renderUsage: String(found.reference.render_usage || ''),
+          rights: vaultAsset.rights
+        });
+        if (!validation.allowed) {
+          await abortProjectMutation(lease).catch(() => false);
+          return json({
+            error: 'Vaulted rights provenance does not authorize this reference.',
+            code: 'RIGHTS_PROVENANCE_INCOMPLETE',
+            blockers: validation.blockers
+          }, 409);
+        }
+        found.reference.rights_provenance = {
+          status: vaultAsset.rights.status,
+          basis: vaultAsset.rights.basis,
+          rights_holder: vaultAsset.rights.rights_holder,
+          likeness_permission: vaultAsset.rights.likeness_permission,
+          voice_permission: vaultAsset.rights.voice_permission,
+          ai_generation_permission: vaultAsset.rights.ai_generation_permission,
+          commercial_use: vaultAsset.rights.commercial_use,
+          territories: vaultAsset.rights.territories,
+          expires_at: vaultAsset.rights.expires_at,
+          evidence_sha256: vaultAsset.rights.evidence_sha256,
+          declared_by_actor_id: vaultAsset.rights.declared_by_actor_id,
+          declared_at: vaultAsset.rights.declared_at,
+          revoked_at: vaultAsset.rights.revoked_at
+        };
       }
 
       found.reference.rights_status = rightsStatus;
@@ -294,15 +450,29 @@ export default async (request: Request) => {
 
     canon.unresolved_rights = [...canon.characters, ...canon.locations, ...canon.props].flatMap((entity) =>
       entity.references
-        .filter((ref) => ref.rights_status !== 'approved')
+        .filter((ref) => {
+          if (ref.render_usage === 'inspiration-only' || ref.render_usage === 'benchmark-only') {
+            return ref.rights_status === 'revoked';
+          }
+          return (
+            ref.rights_status !== 'approved' ||
+            !ref.asset_sha256 ||
+            !ref.rights_provenance ||
+            ref.rights_provenance.status !== 'approved' ||
+            !ref.rights_provenance.ai_generation_permission ||
+            Boolean(ref.rights_provenance.expires_at && Date.parse(ref.rights_provenance.expires_at) <= Date.now())
+          );
+        })
         .map((ref) => ({
           entity_id: entity.id,
           reference_id: ref.id,
           reason: ref.rights_status === 'revoked'
             ? 'Reference rights have been revoked and this asset must not be used for new renders.'
-            : ref.rights_status === 'restricted'
-              ? 'Reference has usage restrictions that require human review before final rendering.'
-              : 'Reference rights remain unverified.'
+            : !ref.asset_sha256
+              ? 'Production reference bytes are not yet stored in the immutable canon vault.'
+              : ref.rights_status === 'restricted'
+                ? 'Reference has usage restrictions that require human review before final rendering.'
+                : 'Reference rights provenance is incomplete, expired or unverified.'
         }))
     );
 
