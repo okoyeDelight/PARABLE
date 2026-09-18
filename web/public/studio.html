@@ -248,6 +248,75 @@
             </div>
           </div>
 
+          <section class="keyframe-approval-box" id="keyframeApprovalBox" hidden>
+            <div class="keyframe-approval-head">
+              <div>
+                <small>HUMAN FIRST-FRAME APPROVAL</small>
+                <strong id="keyframeApprovalTitle">Final motion is locked.</strong>
+                <p id="keyframeApprovalState">Approve one exact still for this exact ShotRenderSpec before final motion can be created.</p>
+              </div>
+              <span id="keyframeApprovalBadge">LOCKED</span>
+            </div>
+
+            <div class="keyframe-approval-layout">
+              <div class="keyframe-preview-shell">
+                <img id="keyframeAssetPreview" alt="First-frame candidate preview" hidden />
+                <div id="keyframePreviewEmpty">
+                  <b>FIRST FRAME</b>
+                  <span>Paste the immutable generated/uploaded still URL that should become the motion starting frame.</span>
+                </div>
+              </div>
+
+              <div class="keyframe-controls">
+                <label>
+                  <span>Candidate image URL</span>
+                  <input id="keyframeAssetUrl" type="url" placeholder="https://…" autocomplete="off" />
+                </label>
+
+                <div class="keyframe-meta-grid">
+                  <label>
+                    <span>Source</span>
+                    <select id="keyframeAssetSource">
+                      <option value="generated">Generated</option>
+                      <option value="uploaded">Uploaded / owned</option>
+                      <option value="external">External</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Optional SHA-256</span>
+                    <input id="keyframeContentSha" type="text" placeholder="64-character digest" autocomplete="off" />
+                  </label>
+                </div>
+
+                <label class="keyframe-immutable">
+                  <input id="keyframeImmutable" type="checkbox" />
+                  <span>I confirm this URL is an immutable asset, or I supplied its content SHA-256.</span>
+                </label>
+
+                <div class="keyframe-checks">
+                  <label><input type="checkbox" data-keyframe-check="identity" /><span>Identity</span></label>
+                  <label><input type="checkbox" data-keyframe-check="wardrobe_and_injuries" /><span>Wardrobe + injuries</span></label>
+                  <label><input type="checkbox" data-keyframe-check="props" /><span>Props</span></label>
+                  <label><input type="checkbox" data-keyframe-check="spatial_geography" /><span>Spatial geography</span></label>
+                  <label><input type="checkbox" data-keyframe-check="composition" /><span>Composition</span></label>
+                  <label><input type="checkbox" data-keyframe-check="lighting" /><span>Lighting</span></label>
+                  <label><input type="checkbox" data-keyframe-check="cultural_grounding" /><span>Cultural grounding</span></label>
+                  <label><input type="checkbox" data-keyframe-check="unwanted_text_or_artifacts" /><span>No unwanted text / AI artifacts</span></label>
+                </div>
+
+                <div class="keyframe-buttons">
+                  <button type="button" class="render-primary keyframe-approve" id="approveKeyframeBtn"><span>Approve first frame</span><b>✓</b></button>
+                  <button type="button" class="copy-btn" id="revokeKeyframeBtn" hidden>Revoke approval</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="film-reference-note">
+              <small>CHRISTIAN FILM REFERENCE LIBRARY</small>
+              <p>Movie frames and character faces can be registered as casting/cinematography inspiration. PARABLE keeps inspiration-only references out of the renderer; an exact actor likeness only becomes an identity reference after its usage rights are explicitly approved.</p>
+            </div>
+          </section>
+
           <div class="render-actions">
             <p id="renderState">No media is generated automatically. PARABLE prepares and validates the shot first.</p>
             <button type="button" class="copy-btn" id="refreshRenderBtn">Refresh selected shot</button>
