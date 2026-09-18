@@ -9,6 +9,7 @@ import { prepareRendererRequest } from '../netlify/functions/_lib/render-adapter
 import { evaluateKeyframeGate } from '../netlify/functions/_lib/keyframe-approval-core.mts';
 import { routeRenderSpec } from '../netlify/functions/_lib/render-router.mts';
 import { buildKeyframeGenerationPlan } from '../netlify/functions/_lib/keyframe-generation-core.mts';
+import { validateMotionEvidence } from '../netlify/functions/_lib/motion-inspector-ai.mts';
 import {
   defaultRenderBudgetPolicy,
   evaluateRenderBudget,
@@ -351,6 +352,44 @@ const missingEstimate = evaluateRenderBudget({
 });
 assert.equal(missingEstimate.code, 'RENDER_COST_ESTIMATE_REQUIRED');
 
+const motionAttempt:any = {
+  id: 'render_motion_smoke',
+  project_id: spec.project_id,
+  story_version: spec.story_version,
+  scene_id: spec.scene_id,
+  shot_id: spec.shot_id,
+  spec_hash: spec.spec_hash,
+  asset_uri: 'https://example.com/render.mp4',
+  keyframe_asset_uri: keyframeApproval.asset.uri,
+  mode: 'final',
+  status: 'succeeded'
+};
+
+const motionEvidence = validateMotionEvidence({
+  attempt: motionAttempt,
+  spec,
+  approvedFirstFrameUri: keyframeApproval.asset.uri,
+  frames: [
+    { uri: 'https://example.com/frame-0.jpg', timestamp_seconds: 0.05, role: 'first' },
+    { uri: 'https://example.com/frame-1.jpg', timestamp_seconds: 3.5, role: 'sample' },
+    { uri: 'https://example.com/frame-2.jpg', timestamp_seconds: 6.6, role: 'handoff' }
+  ]
+});
+assert.equal(motionEvidence.valid, true);
+assert.ok(motionEvidence.coverage_ratio >= 0.9);
+
+const incompleteMotionEvidence = validateMotionEvidence({
+  attempt: motionAttempt,
+  spec,
+  approvedFirstFrameUri: keyframeApproval.asset.uri,
+  frames: [
+    { uri: 'https://example.com/frame-a.jpg', timestamp_seconds: 2.5, role: 'sample' },
+    { uri: 'https://example.com/frame-b.jpg', timestamp_seconds: 3.5, role: 'sample' }
+  ]
+});
+assert.equal(incompleteMotionEvidence.valid, false);
+assert.ok(incompleteMotionEvidence.errors.some((item) => /three trusted temporal samples/i.test(item)));
+
 const pass = evaluateRenderQA('render_pass', {
   identity: 0.96,
   wardrobe: 0.97,
@@ -391,6 +430,8 @@ console.log(JSON.stringify({
   keyframe_gate: keyframe.final_motion_render_blocked_until_approved,
   persisted_keyframe_gate: evaluateKeyframeGate(keyframeApproval, spec.spec_hash).code,
   first_frame_route: goodRoute.selected?.model,
+  motion_evidence_valid: motionEvidence.valid,
+  incomplete_motion_evidence_blocked: !incompleteMotionEvidence.valid,
   budget_attempts_observed: budgetSummary.attempts_observed,
   budget_guard: missingEstimate.code,
   qa_pass: pass.decision,
