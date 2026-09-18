@@ -1,3 +1,4 @@
+import { readJobHealth } from './_lib/job-store.mts';
 import { getDeployStore, getStore } from '@netlify/blobs';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
@@ -34,6 +35,7 @@ export default async (request: Request) => {
   const deployContext = Netlify.context?.deploy?.context || 'unknown';
   const openrouter = Boolean(Netlify.env.get('OPENROUTER_API_KEY'));
   const asyncKey = Boolean(Netlify.env.get('AWL_API_KEY'));
+  const jobHealth = await readJobHealth();
 
   const healthy = storageOk;
   return json({
@@ -53,7 +55,8 @@ export default async (request: Request) => {
       protected_ai: {
         configured: openrouter,
         fallback_available: true
-      }
+      },
+      durable_job_health: jobHealth
     },
     architecture: {
       target_concurrent_active_users: 1000,
