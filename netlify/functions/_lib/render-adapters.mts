@@ -1,4 +1,5 @@
 import type { CanonReference, ShotRenderSpec } from './render-foundation.mts';
+import type { KeyframeApproval } from './keyframe-approval-core.mts';
 
 export type PreparedRendererRequest = {
   provider: 'fal' | 'runway' | 'external';
@@ -77,7 +78,7 @@ function promptFor(spec: ShotRenderSpec, refMap: PreparedRendererRequest['refere
   return lines.join('\n').slice(0, 9000);
 }
 
-function falSeedance2(spec: ShotRenderSpec, model: string, mode: 'draft' | 'final'): PreparedRendererRequest {
+function falSeedance2Reference(spec: ShotRenderSpec, model: string, mode: 'draft' | 'final'): PreparedRendererRequest {
   const references = usableReferences(spec, mode);
   const imageRefs = references.filter(visualReference).slice(0, 9);
   const videoRefs = references.filter(videoReference).slice(0, 3);
@@ -130,18 +131,97 @@ function falSeedance2(spec: ShotRenderSpec, model: string, mode: 'draft' | 'fina
   };
 }
 
+
+function falSeedance2ImageToVideo(
+  spec: ShotRenderSpec,
+  model: string,
+  mode: 'draft' | 'final',
+  approvedKeyframe: KeyframeApproval | null
+): PreparedRendererRequest {
+  if (!approvedKeyframe || approvedKeyframe.status !== 'approved') {
+    throw new Error('Seedance image-to-video requires an approved first-frame asset.');
+  }
+
+  if (approvedKeyframe.spec_hash !== spec.spec_hash) {
+    throw new Error('The approved first frame belongs to a different ShotRenderSpec.');
+  }
+
+  const allowedRatios = new Set(['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']);
+  const duration = Math.max(4, Math.min(15, Math.round(spec.output.duration_seconds)));
+  const ratio = allowedRatios.has(spec.output.aspect_ratio) ? spec.output.aspect_ratio : '16:9';
+
+  const reference_map: PreparedRendererRequest['reference_map'] = [{
+    token: 'START_FRAME',
+    reference_id: 'approved-keyframe:' + approvedKeyframe.shot_id,
+    kind: 'approved-first-frame',
+    uri: approvedKeyframe.asset.uri
+  }];
+
+  const motionPrompt = [
+    'PARABLE APPROVED-FIRST-FRAME MOTION CONTRACT.',
+    'The supplied image is the exact human-approved starting visual state for this shot.',
+    'Animate from it without redesigning the character, wardrobe, props, location, lighting direction or composition.',
+    '',
+    'DRAMATIC BEAT: ' + clean(spec.narrative.beat, 1200),
+    'DRAMATIC PURPOSE: ' + clean(spec.narrative.dramatic_purpose, 800),
+    'EMOTIONAL INTENT: ' + clean(spec.narrative.emotional_intent, 800),
+    '',
+    'CAMERA MOTION: ' + clean(spec.camera.motion || 'locked', 320),
+    'SHOT TYPE: ' + clean(spec.camera.shot_type, 180),
+    'PERFORMANCE: ' + clean(spec.performance.direction, 900),
+    'LIGHTING: preserve the approved first-frame lighting direction and motivated sources.',
+    '',
+    'MOTION RULES:',
+    '- Begin from the approved first frame.',
+    '- Preserve face identity, body proportions, wardrobe and visible injuries.',
+    '- Preserve prop ownership/location unless the scripted transition explicitly changes it.',
+    '- Preserve screen direction and spatial geography.',
+    '- Keep performance restrained and specific; do not add generic melodramatic gestures.',
+    '- Do not invent people, text, signage, props or environmental events.',
+    '- Do not cosmetically beautify or Westernize culturally grounded details.'
+  ].join('\n').slice(0, 9000);
+
+  return {
+    provider: 'fal',
+    model,
+    request_url: 'https://queue.fal.run/' + model,
+    body: {
+      prompt: motionPrompt,
+      image_url: approvedKeyframe.asset.uri,
+      resolution: mode === 'draft' ? '480p' : '720p',
+      duration: String(duration),
+      aspect_ratio: ratio,
+      generate_audio: false,
+      bitrate_mode: mode === 'draft' ? 'standard' : 'high',
+      end_user_id: spec.project_id
+    },
+    reference_map,
+    notes: [
+      'Adapter: fal Seedance 2 image-to-video schema.',
+      'The approved keyframe is sent as image_url, so the motion model starts from the human-approved visual state.',
+      'PARABLE keeps dialogue/music/foley as separate stems; native audio generation is disabled.',
+      'Any later ShotRenderSpec change invalidates this approval before dispatch.'
+    ]
+  };
+}
+
 export function prepareRendererRequest(args: {
   spec: ShotRenderSpec;
   provider: string;
   model: string;
   mode: 'draft' | 'final';
+  approvedKeyframe?: KeyframeApproval | null;
 }): PreparedRendererRequest {
   const provider = clean(args.provider, 80).toLowerCase();
   const model = clean(args.model, 240);
 
   if (provider === 'fal') {
+    if (model === 'bytedance/seedance-2.0/us/image-to-video') {
+      return falSeedance2ImageToVideo(args.spec, model, args.mode, args.approvedKeyframe || null);
+    }
+
     if (model === 'bytedance/seedance-2.0/us/reference-to-video') {
-      return falSeedance2(args.spec, model, args.mode);
+      return falSeedance2Reference(args.spec, model, args.mode);
     }
 
     throw new Error(
