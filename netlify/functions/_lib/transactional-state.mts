@@ -443,7 +443,9 @@ export async function readTransactionalJobCapacity() {
     failed: number;
     succeeded: number;
     at: string;
-  }>('job_capacity', {});
+  }>('job_capacity', {
+    scope_project_id: storageProjectId('_capacity_')
+  });
 }
 
 export async function transitionTransactionalJob(args: {
