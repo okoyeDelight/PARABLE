@@ -45,14 +45,40 @@ export default async (request: Request) => {
   for (let attempt = 1; attempt <= 40; attempt++) {
     const job = await readDurableJob(created.job.id);
     if (job?.status === 'succeeded') {
+      const duplicate = await createDurableJob({
+        kind: 'scale-noop',
+        projectId: 'scale_probe',
+        payload: { projectId: 'scale_probe', token },
+        idempotencyKey: 'queue-self-test-' + token
+      });
+
+      const conflict = await createDurableJob({
+        kind: 'scale-noop',
+        projectId: 'scale_probe',
+        payload: { projectId: 'scale_probe', token: token + '-conflict' },
+        idempotencyKey: 'queue-self-test-' + token
+      });
+
+      const idempotencyOk =
+        duplicate.created === false &&
+        duplicate.conflict === false &&
+        duplicate.job.id === job.id &&
+        conflict.created === false &&
+        conflict.conflict === true;
+
       return json({
-        ok: true,
+        ok: idempotencyOk,
+        probe_version: 'queue-self-test-v2',
         backend: dispatched.backend,
         degraded_from_primary: Boolean(dispatched.primary_error),
         job,
         result: await readJobResult(job),
+        idempotency: {
+          duplicate_reused_job: duplicate.job.id === job.id && duplicate.created === false && duplicate.conflict === false,
+          conflicting_replay_rejected: conflict.conflict === true
+        },
         polls: attempt
-      });
+      }, idempotencyOk ? 200 : 500);
     }
     if (job?.status === 'failed') {
       return json({
