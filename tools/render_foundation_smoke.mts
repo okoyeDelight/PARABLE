@@ -11,6 +11,10 @@ import { routeRenderSpec } from '../netlify/functions/_lib/render-router.mts';
 import { buildKeyframeGenerationPlan } from '../netlify/functions/_lib/keyframe-generation-core.mts';
 import { validateMotionEvidence } from '../netlify/functions/_lib/motion-inspector-ai.mts';
 import {
+  buildSceneSpatialPlan,
+  spatialContractForShot
+} from '../netlify/functions/_lib/spatial-continuity.mts';
+import {
   defaultRenderBudgetPolicy,
   evaluateRenderBudget,
   normalizeRenderBudgetPolicy,
@@ -418,6 +422,111 @@ const incompleteMotionEvidence = validateMotionEvidence({
 assert.equal(incompleteMotionEvidence.valid, false);
 assert.ok(incompleteMotionEvidence.errors.some((item) => /three trusted temporal samples/i.test(item)));
 
+const spatialContract:any = {
+  characters: [
+    { id: 'character_daniel', name: 'Daniel' },
+    { id: 'character_ada', name: 'Ada' }
+  ],
+  props: [{ id: 'prop_keys', name: 'Keys' }],
+  locations: [{ id: 'location_room', name: 'Family Room' }],
+  room_topology: {
+    room_family: {
+      location_name: 'Family Room',
+      anchors: {
+        door: { label: 'Main Door', kind: 'door' },
+        sofa: { label: 'Sofa', kind: 'furniture' }
+      },
+      relations: [
+        { subject: 'Main Door', relation: 'left_of', target: 'Sofa', confidence: 1 }
+      ]
+    }
+  },
+  camera_axes: {
+    axis_daniel_ada: {
+      subject_a: 'Daniel',
+      subject_b: 'Ada',
+      last_camera_side: 'side_a',
+      subject_a_screen_side: 'left',
+      subject_b_screen_side: 'right',
+      established_shot_id: 'shot_1'
+    }
+  }
+};
+
+const spatialShots = [
+  {
+    id: 'shot_1',
+    beat: 'Daniel and Ada sit opposite each other in a wide two-shot.',
+    shot_type: 'wide two-shot',
+    blocking: 'Daniel remains screen left; Ada remains screen right.'
+  },
+  {
+    id: 'shot_2',
+    beat: 'Ada listens while Daniel speaks.',
+    shot_type: 'medium close-up'
+  },
+  {
+    id: 'shot_3',
+    beat: 'The camera crosses the axis behind Daniel to the other side.',
+    shot_type: 'close-up'
+  }
+];
+
+const spatialPending = await buildSceneSpatialPlan({
+  projectId: 'project_smoke',
+  storyVersion: 'story_smoke',
+  sceneId: 'scene_axis',
+  shots: spatialShots,
+  continuityContract: spatialContract,
+  shotStates: {
+    shot_1: { can_render: true, extracted_shot_state: { beat: 1 } },
+    shot_2: { can_render: true, extracted_shot_state: { beat: 2 } },
+    shot_3: { can_render: true, extracted_shot_state: { beat: 3 } }
+  }
+});
+assert.equal(spatialPending.axis_critical, true);
+assert.equal(spatialPending.approval.status, 'pending');
+assert.equal(spatialPending.axis.subject_a, 'Daniel');
+assert.equal(spatialPending.axis.subject_b, 'Ada');
+assert.ok(spatialPending.room_topology.edges.some((edge) =>
+  edge.subject === 'Main Door' && edge.relation === 'left_of' && edge.target === 'Sofa'
+));
+assert.ok(spatialContractForShot(spatialPending, 'shot_2')?.can_render === false);
+assert.ok(
+  spatialContractForShot(spatialPending, 'shot_3')?.blockers.some((message:string) =>
+    /crosses the established camera axis/i.test(message)
+  )
+);
+
+const approvedSpatial = {
+  ...spatialPending,
+  approval: {
+    status: 'approved' as const,
+    approved_by_actor_id: 'usr_smoke',
+    approved_at: '2026-09-18T12:00:00.000Z',
+    reviewer_note: 'Axis and room geography reviewed.',
+    override_blockers: false
+  }
+};
+assert.equal(spatialContractForShot(approvedSpatial, 'shot_2')?.can_render, true);
+assert.equal(spatialContractForShot(approvedSpatial, 'shot_3')?.can_render, false);
+
+const spatialChanged = await buildSceneSpatialPlan({
+  projectId: 'project_smoke',
+  storyVersion: 'story_smoke',
+  sceneId: 'scene_axis',
+  shots: spatialShots,
+  continuityContract: spatialContract,
+  shotStates: {
+    shot_1: { can_render: true, extracted_shot_state: { beat: 1 } },
+    shot_2: { can_render: true, extracted_shot_state: { beat: 'changed' } },
+    shot_3: { can_render: true, extracted_shot_state: { beat: 3 } }
+  },
+  existing: approvedSpatial
+});
+assert.notEqual(spatialChanged.spatial_plan_hash, approvedSpatial.spatial_plan_hash);
+assert.equal(spatialChanged.approval.status, 'pending');
+
 const pass = evaluateRenderQA('render_pass', {
   identity: 0.96,
   wardrobe: 0.97,
@@ -462,6 +571,9 @@ console.log(JSON.stringify({
   first_frame_route: goodRoute.selected?.model,
   motion_evidence_valid: motionEvidence.valid,
   incomplete_motion_evidence_blocked: !incompleteMotionEvidence.valid,
+  spatial_axis_critical: spatialPending.axis_critical,
+  spatial_crossing_blocked: !spatialContractForShot(approvedSpatial, 'shot_3')?.can_render,
+  spatial_approval_invalidated_on_state_change: spatialChanged.approval.status === 'pending',
   budget_attempts_observed: budgetSummary.attempts_observed,
   budget_guard: missingEstimate.code,
   qa_pass: pass.decision,
