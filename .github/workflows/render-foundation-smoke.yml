@@ -1,0 +1,39 @@
+name: PARABLE Render Foundation Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/render-foundation.mts'
+      - 'netlify/functions/_lib/render-adapters.mts'
+      - 'netlify/functions/_lib/render-router.mts'
+      - 'netlify/functions/_lib/render-store.mts'
+      - 'netlify/functions/visual-canon.mts'
+      - 'netlify/functions/shot-compile.mts'
+      - 'netlify/functions/render-route.mts'
+      - 'netlify/functions/render-attempts.mts'
+      - 'netlify/functions/render-dispatch.mts'
+      - 'netlify/functions/render-provider-status.mts'
+      - 'netlify/functions/render-qa.mts'
+      - 'tools/render_foundation_smoke.mts'
+      - '.github/workflows/render-foundation-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-render-foundation-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run deterministic Render Engine smoke
+        run: node tools/render_foundation_smoke.mts
