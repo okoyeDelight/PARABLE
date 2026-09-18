@@ -190,7 +190,7 @@ export default async (request: Request) => {
       }
       if (
         renderUsage === 'identity' &&
-        ['external','official-media'].includes(source === 'external' ? origin : '') &&
+        (source === 'external' || origin === 'official-media') &&
         rightsStatus !== 'approved'
       ) {
         await abortProjectMutation(lease).catch(() => false);
