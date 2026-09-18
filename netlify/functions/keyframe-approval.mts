@@ -20,6 +20,8 @@ import {
   type KeyframeApproval
 } from './_lib/keyframe-approval-core.mts';
 import { stableHash } from './_lib/render-foundation.mts';
+import { readKeyframeAsset } from './_lib/keyframe-assets.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 import {
   readKeyframePlan,
   readLatestKeyframeInspection,
@@ -56,6 +58,14 @@ export default async (request: Request) => {
 
     if (![projectId, sceneId, shotId].every((value) => value && safeId(value))) {
       return json({ error: 'Valid projectId, sceneId and shotId are required.' }, 400);
+    }
+
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
     }
 
     const state = await readKeyframeApproval(projectId, sceneId, shotId);
@@ -98,6 +108,14 @@ export default async (request: Request) => {
       error: 'Keyframe approval changes require humanApproved: true.',
       code: 'HUMAN_APPROVAL_REQUIRED'
     }, 400);
+  }
+
+  try {
+    await authorizeProject(request, projectId, 'review:approve');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
   }
 
   const [spec, plan] = await Promise.all([
@@ -172,11 +190,26 @@ export default async (request: Request) => {
         return json({ error: 'contentSha256 must be a 64-character SHA-256 digest.' }, 400);
       }
 
-      if (!immutableBinding && !contentSha256) {
+      if (!contentSha256) {
         await abortProjectMutation(lease).catch(() => false);
         return json({
-          error: 'The approved first frame must be immutably bound. Supply contentSha256 or immutableBinding: true.',
-          code: 'KEYFRAME_ASSET_BINDING_REQUIRED'
+          error: 'The approved first frame must be a PARABLE-vaulted asset with a verified SHA-256.',
+          code: 'KEYFRAME_ASSET_BINDING_REQUIRED',
+          hint: 'Generate the candidate in PARABLE or upload it through /api/keyframe-assets first.'
+        }, 409);
+      }
+
+      const storedAsset = await readKeyframeAsset(projectId, contentSha256);
+      if (
+        !storedAsset ||
+        storedAsset.metadata.story_version !== storyVersion ||
+        storedAsset.metadata.scene_id !== sceneId ||
+        storedAsset.metadata.shot_id !== shotId
+      ) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({
+          error: 'The proposed first frame is not an immutable PARABLE asset for this exact story/scene/shot.',
+          code: 'KEYFRAME_ASSET_SCOPE_MISMATCH'
         }, 409);
       }
 
@@ -228,12 +261,14 @@ export default async (request: Request) => {
         spec_hash: spec.spec_hash,
         keyframe_plan_hash: planHash,
         asset: {
-          uri: assetUri,
-          source: assetSource as 'generated' | 'uploaded' | 'external',
-          provider: clean(body.provider, 120) || null,
-          model: clean(body.model, 240) || null,
+          uri: 'parable://keyframe/' + contentSha256,
+          source: storedAsset.metadata.provider === 'human'
+            ? 'uploaded'
+            : assetSource as 'generated' | 'uploaded' | 'external',
+          provider: clean(body.provider, 120) || storedAsset.metadata.provider || null,
+          model: clean(body.model, 240) || storedAsset.metadata.model || null,
           content_sha256: contentSha256,
-          immutable_binding: immutableBinding || Boolean(contentSha256)
+          immutable_binding: true
         },
         checks,
         reviewer: {
