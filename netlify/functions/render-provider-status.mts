@@ -165,6 +165,7 @@ export default async (request: Request) => {
     if (attempt.provider_transaction_id && polled.retryable === false) {
       await failProviderTransaction({
         id: attempt.provider_transaction_id,
+        projectId: attempt.project_id,
         failureClass: 'provider-status-failed',
         failureDetail: polled.error || 'Provider status/result retrieval failed terminally.'
       }).catch(() => null);
@@ -185,7 +186,7 @@ export default async (request: Request) => {
     };
     if (next.status !== attempt.status) {
       if (attempt.provider_transaction_id && polled.state === 'rendering') {
-        await markProviderProcessing(attempt.provider_transaction_id).catch(() => null);
+        await markProviderProcessing(attempt.provider_transaction_id, attempt.project_id).catch(() => null);
       }
       await saveRenderAttempt(next);
       await appendRenderAttemptEvent(next, 'provider-status', {
@@ -215,6 +216,7 @@ export default async (request: Request) => {
   if (attempt.provider_transaction_id) {
     await settleProviderTransaction({
       id: attempt.provider_transaction_id,
+      projectId: attempt.project_id,
       actualCostUsd: attempt.actual_cost_usd
     }).catch(() => null);
   }
