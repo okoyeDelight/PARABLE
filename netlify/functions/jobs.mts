@@ -73,7 +73,7 @@ export default async (request: Request) => {
   if (shouldDispatch) {
     try {
       const client = new AsyncWorkloadsClient();
-      await client.send('parable.continuity.process', {
+      await client.send('parable.pipeline.process', {
         data: {
           jobId: created.job.id,
           kind
