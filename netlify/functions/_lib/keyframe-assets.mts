@@ -93,20 +93,38 @@ export async function readKeyframeAsset(hash: string) {
   return { bytes, metadata };
 }
 
+const safePart = (value: unknown) => String(value || '')
+  .replace(/[^a-zA-Z0-9_.:-]/g, '_')
+  .slice(0, 180);
+
+function shotGenerationPrefix(record: Record<string, any>) {
+  return [
+    'shot',
+    safePart(record.project_id),
+    safePart(record.story_version),
+    safePart(record.scene_id),
+    safePart(record.shot_id)
+  ].join('/') + '/';
+}
+
 export async function saveKeyframeGeneration(record: Record<string, any>) {
-  const key = 'generation/' + String(record.id || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 180);
-  await stores().generations.setJSON(key, record);
-  await stores().generations.setJSON(
-    [
-      'latest',
-      String(record.project_id || '').replace(/[^a-zA-Z0-9_-]/g, '_'),
-      String(record.story_version || '').replace(/[^a-zA-Z0-9_-]/g, '_'),
-      String(record.scene_id || '').replace(/[^a-zA-Z0-9_-]/g, '_'),
-      String(record.shot_id || '').replace(/[^a-zA-Z0-9_-]/g, '_'),
-      String(record.spec_hash || '').replace(/[^a-zA-Z0-9_-]/g, '_')
-    ].join('/'),
-    record
-  );
+  const id = safePart(record.id);
+  const key = 'generation/' + id;
+  const shotKey = shotGenerationPrefix(record) + id;
+  const latestKey = [
+    'latest',
+    safePart(record.project_id),
+    safePart(record.story_version),
+    safePart(record.scene_id),
+    safePart(record.shot_id),
+    safePart(record.spec_hash)
+  ].join('/');
+
+  await Promise.all([
+    stores().generations.setJSON(key, record),
+    stores().generations.setJSON(shotKey, record),
+    stores().generations.setJSON(latestKey, record)
+  ]);
   return key;
 }
 
@@ -123,18 +141,19 @@ export async function listShotKeyframeGenerations(args: {
   shotId: string;
   limit?: number;
 }) {
-  const { blobs } = await stores().generations.list({ prefix: 'generation/' });
+  const prefix = [
+    'shot',
+    safePart(args.projectId),
+    safePart(args.storyVersion),
+    safePart(args.sceneId),
+    safePart(args.shotId)
+  ].join('/') + '/';
+  const { blobs } = await stores().generations.list({ prefix });
+  const selected = blobs.slice(-Math.max(1, Math.min(500, args.limit || 150)));
   const values = await Promise.all(
-    blobs.slice(-Math.max(1, Math.min(500, args.limit || 150))).map(({ key }) =>
+    selected.map(({ key }) =>
       stores().generations.get(key, { type: 'json' }) as Promise<Record<string, any> | null>
     )
   );
-
-  return values.filter((record: any) =>
-    record &&
-    record.project_id === args.projectId &&
-    record.story_version === args.storyVersion &&
-    record.scene_id === args.sceneId &&
-    record.shot_id === args.shotId
-  ) as Record<string, any>[];
+  return values.filter(Boolean) as Record<string, any>[];
 }
