@@ -10,6 +10,7 @@ let currentResult=null;
 let currentCritic=null;
 let activeShot=null;
 let directionTimer=null;
+const PENDING_PRODUCTION_JOB='parable.pending.production.v1';
 
 const escapeHtml=(v='')=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 const showToast=(message)=>{if(!toast)return;toast.textContent=message;toast.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>toast.classList.remove('show'),2200)};
@@ -153,6 +154,21 @@ async function createProject(payload){
   return body;
 }
 
+function rememberPendingProduction(jobId,projectId){
+  try{localStorage.setItem(PENDING_PRODUCTION_JOB,JSON.stringify({jobId,projectId,at:Date.now()}));}catch{}
+}
+function clearPendingProduction(){
+  try{localStorage.removeItem(PENDING_PRODUCTION_JOB);}catch{}
+}
+function readPendingProduction(){
+  try{
+    const value=JSON.parse(localStorage.getItem(PENDING_PRODUCTION_JOB)||'null');
+    if(!value?.jobId||!value?.projectId)return null;
+    if(Date.now()-Number(value.at||0)>24*60*60*1000){clearPendingProduction();return null;}
+    return value;
+  }catch{return null;}
+}
+
 async function stableIdempotencyKey(value){
   const bytes=new TextEncoder().encode(value);
   const digest=await crypto.subtle.digest('SHA-256',bytes);
@@ -193,12 +209,16 @@ async function adaptProject(payload,projectId){
     body:JSON.stringify({kind:'adaptation',payload:jobPayload})
   });
   const body=await r.json();if(!r.ok)throw new Error(body.error||'Story Intelligence could not be queued');
-  return waitForJob(body.job.id,{
+  rememberPendingProduction(body.job.id,projectId);
+  const result=await waitForJob(body.job.id,{
     onProgress:(status)=>{
       if(status==='queued')$('#formNote').textContent='Production queued safely. PARABLE is preparing Story Intelligence…';
       if(status==='processing')$('#formNote').textContent='Story Intelligence is processing. You can stay on this screen; the work is durable.';
+      if(status==='retrying')$('#formNote').textContent='A provider slowed down. PARABLE preserved the job and is retrying safely…';
     }
   });
+  clearPendingProduction();
+  return result;
 }
 
 async function runDirectorCritic(){
@@ -309,4 +329,30 @@ $('#lensControl')?.addEventListener('change',e=>{
 $('#motionControl')?.addEventListener('change',e=>{if(activeShot){activeShot.motion=e.target.value;scheduleDirectionSave();}showToast(`Motion: ${e.target.value}`)});
 $('#lightControl')?.addEventListener('change',e=>{if(activeShot){activeShot.lighting=e.target.value;scheduleDirectionSave();}showToast(`Light: ${e.target.value}`)});
 
+async function resumePendingProduction(){
+  const pending=readPendingProduction();
+  if(!pending)return;
+  currentProjectId=pending.projectId;
+  $('#formNote').textContent='Restoring your in-progress production…';
+  try{
+    const result=await waitForJob(pending.jobId,{
+      timeoutMs:180000,
+      onProgress:(status)=>{
+        $('#formNote').textContent=status==='retrying'
+          ?'Production is being retried safely after an upstream delay…'
+          :'Restoring durable production work…';
+      }
+    });
+    clearPendingProduction();
+    renderResult(result);
+    $('#formNote').textContent='Your production was restored from the durable job queue.';
+    showToast('Production restored.');
+  }catch(err){
+    if(String(err?.message||'').includes('still processing'))return;
+    clearPendingProduction();
+    $('#formNote').textContent=err.message||'Could not restore the previous production job.';
+  }
+}
+
 loadAiStatus();
+resumePendingProduction();
