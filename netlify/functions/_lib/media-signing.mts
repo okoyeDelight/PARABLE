@@ -8,11 +8,22 @@ function runtime() {
   const deployContext = context?.deploy?.context || Netlify.context?.deploy?.context || 'unknown';
   const production = deployContext === 'production';
 
+  const deployId = clean(context?.deploy?.id || Netlify.context?.deploy?.id, 120);
+  const siteName = clean(context?.site?.name || Netlify.context?.site?.name, 160);
+  // Signed media must resolve against the exact immutable deploy. In a Deploy
+  // Preview, context.site.url can point at production; using it would make a
+  // valid preview asset URL land on the production SPA instead of this deploy's
+  // private media function/store.
+  const exactDeployOrigin = deployId && siteName
+    ? 'https://' + deployId + '--' + siteName + '.netlify.app'
+    : '';
+
   const origin = (
+    exactDeployOrigin ||
     context?.deploy?.url ||
-    context?.site?.url ||
     Netlify.env.get('DEPLOY_URL') ||
     Netlify.env.get('DEPLOY_PRIME_URL') ||
+    context?.site?.url ||
     Netlify.env.get('URL') ||
     ''
   ).replace(/\/$/, '');
