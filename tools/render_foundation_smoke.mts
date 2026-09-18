@@ -155,6 +155,34 @@ assert.equal(generationPlan.reference_ids.includes('ref_christian_film_inspirati
 assert.equal(generationPlan.inspiration_notes.length, 1);
 assert.match(generationPlan.prompt, /do not reproduce a recognizable actor/i);
 
+const handoffSpec:any = {
+  ...spec,
+  world_state: {
+    ...spec.world_state,
+    previous_accepted_handoff: {
+      handoff_version: 'parable-shot-handoff-v1',
+      shot_id: 'shot_1',
+      handoff_frame: {
+        uri: 'https://example.com/immutable-handoff.jpg',
+        timestamp_seconds: 6.9,
+        sha256: 'b'.repeat(64)
+      }
+    }
+  },
+  hard_constraints: {
+    ...spec.hard_constraints,
+    match_previous_accepted_handoff: true
+  }
+};
+
+const handoffGenerationPlan = buildKeyframeGenerationPlan({
+  spec: handoffSpec,
+  model: 'google/gemini-3.1-flash-image'
+});
+assert.equal(handoffGenerationPlan.input_references[0]?.image_url?.url, 'https://example.com/immutable-handoff.jpg');
+assert.equal(handoffGenerationPlan.reference_ids[0], 'sequence-handoff:shot_1');
+assert.match(handoffGenerationPlan.prompt, /previous accepted shot handoff/i);
+
 const keyframe = buildKeyframePlan(spec);
 assert.equal(keyframe.first_frame.composition.grammar, 'negative_space');
 assert.equal(keyframe.final_motion_render_blocked_until_approved, true);
@@ -427,6 +455,8 @@ console.log(JSON.stringify({
   final_reference_count: prepared.reference_map.length,
   inspiration_reference_count: spec.inspiration_references?.length || 0,
   generation_reference_count: generationPlan.input_references.length,
+  sequence_handoff_reference_count: handoffGenerationPlan.input_references.length,
+  sequence_handoff_first_reference: handoffGenerationPlan.reference_ids[0],
   keyframe_gate: keyframe.final_motion_render_blocked_until_approved,
   persisted_keyframe_gate: evaluateKeyframeGate(keyframeApproval, spec.spec_hash).code,
   first_frame_route: goodRoute.selected?.model,
