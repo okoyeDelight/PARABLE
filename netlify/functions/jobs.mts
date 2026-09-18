@@ -21,19 +21,6 @@ const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 const supported = new Set<JobKind>(['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic', 'scale-noop']);
 
 export default async (request: Request) => {
-  if (request.method === 'GET') {
-    const url = new URL(request.url);
-    const jobId = clean(url.searchParams.get('id'), 96);
-    if (!jobId || !safeId(jobId)) return json({ error: 'A valid job id is required.' }, 400);
-
-    const job = await readDurableJob(jobId);
-    if (!job) return json({ error: 'Job not found.' }, 404);
-
-    const includeResult = url.searchParams.get('result') !== '0';
-    const result = includeResult && job.status === 'succeeded' ? await readJobResult(job) : null;
-    return json({ job, result });
-  }
-
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
   const body = await request.json().catch(() => ({})) as Record<string, any>;
@@ -102,14 +89,14 @@ export default async (request: Request) => {
     job: current,
     accepted: true,
     deduplicated: !created.created,
-    poll: '/api/jobs?id=' + current.id
+    poll: '/api/job-status?id=' + current.id
   }, created.created ? 202 : 200);
 };
 
 export const config = {
   path: '/api/jobs',
   rateLimit: {
-    windowLimit: 120,
+    windowLimit: 1500,
     windowSize: 60,
     aggregateBy: ['ip', 'domain']
   }
