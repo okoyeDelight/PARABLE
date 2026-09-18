@@ -468,7 +468,13 @@ export async function claimRecoverableTransactionalJobs(args: {
     scope_project_id: storageProjectId('_recovery_'),
     recovery_token: clean(args.recoveryToken, 180),
     limit: Math.max(1, Math.min(100, Math.floor(Number(args.limit) || 25))),
-    min_age_ms: Math.max(0, Math.min(3600000, Math.floor(Number(args.minAgeMs) || 30000)))
+    min_age_ms: Math.max(
+      0,
+      Math.min(
+        3600000,
+        Math.floor(args.minAgeMs === null || args.minAgeMs === undefined ? 30000 : Number(args.minAgeMs))
+      )
+    )
   });
 }
 
