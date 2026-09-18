@@ -12,7 +12,8 @@ function stores() {
     attempts: make('parable-render-attempts'),
     attemptEvents: make('parable-render-attempt-events'),
     qa: make('parable-render-qa'),
-    keyframes: make('parable-keyframe-plans')
+    keyframes: make('parable-keyframe-plans'),
+    keyframeInspections: make('parable-keyframe-inspections')
   };
 }
 
@@ -185,4 +186,34 @@ export async function listProjectAttemptEvents(args: {
     latest.map(({ key }) => stores().attemptEvents.get(key, { type: 'json' }))
   );
   return events.filter(Boolean) as Record<string, any>[];
+}
+
+
+export async function saveKeyframeInspection(report: Record<string, any>) {
+  const key = [
+    'project',
+    safe(report.project_id),
+    safe(report.story_version),
+    safe(report.scene_id),
+    safe(report.shot_id),
+    safe(report.spec_hash),
+    safe(report.id)
+  ].join('/');
+  await stores().keyframeInspections.setJSON(key, report, { onlyIfNew: true } as any);
+  await stores().keyframeInspections.setJSON(
+    ['latest', safe(report.project_id), safe(report.story_version), safe(report.scene_id), safe(report.shot_id), safe(report.spec_hash)].join('/'),
+    report
+  );
+  return key;
+}
+
+export async function readLatestKeyframeInspection(args: {
+  projectId: string;
+  storyVersion: string;
+  sceneId: string;
+  shotId: string;
+  specHash: string;
+}) {
+  const key = ['latest', safe(args.projectId), safe(args.storyVersion), safe(args.sceneId), safe(args.shotId), safe(args.specHash)].join('/');
+  return stores().keyframeInspections.get(key, { type: 'json' }) as Promise<Record<string, any> | null>;
 }
