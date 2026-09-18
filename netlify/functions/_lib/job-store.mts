@@ -20,6 +20,14 @@ export type DurableJob = {
   lease_token: string | null;
   lease_expires_at: string | null;
   queue_event_id: string | null;
+  authorization: {
+    actor_id: string;
+    provider: string;
+    subject: string;
+    workspace_id: string;
+    role: string;
+    action: string;
+  } | null;
 };
 
 type JobEvent = {
@@ -121,6 +129,7 @@ export async function createDurableJob(args: {
   projectId: string;
   payload: Record<string, unknown>;
   idempotencyKey?: string | null;
+  authorization?: DurableJob['authorization'];
 }) {
   const { jobs, payloads, scope } = stores();
   const payloadJson = JSON.stringify(args.payload);
@@ -161,7 +170,8 @@ export async function createDurableJob(args: {
     completed_at: null,
     lease_token: null,
     lease_expires_at: null,
-    queue_event_id: null
+    queue_event_id: null,
+    authorization: args.authorization || null
   };
 
   await Promise.all([
