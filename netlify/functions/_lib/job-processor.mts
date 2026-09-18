@@ -8,6 +8,11 @@ import {
   readJobPayload,
   type JobKind
 } from './job-store.mts';
+import {
+  signInternalAuthorization,
+  type ProjectAction,
+  type SecurityActor
+} from './security.mts';
 
 export type ProcessOutcome =
   | { status: 'completed'; result?: unknown }
@@ -108,6 +113,36 @@ export async function processDurableJob(args: {
     return { status: 'terminal', message };
   }
 
+  if (!existing.authorization) {
+    const message = 'Durable job has no trusted authorization context.';
+    await failJob(jobId, message);
+    return { status: 'terminal', message };
+  }
+
+  const actor: SecurityActor = {
+    actor_id: existing.authorization.actor_id,
+    provider: existing.authorization.provider,
+    subject: existing.authorization.subject,
+    email: null,
+    display_name: null,
+    auth_mode: 'internal',
+    internal: true
+  };
+
+  let internalAuth: string;
+  try {
+    internalAuth = await signInternalAuthorization({
+      actor,
+      projectId: existing.project_id,
+      action: existing.authorization.action as ProjectAction,
+      ttlSeconds: 300
+    });
+  } catch (error) {
+    const message = clean(error instanceof Error ? error.message : error, 1000) || 'Internal authorization signing failed.';
+    await failJob(jobId, message);
+    return { status: 'terminal', message };
+  }
+
   let response: Response;
   try {
     response = await fetch(base + path, {
@@ -115,7 +150,8 @@ export async function processDurableJob(args: {
       headers: {
         'content-type': 'application/json',
         'x-parable-workload': 'durable-pipeline',
-        'x-parable-job-id': jobId
+        'x-parable-job-id': jobId,
+        'x-parable-internal-auth': internalAuth
       },
       body: JSON.stringify(payload)
     });
