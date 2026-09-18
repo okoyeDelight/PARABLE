@@ -310,12 +310,23 @@ export default async (request: Request) => {
   }
 
   if (spec.human_review.required_before_final_render) {
-    return json({
-      error: 'The ShotRenderSpec still contains unresolved human/rights review requirements.',
-      code: 'HUMAN_REVIEW_REQUIRED',
-      reasons: spec.human_review.reasons,
-      hint: 'Resolve Visual Canon rights/review issues before generating a production keyframe.'
-    }, 409);
+    const reasons = Array.isArray(spec.human_review.reasons) ? spec.human_review.reasons : [];
+    const hardReasons = reasons.filter((reason: unknown) =>
+      /rights|likeness|voice|camera-axis|spatial|blocker|unverified reference/i.test(String(reason || ''))
+    );
+    // A development still exists so the human can review uncertain film choices.
+    // It may bypass only advisory Continuity-Brain review, never rights/spatial
+    // blockers, and it can never become production-eligible automatically.
+    const developmentReviewOnly = body.freeDevelopment === true && hardReasons.length === 0;
+    if (!developmentReviewOnly) {
+      return json({
+        error: 'The ShotRenderSpec still contains unresolved human/rights review requirements.',
+        code: 'HUMAN_REVIEW_REQUIRED',
+        reasons,
+        hard_reasons: hardReasons,
+        hint: 'Resolve Visual Canon rights/spatial blockers before generation. Advisory continuity review may use the explicit free-development still route.'
+      }, 409);
+    }
   }
 
   const configuredMaxGenerations = Number(Netlify.env.get('PARABLE_KEYFRAME_MAX_GENERATIONS_PER_SHOT') || 5);
