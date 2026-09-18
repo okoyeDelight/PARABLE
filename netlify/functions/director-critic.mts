@@ -1,5 +1,6 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import { compactCriticPayload, runFilmCritic } from './_lib/critic-ai.mts';
+import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -42,10 +43,16 @@ export default async (request: Request) => {
   const storyVersion = clean(body.storyVersion, 96);
   if (!safeId(projectId) || !safeId(storyVersion)) return json({ error: 'A valid project and story version are required.' }, 400);
 
-  const [adaptation, project] = await Promise.all([
+  const authoritativeAdaptation = await readAuthoritativeProjectState<any>(projectId, 'adaptation:latest');
+  const authoritativeProject = await readAuthoritativeProjectState<any>(projectId, 'project:metadata');
+  const [cachedAdaptation, cachedProject] = await Promise.all([
     adaptations.get(`project/${projectId}/versions/${storyVersion}`, { type: 'json' }) as Promise<any>,
     projects.get(`project/${projectId}`, { type: 'json' }) as Promise<any>
   ]);
+  const adaptation = authoritativeAdaptation?.value?.story_version === storyVersion
+    ? authoritativeAdaptation.value
+    : cachedAdaptation;
+  const project = authoritativeProject?.value || cachedProject;
   if (!adaptation) return json({ error: 'That story version could not be found.' }, 404);
   if (!project) return json({ error: 'That project could not be found.' }, 404);
 
