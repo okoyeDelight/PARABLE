@@ -80,7 +80,7 @@ export default async (request: Request) => {
   const action = clean(body.action || 'bootstrap', 40);
 
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
-  if (!['bootstrap', 'approve_reference', 'update_style'].includes(action)) {
+  if (!['bootstrap', 'add_reference', 'approve_reference', 'update_style'].includes(action)) {
     return json({ error: 'Unsupported Visual Canon action.' }, 400);
   }
 
@@ -135,6 +135,63 @@ export default async (request: Request) => {
       continuity,
       existing: existingCanon
     });
+
+    if (action === 'add_reference') {
+      if (body.humanApproved !== true) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({ error: 'Adding Visual Canon references requires humanApproved: true.' }, 400);
+      }
+
+      const entityId = clean(body.entityId, 180);
+      const entityName = clean(body.entityName, 180).toLowerCase();
+      const referenceKind = clean(body.referenceKind, 80);
+      const uri = clean(body.uri, 1800);
+      const rightsStatus = clean(body.rightsStatus || 'unverified', 40) as RightsStatus;
+      const source = clean(body.source || 'human-upload', 40);
+      const validKinds = new Set([
+        'actor-face','actor-visual','voice','wardrobe','performance',
+        'location-visual','location-layout','location-lighting','prop-visual','style'
+      ]);
+      const validSources = new Set(['human-upload','generated','external']);
+
+      if (!validKinds.has(referenceKind) || !uri || !['approved','unverified','restricted','revoked'].includes(rightsStatus)) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({ error: 'referenceKind, uri and a valid rightsStatus are required.' }, 400);
+      }
+      if (!validSources.has(source)) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({ error: 'source must be human-upload, generated or external.' }, 400);
+      }
+
+      const entities = [...canon.characters, ...canon.locations, ...canon.props];
+      const entity = entities.find((item) =>
+        (entityId && item.id === entityId) ||
+        (entityName && item.name.toLowerCase() === entityName)
+      );
+      if (!entity) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({ error: 'The target entity was not found in the Visual Canon.' }, 404);
+      }
+
+      const duplicate = entity.references.find((ref) => ref.kind === referenceKind && ref.uri === uri);
+      if (!duplicate) {
+        entity.references.push({
+          id: 'ref_' + entity.id + '_' + crypto.randomUUID().replaceAll('-', '').slice(0, 16),
+          kind: referenceKind as any,
+          uri,
+          label: clean(body.label, 220) || (entity.name + ' · ' + referenceKind.replaceAll('-', ' ')),
+          rights_status: rightsStatus,
+          approved_by_human: true,
+          source: source as any,
+          notes: clean(body.notes, 500) || undefined
+        });
+      } else {
+        duplicate.rights_status = rightsStatus;
+        duplicate.approved_by_human = true;
+        duplicate.notes = clean(body.notes, 500) || duplicate.notes;
+      }
+      canon.updated_at = new Date().toISOString();
+    }
 
     if (action === 'approve_reference') {
       if (body.humanApproved !== true) {
