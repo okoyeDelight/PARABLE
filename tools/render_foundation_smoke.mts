@@ -8,6 +8,7 @@ import {
 import { prepareRendererRequest } from '../netlify/functions/_lib/render-adapters.mts';
 import { evaluateKeyframeGate } from '../netlify/functions/_lib/keyframe-approval-core.mts';
 import { routeRenderSpec } from '../netlify/functions/_lib/render-router.mts';
+import { buildKeyframeGenerationPlan } from '../netlify/functions/_lib/keyframe-generation-core.mts';
 import {
   defaultRenderBudgetPolicy,
   evaluateRenderBudget,
@@ -72,6 +73,22 @@ for (const entity of [...canon.characters, ...canon.locations]) {
 }
 canon.unresolved_rights = [];
 
+canon.characters[0].references.push({
+  id: 'ref_christian_film_inspiration',
+  kind: 'actor-visual',
+  uri: 'https://example.com/christian-film-character.jpg',
+  label: 'Christian film casting inspiration',
+  rights_status: 'unverified',
+  approved_by_human: true,
+  source: 'external',
+  render_usage: 'inspiration-only',
+  origin: 'official-media',
+  source_title: 'Reference Film',
+  source_creator: 'Christian Film Studio',
+  source_url: 'https://example.com/official-film-page',
+  notes: 'Study restrained performance and grounded Nigerian Christian-film production tone; do not reproduce the actor.'
+});
+
 const spec = await compileShotRenderSpec({
   projectRevision: 12,
   canon,
@@ -108,7 +125,17 @@ assert.equal(spec.composition.grammar, 'negative_space');
 assert.equal(spec.composition.narrative_intent, 'isolation');
 assert.equal(spec.output.audio_strategy, 'separate-stems');
 assert.equal(spec.references.length, 2);
+assert.equal(spec.inspiration_references?.length, 1);
 assert.equal(spec.human_review.required_before_final_render, false);
+
+const generationPlan = buildKeyframeGenerationPlan({
+  spec,
+  model: 'google/gemini-3.1-flash-image'
+});
+assert.equal(generationPlan.input_references.length, 2);
+assert.equal(generationPlan.reference_ids.includes('ref_christian_film_inspiration'), false);
+assert.equal(generationPlan.inspiration_notes.length, 1);
+assert.match(generationPlan.prompt, /do not reproduce a recognizable actor/i);
 
 const keyframe = buildKeyframePlan(spec);
 assert.equal(keyframe.first_frame.composition.grammar, 'negative_space');
@@ -145,6 +172,11 @@ const keyframeApproval = {
   reviewer: {
     human_approved: true as const,
     note: 'Smoke-test approval.'
+  },
+  visual_inspection: {
+    inspection_id: 'inspect_smoke',
+    decision: 'CLEAR_FOR_HUMAN_REVIEW',
+    overridden_by_human: false
   },
   approved_at: '2026-09-18T10:00:00.000Z',
   revoked_at: null,
@@ -337,6 +369,8 @@ console.log(JSON.stringify({
   composition: spec.composition.grammar,
   spec_hash: spec.spec_hash.slice(0, 16),
   final_reference_count: prepared.reference_map.length,
+  inspiration_reference_count: spec.inspiration_references?.length || 0,
+  generation_reference_count: generationPlan.input_references.length,
   keyframe_gate: keyframe.final_motion_render_blocked_until_approved,
   persisted_keyframe_gate: evaluateKeyframeGate(keyframeApproval, spec.spec_hash).code,
   first_frame_route: goodRoute.selected?.model,
