@@ -35,6 +35,9 @@ on:
       - 'netlify/functions/_lib/job-processor.mts'
       - 'netlify/functions/jobs.mts'
       - 'netlify/functions/_lib/ai-health-store.mts'
+      - 'netlify/functions/_lib/inspiration-profile-ai.mts'
+      - 'netlify/functions/reference-profile.mts'
+      - 'netlify/functions/engines.mts'
       - 'tools/render_foundation_smoke.mts'
       - '.github/workflows/render-foundation-smoke.yml'
   workflow_dispatch:
