@@ -175,6 +175,30 @@ async function stableIdempotencyKey(value){
   return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,48);
 }
 
+async function submitDurableJob(kind,payload,idempotencyKey){
+  let lastError=null;
+  for(let attempt=1;attempt<=3;attempt++){
+    try{
+      const r=await fetch('/api/jobs',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Idempotency-Key':idempotencyKey},
+        body:JSON.stringify({kind,payload})
+      });
+      const body=await r.json().catch(()=>({}));
+      if(r.ok&&body?.job?.id)return body;
+      lastError=new Error(body.error||'PARABLE could not start this production job.');
+      if(r.status<500&&r.status!==429)throw lastError;
+    }catch(err){
+      lastError=err instanceof Error?err:new Error(String(err||'Production request failed.'));
+    }
+    if(attempt<3){
+      $('#formNote').textContent='Connection was interrupted. PARABLE kept the request safe and is retrying…';
+      await new Promise(resolve=>setTimeout(resolve,attempt===1?900:2200));
+    }
+  }
+  throw lastError||new Error('PARABLE could not start this production job.');
+}
+
 async function waitForJob(jobId,{timeoutMs=180000,onProgress}={}){
   const started=Date.now();
   let delay=700;
@@ -204,12 +228,7 @@ async function adaptProject(payload,projectId){
     setting:payload.setting||'',
     primaryAudience:payload.primaryAudience||''
   }));
-  const r=await fetch('/api/jobs',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Idempotency-Key':idempotencyKey},
-    body:JSON.stringify({kind:'adaptation',payload:jobPayload})
-  });
-  const body=await r.json();if(!r.ok)throw new Error(body.error||'Story Intelligence could not be queued');
+  const body=await submitDurableJob('adaptation',jobPayload,idempotencyKey);
   rememberPendingProduction(body.job.id,projectId);
   const result=await waitForJob(body.job.id,{
     onProgress:(status)=>{
@@ -231,12 +250,7 @@ async function runDirectorCritic(){
   try{
     const payload={projectId:currentProjectId,storyVersion:currentResult.story_version};
     const key=await stableIdempotencyKey('critic|'+currentProjectId+'|'+currentResult.story_version);
-    const r=await fetch('/api/jobs',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Idempotency-Key':key},
-      body:JSON.stringify({kind:'film-critic',payload})
-    });
-    const body=await r.json();if(!r.ok)throw new Error(body.error||'Film Quality Critic could not be queued');
+    const body=await submitDurableJob('film-critic',payload,key);
     const review=await waitForJob(body.job.id,{
       onProgress:(status)=>{
         if($('#criticState'))$('#criticState').textContent=status==='processing'
