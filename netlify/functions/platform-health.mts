@@ -1,3 +1,4 @@
+import { getContext } from '@netlify/functions';
 import { readJobHealth } from './_lib/job-store.mts';
 import { getDeployStore, getStore } from '@netlify/blobs';
 
@@ -32,7 +33,10 @@ export default async (request: Request) => {
     storageOk = false;
   }
 
-  const deployContext = Netlify.context?.deploy?.context || 'unknown';
+  let runtimeContext: any = null;
+  try { runtimeContext = getContext(); } catch {}
+
+  const deployContext = runtimeContext?.deploy?.context || Netlify.context?.deploy?.context || 'unknown';
   const openrouter = Boolean(Netlify.env.get('OPENROUTER_API_KEY'));
   const asyncKey = Boolean(Netlify.env.get('AWL_API_KEY'));
   const queueMode = Netlify.env.get('PARABLE_QUEUE_MODE') || (deployContext === 'deploy-preview' ? 'background' : 'auto');
@@ -77,9 +81,14 @@ export default async (request: Request) => {
     },
     deployment: {
       commit_ref: Netlify.env.get('COMMIT_REF') || null,
-      deploy_id: Netlify.env.get('DEPLOY_ID') || null,
-      deploy_url: Netlify.env.get('DEPLOY_PRIME_URL') || null,
-      immutable_url: Netlify.env.get('DEPLOY_URL') || Netlify.env.get('DEPLOY_PRIME_URL') || null
+      deploy_id: runtimeContext?.deploy?.id || Netlify.env.get('DEPLOY_ID') || null,
+      deploy_url: runtimeContext?.site?.url || Netlify.env.get('DEPLOY_PRIME_URL') || null,
+      immutable_url: runtimeContext?.deploy?.id && runtimeContext?.site?.name
+        ? 'https://' + runtimeContext.deploy.id + '--' + runtimeContext.site.name + '.netlify.app'
+        : Netlify.env.get('DEPLOY_URL') || Netlify.env.get('DEPLOY_PRIME_URL') || null,
+      published: runtimeContext?.deploy?.published ?? null,
+      site_name: runtimeContext?.site?.name || null,
+      region: runtimeContext?.server?.region || null
     },
     measured_at: new Date().toISOString(),
     response_ms: Date.now() - started
