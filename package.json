@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@netlify/blobs": "11.1.0",
-    "@netlify/functions": "6.0.0"
+    "@netlify/functions": "6.0.0",
+    "@netlify/async-workloads": "0.0.106"
   }
 }
