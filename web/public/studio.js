@@ -15,6 +15,7 @@ let currentVisualCanon=null;
 let currentRenderSpec=null;
 let currentKeyframePlan=null;
 let currentRenderRoute=null;
+let currentKeyframeApproval=null;
 const PENDING_PRODUCTION_JOB='parable.pending.production.v1';
 
 const escapeHtml=(v='')=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -91,7 +92,8 @@ function selectShot(shot){
   $('#performanceText').textContent=shot.performance||'Keep the performance truthful to the beat.';
   $('#shotPreview').dataset.lens=String(shot.lens_mm||50);
   $('#directionSaveState').textContent='Director choices are versioned with this story.';
-  currentRenderSpec=null;currentKeyframePlan=null;currentRenderRoute=null;
+  currentRenderSpec=null;currentKeyframePlan=null;currentRenderRoute=null;currentKeyframeApproval=null;
+  if($('#keyframeApprovalBox'))$('#keyframeApprovalBox').hidden=true;
   if($('#renderState'))$('#renderState').textContent='Selected shot changed. Prepare it again before rendering.';
 }
 
@@ -361,6 +363,9 @@ $('#runCriticBtn')?.addEventListener('click',runDirectorCritic);
 $('#rerunCriticBtn')?.addEventListener('click',runDirectorCritic);
 $('#prepareRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
 $('#refreshRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
+$('#approveKeyframeBtn')?.addEventListener('click',approveCurrentKeyframe);
+$('#revokeKeyframeBtn')?.addEventListener('click',revokeCurrentKeyframe);
+$('#keyframeAssetUrl')?.addEventListener('input',e=>setKeyframePreview(e.target.value));
 
 $('#lensControl')?.addEventListener('change',e=>{
   $('#shotPreview').dataset.lens=e.target.value;
@@ -509,6 +514,146 @@ async function ensureShotContinuityThroughSelected(){
   return last;
 }
 
+
+function setKeyframePreview(uri){
+  const image=$('#keyframeAssetPreview');
+  const empty=$('#keyframePreviewEmpty');
+  if(!image||!empty)return;
+  const value=String(uri||'').trim();
+  if(!value){
+    image.hidden=true;image.removeAttribute('src');empty.hidden=false;return;
+  }
+  image.onload=()=>{image.hidden=false;empty.hidden=true};
+  image.onerror=()=>{image.hidden=true;empty.hidden=false};
+  image.src=value;
+}
+
+function renderKeyframeApproval(approval){
+  currentKeyframeApproval=approval||null;
+  const approved=approval?.status==='approved'&&approval?.spec_hash===currentRenderSpec?.spec_hash;
+  $('#keyframeApprovalBox').hidden=false;
+  $('#keyframeApprovalBadge').textContent=approved?'APPROVED':'LOCKED';
+  $('#keyframeApprovalBadge').classList.toggle('is-approved',approved);
+  $('#keyframeApprovalTitle').textContent=approved?'First frame approved for final motion.':'Final motion is locked.';
+  $('#keyframeApprovalState').textContent=approved
+    ?'This exact still is bound to this exact ShotRenderSpec. Changing the shot or revoking approval locks final motion again.'
+    :'Approve one exact still for this exact ShotRenderSpec before final motion can be created.';
+  $('#keyframeStatus').textContent=approved?'approved':'human gate';
+  $('#revokeKeyframeBtn').hidden=!approved;
+
+  if(approved){
+    $('#keyframeAssetUrl').value=approval.asset?.uri||'';
+    $('#keyframeAssetSource').value=approval.asset?.source||'generated';
+    $('#keyframeContentSha').value=approval.asset?.content_sha256||'';
+    $('#keyframeImmutable').checked=Boolean(approval.asset?.immutable_binding);
+    $('[data-keyframe-check]').forEach(box=>{
+      box.checked=Boolean(approval.checks?.[box.dataset.keyframeCheck]);
+    });
+    setKeyframePreview(approval.asset?.uri||'');
+  }
+}
+
+async function loadKeyframeApproval(){
+  if(!currentProjectId||!currentRenderSpec)return null;
+  const query=new URLSearchParams({
+    projectId:currentProjectId,
+    sceneId:currentRenderSpec.scene_id,
+    shotId:currentRenderSpec.shot_id
+  });
+  try{
+    const result=await fetchJson('/api/keyframe-approval?'+query.toString(),{cache:'no-store'});
+    renderKeyframeApproval(result.approval||null);
+    if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+    return result.approval||null;
+  }catch(err){
+    if(err.status===404){
+      renderKeyframeApproval(null);
+      return null;
+    }
+    throw err;
+  }
+}
+
+function keyframeChecksPayload(){
+  return Object.fromEntries($('[data-keyframe-check]').map(box=>[
+    box.dataset.keyframeCheck,
+    Boolean(box.checked)
+  ]));
+}
+
+async function approveCurrentKeyframe(){
+  if(!currentRenderSpec||!currentKeyframePlan){
+    showToast('Prepare the selected shot first.');return;
+  }
+  const assetUri=String($('#keyframeAssetUrl')?.value||'').trim();
+  if(!assetUri){showToast('Add the first-frame image URL.');return;}
+
+  const button=$('#approveKeyframeBtn');if(button)button.disabled=true;
+  $('#keyframeApprovalState').textContent='Saving human first-frame approval…';
+  try{
+    const result=await fetchJson('/api/keyframe-approval',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        action:'approve',
+        projectId:currentProjectId,
+        storyVersion:currentRenderSpec.story_version,
+        sceneId:currentRenderSpec.scene_id,
+        shotId:currentRenderSpec.shot_id,
+        specHash:currentRenderSpec.spec_hash,
+        assetUri,
+        assetSource:$('#keyframeAssetSource')?.value||'generated',
+        contentSha256:String($('#keyframeContentSha')?.value||'').trim()||undefined,
+        immutableBinding:Boolean($('#keyframeImmutable')?.checked),
+        checks:keyframeChecksPayload(),
+        humanApproved:true,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+    renderKeyframeApproval(result.approval);
+    $('#renderState').textContent='First frame is now persistently approved. Final motion can only use this exact shot spec and this bound image.';
+    showToast('First frame approved.');
+  }catch(err){
+    if(err.status===409&&err.body?.code==='PROJECT_REVISION_CONFLICT')await refreshProjectRevision();
+    $('#keyframeApprovalState').textContent=err.message||'Could not approve this first frame.';
+    showToast(err.message||'First-frame approval failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
+async function revokeCurrentKeyframe(){
+  if(!currentRenderSpec||!currentKeyframeApproval)return;
+  const button=$('#revokeKeyframeBtn');if(button)button.disabled=true;
+  try{
+    const result=await fetchJson('/api/keyframe-approval',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        action:'revoke',
+        projectId:currentProjectId,
+        storyVersion:currentRenderSpec.story_version,
+        sceneId:currentRenderSpec.scene_id,
+        shotId:currentRenderSpec.shot_id,
+        specHash:currentRenderSpec.spec_hash,
+        reason:'Revoked from PARABLE Studio.',
+        humanApproved:true,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+    renderKeyframeApproval(result.approval);
+    $('#renderState').textContent='First-frame approval revoked. Final motion is locked again.';
+    showToast('Keyframe approval revoked.');
+  }catch(err){
+    $('#keyframeApprovalState').textContent=err.message||'Could not revoke approval.';
+    showToast(err.message||'Revoke failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
 function renderRenderSpec(spec,route,keyframe){
   currentRenderSpec=spec;currentRenderRoute=route;currentKeyframePlan=keyframe;
   $('#renderContract').hidden=false;
@@ -586,6 +731,7 @@ async function prepareSelectedShotForRender(){
     });
 
     renderRenderSpec(spec,route,keyframe);
+    await loadKeyframeApproval();
     $('#renderState').textContent=route.ready_to_dispatch
       ?'Shot is compiled and a compatible renderer route is available. Media generation remains a separate explicit action.'
       :'Shot is compiled safely. No deployed renderer route is configured yet; PARABLE kept the production contract instead of degrading it.';
