@@ -181,6 +181,9 @@ export type RenderAttempt = {
   model: string;
   status: RenderAttemptStatus;
   mode: 'draft' | 'final';
+  keyframe_approval_ref: string | null;
+  keyframe_asset_uri: string | null;
+  keyframe_plan_hash: string | null;
   provider_request_id: string | null;
   asset_uri: string | null;
   poster_uri: string | null;
