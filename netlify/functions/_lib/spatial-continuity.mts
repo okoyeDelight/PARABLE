@@ -428,9 +428,10 @@ export function spatialContractForShot(plan: SceneSpatialPlan | null | undefined
   const shot = plan.shots.find((row) => row.shot_id === shotId) || null;
   if (!shot) return null;
 
-  const blockers = shot.warnings
+  const rawBlockers = shot.warnings
     .filter((warning) => warning.severity === 'blocker')
     .map((warning) => warning.message);
+  const blockers = plan.approval.override_blockers ? [] : rawBlockers;
 
   return {
     spatial_plan_hash: plan.spatial_plan_hash,
@@ -440,6 +441,7 @@ export function spatialContractForShot(plan: SceneSpatialPlan | null | undefined
     shot,
     room_topology: plan.room_topology,
     blockers,
+    overridden_blockers: plan.approval.override_blockers ? rawBlockers : [],
     can_render:
       blockers.length === 0 &&
       (!plan.axis_critical || plan.approval.status === 'approved')
