@@ -5,7 +5,10 @@ import {
   projectMutationErrorResponse,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
-import { stageProjectArtifact } from './_lib/project-artifacts.mts';
+import {
+  readAuthoritativeProjectState,
+  stageProjectArtifact
+} from './_lib/project-artifacts.mts';
 import { evaluateProposedRenderAttempt } from './_lib/render-budget.mts';
 import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
 import type { RenderAttempt, RenderAttemptStatus } from './_lib/render-foundation.mts';
@@ -563,6 +566,75 @@ export default async (request: Request) => {
       const handled = projectMutationErrorResponse(error);
       if (handled) return json(handled.body, handled.status);
       throw error;
+    }
+  }
+
+  if (action === 'supersede' && attempt.status === 'accepted') {
+    const acceptedStateKey =
+      'render:accepted:' + attempt.story_version + ':' + attempt.scene_id + ':' + attempt.shot_id;
+    const handoffStateKey =
+      'render:handoff:' + attempt.story_version + ':' + attempt.scene_id + ':' + attempt.shot_id;
+    const authoritative = await readAuthoritativeProjectState<Record<string, any>>(
+      attempt.project_id,
+      acceptedStateKey
+    );
+
+    if (authoritative?.value?.attempt?.id === attempt.id) {
+      let lease: ProjectMutationLease | null = null;
+      try {
+        lease = await acquireProjectMutation({
+          projectId: attempt.project_id,
+          mutationType: 'supersede-accepted-render',
+          expectedRevision: Number.isFinite(Number(body.expectedProjectRevision))
+            ? Number(body.expectedProjectRevision)
+            : null,
+          ttlMs: 30000
+        });
+
+        const superseded: RenderAttempt = {
+          ...attempt,
+          status: 'superseded',
+          updated_at: new Date().toISOString()
+        };
+
+        const committed = await commitProjectMutation(
+          lease,
+          {
+            story_version: attempt.story_version,
+            scene_id: attempt.scene_id,
+            shot_id: attempt.shot_id,
+            attempt_id: attempt.id,
+            reviewer_note: clean(body.note, 500) || null,
+            removed_authoritative_acceptance: true
+          },
+          {
+            [acceptedStateKey]: null,
+            [handoffStateKey]: null,
+            ['sequence:timeline:' + attempt.story_version + ':' + attempt.scene_id]: null
+          }
+        );
+
+        await saveRenderAttempt(superseded);
+        await appendRenderAttemptEvent(superseded, 'superseded', {
+          project_revision: committed.revision,
+          reviewer_note: clean(body.note, 500) || null,
+          authoritative_acceptance_removed: true,
+          timeline_invalidated: true
+        });
+
+        return json({
+          ...superseded,
+          project_revision: committed.revision,
+          mutation_id: committed.mutation_id,
+          authoritative_acceptance_removed: true,
+          timeline_invalidated: true
+        });
+      } catch (error) {
+        if (lease) await abortProjectMutation(lease).catch(() => false);
+        const handled = projectMutationErrorResponse(error);
+        if (handled) return json(handled.body, handled.status);
+        throw error;
+      }
     }
   }
 
