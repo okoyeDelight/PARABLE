@@ -1,4 +1,5 @@
 import { readProjectRevision } from './_lib/project-concurrency.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -17,6 +18,14 @@ export default async (request: Request) => {
   const url = new URL(request.url);
   const projectId = clean(url.searchParams.get('projectId'));
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'project:read');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   const state = await readProjectRevision(projectId);
   return json({
