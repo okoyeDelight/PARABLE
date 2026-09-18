@@ -64,6 +64,63 @@ export type PropOwnership = {
   confidence: number;
 };
 
+export type RoomAnchor = {
+  id: string;
+  label: string;
+  kind: 'door' | 'window' | 'furniture' | 'altar' | 'entry' | 'exit' | 'landmark' | 'other';
+  locked: boolean;
+  scene_id: string;
+  shot_id?: string | null;
+  confidence: number;
+};
+
+export type RoomTopologyRelation = {
+  subject: string;
+  relation:
+    | 'left_of'
+    | 'right_of'
+    | 'in_front_of'
+    | 'behind'
+    | 'near'
+    | 'against'
+    | 'inside'
+    | 'outside'
+    | 'faces'
+    | 'between'
+    | 'at';
+  target: string;
+  scene_id: string;
+  shot_id?: string | null;
+  confidence: number;
+  transition: boolean;
+  locked: boolean;
+};
+
+export type RoomTopology = {
+  location_id: string;
+  location_name: string;
+  anchors: Record<string, RoomAnchor>;
+  relations: RoomTopologyRelation[];
+  established_scene_id: string;
+  updated_at: string;
+};
+
+export type CameraAxisState = {
+  id: string;
+  scene_id: string;
+  location_id: string | null;
+  subject_a: string;
+  subject_b: string;
+  established_shot_id: string | null;
+  established_camera_side: 'side_a' | 'side_b' | 'on_axis' | 'neutral' | 'unknown';
+  last_camera_side: 'side_a' | 'side_b' | 'on_axis' | 'neutral' | 'unknown';
+  subject_a_screen_side: 'left' | 'right' | 'center' | 'unknown';
+  subject_b_screen_side: 'left' | 'right' | 'center' | 'unknown';
+  last_shot_id: string | null;
+  bridge_shot_seen: boolean;
+  last_cross_reason: string | null;
+};
+
 export type ContinuityWarning = {
   code:
     | 'LOCKED_FACT_CONFLICT'
@@ -73,7 +130,10 @@ export type ContinuityWarning = {
     | 'MISSING_ENTITY'
     | 'PROP_OWNERSHIP_CONFLICT'
     | 'SCREEN_DIRECTION_BREAK'
-    | 'SPATIAL_CONFLICT';
+    | 'SPATIAL_CONFLICT'
+    | 'ROOM_TOPOLOGY_CONFLICT'
+    | 'CAMERA_AXIS_CROSS'
+    | 'EYELINE_DIRECTION_BREAK';
   severity: 'info' | 'warning' | 'blocker';
   scene_id: string;
   shot_id?: string | null;
@@ -85,7 +145,7 @@ export type ContinuityWarning = {
 };
 
 export type ContinuitySnapshot = {
-  schema_version: 'continuity-v3';
+  schema_version: 'continuity-v4';
   project_id: string;
   story_version: string;
   scene_cursor: number;
@@ -99,6 +159,8 @@ export type ContinuitySnapshot = {
   };
   spatial_graph: SpatialRelation[];
   prop_ownership: Record<string, PropOwnership>;
+  room_topology: Record<string, RoomTopology>;
+  camera_axes: Record<string, CameraAxisState>;
   open_threads: string[];
   theology_flags: string[];
   warnings: ContinuityWarning[];
@@ -151,6 +213,38 @@ export type SpatialRelationInput = {
   transition?: boolean;
 };
 
+export type RoomTopologyInput = {
+  location: string;
+  anchors?: Array<{
+    label: string;
+    kind?: RoomAnchor['kind'];
+    locked?: boolean;
+    confidence?: number;
+  }>;
+  relations?: Array<{
+    subject: string;
+    relation: RoomTopologyRelation['relation'];
+    target: string;
+    confidence?: number;
+    transition?: boolean;
+    locked?: boolean;
+  }>;
+};
+
+export type CameraAxisInput = {
+  axis_id?: string;
+  location?: string;
+  subject_a: string;
+  subject_b: string;
+  camera_side?: CameraAxisState['last_camera_side'];
+  subject_a_screen_side?: CameraAxisState['subject_a_screen_side'];
+  subject_b_screen_side?: CameraAxisState['subject_b_screen_side'];
+  bridge_shot?: boolean;
+  intentional_cross?: boolean;
+  reset_axis?: boolean;
+  reason?: string;
+};
+
 export type SceneContinuityInput = {
   id?: string;
   index?: number;
@@ -161,6 +255,8 @@ export type SceneContinuityInput = {
   knowledge_requirements?: SceneKnowledgeRequirement[];
   prop_transfers?: PropTransferInput[];
   spatial_relations?: SpatialRelationInput[];
+  room_topology?: RoomTopologyInput;
+  camera_axes?: CameraAxisInput[];
   open_threads_add?: string[];
   open_threads_resolve?: string[];
   theology_flags?: string[];
@@ -239,7 +335,7 @@ function ensureEntity(
 
 export function upgradeContinuitySnapshot(input: any): ContinuitySnapshot {
   const snapshot = structuredClone(input || {}) as ContinuitySnapshot;
-  snapshot.schema_version = 'continuity-v3';
+  snapshot.schema_version = 'continuity-v4';
   snapshot.entities = snapshot.entities || {};
   snapshot.character_knowledge = snapshot.character_knowledge || {};
   snapshot.timeline = snapshot.timeline || { order: [], current_label: null };
@@ -249,6 +345,8 @@ export function upgradeContinuitySnapshot(input: any): ContinuitySnapshot {
   snapshot.scene_cursor = Number(snapshot.scene_cursor || 0);
   snapshot.spatial_graph = Array.isArray(snapshot.spatial_graph) ? snapshot.spatial_graph : [];
   snapshot.prop_ownership = snapshot.prop_ownership || {};
+  snapshot.room_topology = snapshot.room_topology || {};
+  snapshot.camera_axes = snapshot.camera_axes || {};
   snapshot.open_threads = Array.isArray(snapshot.open_threads) ? snapshot.open_threads : [];
   snapshot.theology_flags = Array.isArray(snapshot.theology_flags) ? snapshot.theology_flags : [];
   snapshot.warnings = Array.isArray(snapshot.warnings) ? snapshot.warnings : [];
@@ -287,7 +385,7 @@ export function bootstrapContinuity(args: {
 }): ContinuitySnapshot {
   const now = new Date().toISOString();
   const snapshot: ContinuitySnapshot = {
-    schema_version: 'continuity-v3',
+    schema_version: 'continuity-v4',
     project_id: args.projectId,
     story_version: args.storyVersion || 'story_unknown',
     scene_cursor: 0,
@@ -298,6 +396,8 @@ export function bootstrapContinuity(args: {
     timeline: { order: [], current_label: null },
     spatial_graph: [],
     prop_ownership: {},
+    room_topology: {},
+    camera_axes: {},
     open_threads: [],
     theology_flags: [],
     warnings: [],
