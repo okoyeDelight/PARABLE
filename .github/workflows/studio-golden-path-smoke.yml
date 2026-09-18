@@ -9,6 +9,7 @@ on:
       - 'netlify/functions/understand.mts'
       - 'netlify/functions/adapt.mts'
       - 'netlify/functions/visual-canon.mts'
+      - 'netlify/functions/render-context.mts'
       - 'netlify/functions/scene-state.mts'
       - 'netlify/functions/shot-state.mts'
       - 'netlify/functions/shot-compile.mts'

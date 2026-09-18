@@ -99,13 +99,23 @@ export default async (request: Request) => {
     ) as Record<string, any> | null;
   }
 
-  const versionContinuity = await s.continuity.get(
-    'project/' + projectId + '/versions/' + resolvedStoryVersion + '/latest',
-    { type: 'json' }
-  ) as ContinuitySnapshot | null;
+  const [authoritativeContinuity, versionContinuity] = await Promise.all([
+    readAuthoritativeProjectState<ContinuitySnapshot>(
+      projectId,
+      'continuity:' + resolvedStoryVersion + ':latest'
+    ),
+    s.continuity.get(
+      'project/' + projectId + '/versions/' + resolvedStoryVersion + '/latest',
+      { type: 'json' }
+    ) as Promise<ContinuitySnapshot | null>
+  ]);
 
-  const rawContinuity = versionContinuity || (
-    latestContinuity?.story_version === resolvedStoryVersion ? latestContinuity : null
+  // PostgreSQL is the authority after a scene mutation commits. Blob continuity
+  // is only a cache/archive and can legitimately lag for a few moments.
+  const rawContinuity = authoritativeContinuity?.value || versionContinuity || (
+    transactionalStateMode() !== 'postgres' && latestContinuity?.story_version === resolvedStoryVersion
+      ? latestContinuity
+      : null
   );
 
   if (!rawContinuity) {
