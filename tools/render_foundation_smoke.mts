@@ -69,6 +69,23 @@ for (const entity of [...canon.characters, ...canon.locations]) {
   for (const reference of entity.references) {
     reference.rights_status = 'approved';
     reference.approved_by_human = true;
+    reference.asset_sha256 = reference.id.padEnd(64, 'a').slice(0, 64).replace(/[^a-f0-9]/g, 'a');
+    reference.immutable_asset_uri = 'parable://canon/' + reference.asset_sha256;
+    reference.rights_provenance = {
+      status: 'approved',
+      basis: 'generated',
+      rights_holder: 'PARABLE smoke test',
+      likeness_permission: true,
+      voice_permission: true,
+      ai_generation_permission: true,
+      commercial_use: true,
+      territories: ['global'],
+      expires_at: null,
+      evidence_sha256: null,
+      declared_by_actor_id: 'usr_smoke',
+      declared_at: '2026-09-18T00:00:00.000Z',
+      revoked_at: null
+    };
   }
 }
 canon.unresolved_rights = [];
