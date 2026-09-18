@@ -31,29 +31,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: Resolve this exact Deploy Preview
+      - name: Resolve this commit's immutable Netlify Deploy Preview
         env:
-          PREVIEW_ALIAS: https://deploy-preview-1--parable-studio.netlify.app
+          GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           node <<'NODE' >> "$GITHUB_ENV"
-          const alias = process.env.PREVIEW_ALIAS;
           const expected = process.env.EXPECTED_SHA;
+          const repository = process.env.REPOSITORY;
+          const token = process.env.GH_TOKEN;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
           for (let attempt = 1; attempt <= 60; attempt++) {
-            try {
-              const r = await fetch(alias + '/api/platform-health', { cache: 'no-store' });
-              const body = await r.json().catch(() => ({}));
-              if (r.ok && body?.deployment?.commit_ref === expected && body?.deployment?.immutable_url) {
-                process.stdout.write('PARABLE_TEST_BASE=' + body.deployment.immutable_url + '\n');
-                process.exit(0);
+            const statusResponse = await fetch(`https://api.github.com/repos/${repository}/commits/${expected}/status`, {
+              headers: {
+                authorization: 'Bearer ' + token,
+                accept: 'application/vnd.github+json',
+                'x-github-api-version': '2022-11-28'
               }
-            } catch {}
+            });
+            const statusBody = await statusResponse.json().catch(() => ({}));
+            const netlify = (statusBody.statuses || []).find((item) => item.context === 'netlify/parable-studio/deploy-preview');
+            const target = String(netlify?.target_url || '');
+            const match = target.match(/\/deploys\/([a-zA-Z0-9]+)/);
+            if (match) {
+              const immutable = 'https://' + match[1] + '--parable-studio.netlify.app';
+              try {
+                const r = await fetch(immutable + '/api/platform-health', { cache: 'no-store' });
+                const body = await r.json().catch(() => ({}));
+                if (r.ok && body?.deployment?.commit_ref === expected) {
+                  process.stdout.write('PARABLE_TEST_BASE=' + immutable + '\n');
+                  process.exit(0);
+                }
+              } catch {}
+            }
             await sleep(5000);
           }
-          throw new Error('Exact Deploy Preview did not become available.');
+          throw new Error('The immutable Deploy Preview for this commit did not become available.');
           NODE
 
       - name: Run isolated synthetic Story + Critic benchmark
