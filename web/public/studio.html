@@ -204,7 +204,7 @@
             <div>
               <small>PARABLE VISUAL CANON</small>
               <h3>Approve the world before generating motion.</h3>
-              <p id="renderIntro">Build the visual canon, continuity-check the selected shot, compile a provider-neutral render specification, then route it to a compatible renderer.</p>
+              <p id="renderIntro">Build the visual canon, continuity-check the selected shot and generate a first-frame visual. On this Deploy Preview you can explicitly use the zero-cost development visual route for non-confidential test stories; full motion still waits for a compatible video renderer.</p>
             </div>
             <button type="button" class="render-primary" id="prepareRenderBtn"><span>Prepare selected shot</span><b>→</b></button>
           </div>
@@ -275,6 +275,11 @@
                   </label>
                   <button type="button" class="copy-btn keyframe-generate-btn" id="generateKeyframeBtn">Generate candidate</button>
                 </div>
+
+                <label class="keyframe-immutable">
+                  <input id="freeDevVisual" type="checkbox" />
+                  <span><b>Free development visual.</b> I confirm this is a non-confidential test story. PARABLE may send only this shot's text prompt to a free third-party image service. No paid credits will be used, and the result is development-only until I approve it.</span>
+                </label>
 
                 <div class="keyframe-inspector" id="keyframeInspector" hidden>
                   <div><small>VISUAL INSPECTOR</small><span id="keyframeInspectorBadge">waiting</span></div>

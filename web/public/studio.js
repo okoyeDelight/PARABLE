@@ -7,6 +7,7 @@ const resultState=$('#resultState');
 const toast=$('#studioToast');
 let currentProjectId=null;
 let currentResult=null;
+let currentUnderstanding=null;
 let currentCritic=null;
 let currentProjectRevision=null;
 let activeShot=null;
@@ -60,12 +61,22 @@ function renderIntelligence(data){
   $('#emotionalTurn').textContent=intel.emotional_turn;
 
   const engine=data.engine||{};
+  const understandingEngine=data.understanding_engine||currentUnderstanding?.engine||{};
   const isModel=engine.mode==='model';
-  $('#engineBadge').textContent=isModel?`${engine.provider} · ${engine.model}`:'structured fallback';
-  $('#modelMeta').textContent=isModel?`${String(engine.provider).toUpperCase()} / ${engine.model}`:'Local deterministic engine';
+  const understandingIsModel=understandingEngine.mode==='model';
+  $('#engineBadge').textContent=isModel
+    ?`${engine.provider} · ${engine.model}`
+    :understandingIsModel
+      ?`understood by ${understandingEngine.provider} · local adaptation`
+      :'protected local fallback';
+  $('#modelMeta').textContent=isModel
+    ?`${String(engine.provider).toUpperCase()} / ${engine.model}`
+    :understandingIsModel
+      ?`Story Understanding: ${String(understandingEngine.provider).toUpperCase()} / ${understandingEngine.model} · Adaptation: local`
+      :'Local deterministic engine · protected routing unavailable';
   $('#versionMeta').textContent=`${engine.version||'unknown'} · ${data.story_version||'unversioned'}`;
-  $('#navEngineLabel').textContent=isModel?'Story Intelligence model live':'Story Intelligence fallback active';
-  $('#engineDot')?.classList.toggle('is-fallback',!isModel);
+  $('#navEngineLabel').textContent=isModel?'Story Intelligence model live':understandingIsModel?'Model understanding · local adaptation':'Protected Story Intelligence fallback';
+  $('#engineDot')?.classList.toggle('is-fallback',!isModel&&!understandingIsModel);
 
   const review=data.review||data.production_bible?.review||{};
   const confidence=Math.round((Number(review.confidence)||0)*100);
@@ -165,8 +176,8 @@ async function createProject(payload){
   return body;
 }
 
-function rememberPendingProduction(jobId,projectId){
-  try{localStorage.setItem(PENDING_PRODUCTION_JOB,JSON.stringify({jobId,projectId,at:Date.now()}));}catch{}
+function rememberPendingProduction(jobId,projectId,kind='adaptation'){
+  try{localStorage.setItem(PENDING_PRODUCTION_JOB,JSON.stringify({jobId,projectId,kind,at:Date.now()}));}catch{}
 }
 function clearPendingProduction(){
   try{localStorage.removeItem(PENDING_PRODUCTION_JOB);}catch{}
@@ -230,6 +241,29 @@ async function waitForJob(jobId,{timeoutMs=180000,onProgress}={}){
   throw new Error('Production is still processing. You can safely retry; PARABLE will reuse the same job.');
 }
 
+async function understandProject(payload,projectId){
+  const jobPayload={...payload,projectId};
+  const idempotencyKey=await stableIdempotencyKey('understand|'+JSON.stringify({
+    projectId,
+    title:payload.title||'',
+    sourceText:payload.sourceText||'',
+    setting:payload.setting||'',
+    primaryAudience:payload.primaryAudience||''
+  }));
+  const body=await submitDurableJob('story-understanding',jobPayload,idempotencyKey);
+  rememberPendingProduction(body.job.id,projectId,'story-understanding');
+  const result=await waitForJob(body.job.id,{
+    onProgress:(status)=>{
+      if(status==='queued')$('#formNote').textContent='Story Understanding is queued safely…';
+      if(status==='processing')$('#formNote').textContent='PARABLE is understanding premise, characters, conflict, themes and scene intent before it adapts anything…';
+      if(status==='retrying')$('#formNote').textContent='The protected model route slowed down. PARABLE kept the manuscript safe and is retrying the same job…';
+    }
+  });
+  clearPendingProduction();
+  currentUnderstanding=result;
+  return result;
+}
+
 async function adaptProject(payload,projectId){
   const jobPayload={...payload,projectId};
   const idempotencyKey=await stableIdempotencyKey(JSON.stringify({
@@ -240,7 +274,7 @@ async function adaptProject(payload,projectId){
     primaryAudience:payload.primaryAudience||''
   }));
   const body=await submitDurableJob('adaptation',jobPayload,idempotencyKey);
-  rememberPendingProduction(body.job.id,projectId);
+  rememberPendingProduction(body.job.id,projectId,'adaptation');
   const result=await waitForJob(body.job.id,{
     onProgress:(status)=>{
       if(status==='queued')$('#formNote').textContent='Production queued safely. PARABLE is preparing Story Intelligence…';
@@ -330,13 +364,21 @@ form?.addEventListener('submit',async e=>{
       const project=await createProject(payload);currentProjectId=project.id;
       analyzeBtn.querySelector('span').textContent='Understanding story…';
     }
+    analyzeBtn.querySelector('span').textContent='Understanding story…';
+    const understanding=await understandProject(payload,currentProjectId);
+    currentUnderstanding=understanding;
+    analyzeBtn.querySelector('span').textContent='Adapting for screen…';
+    $('#formNote').textContent='Story Understanding is locked to this manuscript version. PARABLE is now adapting it into screenplay and shot direction.';
     const result=await adaptProject(payload,currentProjectId);
     renderResult(result);
     const model=result.engine?.mode==='model';
+    const understoodByModel=result.understanding_engine?.mode==='model'||understanding?.engine?.mode==='model';
     $('#formNote').textContent=model
-      ?`Model-backed Story Intelligence completed with ${result.engine.provider}. The source and this analysis were versioned together.`
-      :'Structured fallback completed. The production is real and versioned, but deeper model reasoning is waiting for a provider key.';
-    showToast(model?'Story Intelligence model pass complete.':'Structured Story Intelligence complete.');
+      ?`Model-backed adaptation completed with ${result.engine.provider}. Understanding, source and adaptation are versioned together.`
+      :understoodByModel
+        ?'Model-backed Story Understanding was preserved; screenplay and shot adaptation completed through the protected local fallback.'
+        :'Protected free-model routing was unavailable, so PARABLE kept this manuscript private and used the local fallback. Your OpenRouter connection is configured; PARABLE did not weaken privacy just to force an AI answer.';
+    showToast(model?'Story Intelligence model pass complete.':understoodByModel?'Story understood; local screen adaptation complete.':'Private local fallback complete.');
   }catch(err){
     $('#formNote').textContent=err.message;showToast(err.message);
   }finally{
@@ -598,12 +640,18 @@ async function generateCurrentKeyframe(){
       +currentRenderSpec.scene_id+'|'+currentRenderSpec.shot_id+'|'+currentRenderSpec.spec_hash+'|'
       +Date.now()+'|'+(crypto.randomUUID?crypto.randomUUID():Math.random());
 
+    const freeDevelopment=Boolean($('#freeDevVisual')?.checked);
+    if(!freeDevelopment){
+      throw new Error('No paid image generation will run automatically. Enable the Free development visual option for this test story, or add an approved production image provider later.');
+    }
     const submitted=await submitDurableJob('keyframe-generate',{
       projectId:currentProjectId,
       storyVersion:currentRenderSpec.story_version,
       sceneId:currentRenderSpec.scene_id,
       shotId:currentRenderSpec.shot_id,
-      specHash:currentRenderSpec.spec_hash
+      specHash:currentRenderSpec.spec_hash,
+      freeDevelopment:true,
+      nonConfidentialConfirmed:true
     },await stableIdempotencyKey(key));
 
     const result=await waitForJob(submitted.job.id,{
@@ -891,6 +939,22 @@ async function resumePendingProduction(){
       }
     });
     clearPendingProduction();
+    if(pending.kind==='story-understanding'){
+      currentUnderstanding=result;
+      const project=await fetchJson('/api/projects?id='+encodeURIComponent(pending.projectId),{cache:'no-store'});
+      const payload={
+        title:project.title||'Untitled story',
+        sourceText:project.source_text||'',
+        setting:project.setting||'',
+        primaryAudience:project.primary_audience||''
+      };
+      $('#formNote').textContent='Story Understanding restored. PARABLE is continuing into screenplay and directing adaptation…';
+      const adapted=await adaptProject(payload,pending.projectId);
+      renderResult(adapted);
+      $('#formNote').textContent='Your staged production was restored and completed.';
+      showToast('Production restored.');
+      return;
+    }
     renderResult(result);
     $('#formNote').textContent='Your production was restored from the durable job queue.';
     showToast('Production restored.');

@@ -405,6 +405,22 @@ export function buildVisualCanon(args: {
     });
   }
 
+  const storySetting = clean(bible?.story_bible?.setting || bible?.setting, 180);
+  if (
+    storySetting &&
+    !/^not specified$/i.test(storySetting) &&
+    !locations.some((item) => item.name.toLowerCase() === storySetting.toLowerCase())
+  ) {
+    locations.push({
+      id: 'location_' + storySetting.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+      name: storySetting,
+      kind: 'location',
+      locked_facts: { story_setting: storySetting },
+      references: [],
+      continuity_notes: ['Location is grounded from the Story Bible setting and does not yet have approved visual references.']
+    });
+  }
+
   const existingEntities = new Map(
     [...(args.existing?.characters || []), ...(args.existing?.locations || []), ...(args.existing?.props || [])]
       .map((entity) => [entity.id, entity])

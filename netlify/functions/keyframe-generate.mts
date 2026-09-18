@@ -42,6 +42,214 @@ function classifyStatus(status: number) {
   return 'provider-rejected';
 }
 
+function freeDevDimensions(aspectRatio: string) {
+  const map: Record<string, [number, number]> = {
+    '16:9': [768, 432], '9:16': [432, 768], '1:1': [640, 640],
+    '4:3': [704, 528], '3:4': [528, 704], '21:9': [840, 360]
+  };
+  return map[aspectRatio] || map['16:9'];
+}
+
+function seedFromHash(value: string) {
+  const slice = value.replace(/[^a-f0-9]/gi, '').slice(0, 8);
+  return Math.max(1, parseInt(slice || '1', 16) % 2147483646);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  let binary = '';
+  const size = 0x8000;
+  for (let i = 0; i < bytes.length; i += size) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + size, bytes.length)));
+  }
+  return btoa(binary);
+}
+
+async function generateFreeDevelopmentKeyframe(args: {
+  jobId: string;
+  projectId: string;
+  storyVersion: string;
+  sceneId: string;
+  shotId: string;
+  specHash: string;
+  spec: any;
+}) {
+  if (Netlify.context?.deploy?.context !== 'deploy-preview') {
+    return json({
+      error: 'The zero-cost development visual route is available only on isolated Deploy Previews.',
+      code: 'FREE_DEV_VISUAL_PREVIEW_ONLY'
+    }, 403);
+  }
+
+  const refs = Array.isArray(args.spec?.references) ? args.spec.references : [];
+  const previousHandoff = args.spec?.world_state?.previous_accepted_handoff?.handoff_frame?.uri;
+  if (refs.length || previousHandoff) {
+    return json({
+      error: 'This free development visual route is text-only and cannot safely preserve locked identity/reference imagery. Use it before identity references are locked, or configure a reference-capable production renderer.',
+      code: 'FREE_DEV_VISUAL_REFERENCES_UNSUPPORTED'
+    }, 409);
+  }
+
+  const [width, height] = freeDevDimensions(String(args.spec?.output?.aspect_ratio || '16:9'));
+  const prompt = [
+    'photorealistic cinematic live-action film still, serious narrative movie frame,',
+    'story beat: ' + clean(args.spec?.narrative?.beat, 420),
+    'dramatic purpose: ' + clean(args.spec?.narrative?.dramatic_purpose, 280),
+    'emotion: ' + clean(args.spec?.narrative?.emotional_intent, 280),
+    'camera: ' + clean(args.spec?.camera?.shot_type, 120) + ' ' + clean(args.spec?.camera?.lens_mm, 20) + 'mm,',
+    'composition: ' + clean(args.spec?.composition?.grammar, 120) + ',',
+    'lighting: ' + clean(args.spec?.lighting?.direction, 260) + ',',
+    'performance: ' + clean(args.spec?.performance?.direction, 260) + ',',
+    'culturally grounded Nigerian/African production design when supported by the story,',
+    'natural skin and texture, physically coherent hands and architecture, no poster, no title, no subtitles, no UI, no glamour lighting'
+  ].join(' ').replace(/\s+/g, ' ').trim().slice(0, 1500);
+
+  const model = 'flux';
+  const seed = seedFromHash(args.specHash);
+  const endpoint = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(prompt)
+    + '?model=' + encodeURIComponent(model)
+    + '&width=' + width
+    + '&height=' + height
+    + '&seed=' + seed
+    + '&enhance=false';
+
+  const startedAt = new Date().toISOString();
+  await saveKeyframeGeneration({
+    generation_version: 'parable-keyframe-generation-v1',
+    id: args.jobId,
+    project_id: args.projectId,
+    story_version: args.storyVersion,
+    scene_id: args.sceneId,
+    shot_id: args.shotId,
+    spec_hash: args.specHash,
+    status: 'processing',
+    provider: 'pollinations-dev',
+    model,
+    reference_ids: [],
+    inspiration_note_count: 0,
+    asset_uri: null,
+    content_sha256: null,
+    media_type: null,
+    actual_cost_usd: 0,
+    usage: null,
+    started_at: startedAt,
+    completed_at: null,
+    error_class: null,
+    error: null,
+    development_only: true
+  } as any);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  const startedMs = Date.now();
+
+  try {
+    const response = await fetch(endpoint, {
+      signal: controller.signal,
+      headers: { accept: 'image/avif,image/webp,image/png,image/jpeg,*/*' },
+      redirect: 'follow'
+    });
+    if (!response.ok) {
+      throw new Error('Free development image provider returned HTTP ' + response.status + '.');
+    }
+    const mediaType = clean(response.headers.get('content-type') || 'image/jpeg', 80).split(';')[0].toLowerCase();
+    if (!/^image\/(jpeg|png|webp)$/i.test(mediaType)) {
+      throw new Error('Free development image provider returned an unsupported media type: ' + mediaType);
+    }
+    const buffer = await response.arrayBuffer();
+    if (!buffer.byteLength || buffer.byteLength > 15 * 1024 * 1024) {
+      throw new Error('Free development image response was empty or exceeded the 15 MB safety ceiling.');
+    }
+
+    const asset = await saveKeyframeAsset({
+      base64: bytesToBase64(new Uint8Array(buffer)),
+      mediaType,
+      projectId: args.projectId,
+      storyVersion: args.storyVersion,
+      sceneId: args.sceneId,
+      shotId: args.shotId,
+      model,
+      provider: 'pollinations-dev',
+      generationId: args.jobId,
+      actualCostUsd: 0
+    });
+
+    const candidate = {
+      generation_version: 'parable-keyframe-generation-v1',
+      id: args.jobId,
+      project_id: args.projectId,
+      story_version: args.storyVersion,
+      scene_id: args.sceneId,
+      shot_id: args.shotId,
+      spec_hash: args.specHash,
+      status: 'succeeded',
+      provider: 'pollinations-dev',
+      model,
+      reference_ids: [],
+      inspiration_note_count: 0,
+      asset_uri: await signedKeyframeAssetUrl({
+        projectId: args.projectId,
+        hash: asset.sha256,
+        purpose: 'preview',
+        ttlSeconds: 900
+      }),
+      content_sha256: asset.sha256,
+      immutable_binding: true,
+      media_type: asset.media_type,
+      actual_cost_usd: 0,
+      usage: null,
+      latency_ms: Date.now() - startedMs,
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      error_class: null,
+      error: null,
+      human_approval_required: true,
+      development_only: true,
+      production_eligible: false,
+      privacy_mode: 'third-party-free-development-explicit-opt-in',
+      watermark_possible: true,
+      next_action: 'Run Visual Inspector and human review. Do not treat this development provider as a confidential production renderer.'
+    };
+    await saveKeyframeGeneration(candidate as any);
+    return json(candidate, 201);
+  } catch (error) {
+    const reason = clean(error instanceof Error ? error.message : error, 1000) || 'Free development keyframe generation failed.';
+    const failed = {
+      generation_version: 'parable-keyframe-generation-v1',
+      id: args.jobId,
+      project_id: args.projectId,
+      story_version: args.storyVersion,
+      scene_id: args.sceneId,
+      shot_id: args.shotId,
+      spec_hash: args.specHash,
+      status: 'failed',
+      provider: 'pollinations-dev',
+      model,
+      reference_ids: [],
+      inspiration_note_count: 0,
+      asset_uri: null,
+      content_sha256: null,
+      media_type: null,
+      actual_cost_usd: 0,
+      usage: null,
+      latency_ms: Date.now() - startedMs,
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      error_class: /abort|timeout/i.test(reason) ? 'timeout' : 'free-development-provider',
+      error: reason,
+      development_only: true
+    };
+    await saveKeyframeGeneration(failed as any);
+    return json({
+      error: reason,
+      code: 'FREE_DEV_VISUAL_FAILED',
+      retryable: true,
+      generation: failed
+    }, 503);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export default async (request: Request) => {
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
@@ -132,6 +340,24 @@ export default async (request: Request) => {
       max_generations_per_shot: maxGenerations,
       completed_attempts: completedAttempts
     }, 409);
+  }
+
+  if (body.freeDevelopment === true) {
+    if (body.nonConfidentialConfirmed !== true) {
+      return json({
+        error: 'Free development visual generation requires explicit confirmation that this is a non-confidential test story.',
+        code: 'FREE_DEV_VISUAL_CONFIRMATION_REQUIRED'
+      }, 400);
+    }
+    return generateFreeDevelopmentKeyframe({
+      jobId,
+      projectId,
+      storyVersion,
+      sceneId,
+      shotId,
+      specHash,
+      spec
+    });
   }
 
   const apiKey = Netlify.env.get('OPENROUTER_API_KEY') || '';

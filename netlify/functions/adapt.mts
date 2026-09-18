@@ -39,11 +39,13 @@ function stores() {
   if (isProduction) {
     return {
       adaptations: getStore('parable-adaptations', { consistency: 'strong' }),
+      understandings: getStore('parable-understandings', { consistency: 'strong' }),
       projects: getStore('parable-projects', { consistency: 'strong' })
     };
   }
   return {
     adaptations: getDeployStore('parable-adaptations'),
+    understandings: getDeployStore('parable-understandings'),
     projects: getDeployStore('parable-projects')
   };
 }
@@ -262,6 +264,61 @@ function normalizeModelOutput(modelData: Record<string, any>, input: StoryInput,
   };
 }
 
+function mergeGroundedUnderstanding(
+  normalized: Record<string, any>,
+  understandingRecord: Record<string, any> | null,
+  input: StoryInput,
+  adaptationIsModel: boolean
+) {
+  const u = understandingRecord?.understanding || understandingRecord;
+  if (!u?.story_bible) return normalized;
+
+  const understandingIsModel = understandingRecord?.engine?.mode === 'model';
+  // Never replace a richer model-backed adaptation with a local understanding.
+  if (!understandingIsModel && adaptationIsModel) return normalized;
+
+  const characters = Array.isArray(u.characters) ? u.characters : [];
+  const themes = Array.isArray(u.themes) ? u.themes : [];
+  const sourceReview = u.review || {};
+  const currentReview = normalized.review || {};
+  const review = {
+    confidence: Math.max(Number(sourceReview.confidence || 0), Number(currentReview.confidence || 0)),
+    uncertainties: [...new Set([...(sourceReview.uncertainties || []), ...(currentReview.uncertainties || [])])].slice(0, 8),
+    fidelity_warnings: [...new Set([...(sourceReview.fidelity_warnings || []), ...(currentReview.fidelity_warnings || [])])].slice(0, 8),
+    human_review_flags: [...new Set([...(sourceReview.human_review_flags || []), ...(currentReview.human_review_flags || [])])].slice(0, 8)
+  };
+
+  const productionBible = {
+    ...(normalized.production_bible || {}),
+    story_bible: { ...((normalized.production_bible || {}).story_bible || {}), ...(u.story_bible || {}) },
+    characters: characters.length ? characters : (normalized.production_bible?.characters || []),
+    themes: themes.length ? themes : (normalized.production_bible?.themes || []),
+    spiritual_context: u.spiritual_context || normalized.production_bible?.spiritual_context || {},
+    scenes: Array.isArray(u.scenes) && u.scenes.length ? u.scenes : (normalized.production_bible?.scenes || []),
+    screenplay: normalized.screenplay,
+    shot_plan: normalized.shot_plan,
+    continuity_ledger: normalized.continuity_ledger || [],
+    review
+  };
+
+  return {
+    ...normalized,
+    production_bible: productionBible,
+    story_intelligence: {
+      ...normalized.story_intelligence,
+      characters: characters.length
+        ? characters.map((c: any) => ({ name: c.name || 'Unnamed character', role: c.role || 'Story character', desire: c.desire || '', fear: c.fear || '', arc: c.arc || '' }))
+        : normalized.story_intelligence?.characters || [],
+      themes: themes.length ? themes.map((t: any) => t.name || String(t)).filter(Boolean) : normalized.story_intelligence?.themes || [],
+      conflict: u.story_bible?.core_conflict || normalized.story_intelligence?.conflict || 'Unresolved conflict',
+      setting: u.story_bible?.setting || normalized.story_intelligence?.setting || input.setting || 'Not specified',
+      primary_audience: u.story_bible?.target_audience || normalized.story_intelligence?.primary_audience || input.primaryAudience || 'Not specified',
+      emotional_turn: u.story_bible?.emotional_turn || normalized.story_intelligence?.emotional_turn || ''
+    },
+    review
+  };
+}
+
 export default async (request: Request) => {
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
@@ -293,10 +350,20 @@ export default async (request: Request) => {
 
   const sourceHash = await sha256(`${input.title}\n${input.setting}\n${input.primaryAudience}\n${input.sourceText}`);
   const storyVersion = `story_${sourceHash.slice(0, 12)}`;
+  const { understandings } = stores();
+  const understandingRecord = projectId
+    ? await understandings.get(`project/${projectId}/versions/${storyVersion}`, { type: 'json' }) as Record<string, any> | null
+    : null;
   const modelRun = await runStoryModel(input);
-  const normalized = modelRun.data
+  const baseNormalized = modelRun.data
     ? normalizeModelOutput(modelRun.data, input, sourceHash)
     : deterministicResult(input, sourceHash);
+  const normalized = mergeGroundedUnderstanding(
+    baseNormalized,
+    understandingRecord,
+    input,
+    modelRun.engine.mode === 'model'
+  );
   const now = new Date().toISOString();
   const shots = normalized.shot_plan as Shot[];
 
@@ -316,6 +383,8 @@ export default async (request: Request) => {
       provider_ready: modelRun.engine.mode === 'model',
       fallback_reason: modelRun.engine.fallback_reason || null
     },
+    understanding_engine: understandingRecord?.engine || null,
+    staged_understanding_used: Boolean(understandingRecord),
     ...normalized,
     director_defaults: {
       lens_mm: shots[1]?.lens_mm || shots[0]?.lens_mm || 50,

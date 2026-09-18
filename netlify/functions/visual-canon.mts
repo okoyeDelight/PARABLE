@@ -39,6 +39,7 @@ function stores() {
   return {
     continuity: make('parable-continuity'),
     adaptations: make('parable-adaptations'),
+    understandings: make('parable-understandings'),
     canon: make('parable-visual-canon')
   };
 }
@@ -120,14 +121,16 @@ export default async (request: Request) => {
       ttlMs: 30000
     });
 
-    const [existingState, authoritativeAdaptation, cachedAdaptation, latestContinuity] = await Promise.all([
+    const [existingState, authoritativeAdaptation, cachedAdaptation, cachedUnderstanding, latestContinuity] = await Promise.all([
       readAuthoritativeProjectState<VisualCanon>(projectId, 'visual-canon:latest'),
       readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest'),
       s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>,
+      s.understandings.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>,
       s.continuity.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<ContinuitySnapshot | null>
     ]);
 
     let adaptation = authoritativeAdaptation?.value || cachedAdaptation;
+    let understanding = cachedUnderstanding;
     const storyVersion = clean(
       body.storyVersion || adaptation?.story_version || existingState?.value?.story_version || latestContinuity?.story_version || 'story_unknown',
       96
@@ -135,6 +138,12 @@ export default async (request: Request) => {
 
     if (adaptation?.story_version && adaptation.story_version !== storyVersion) {
       adaptation = await s.adaptations.get(
+        'project/' + projectId + '/versions/' + storyVersion,
+        { type: 'json' }
+      ) as Record<string, any> | null;
+    }
+    if (understanding?.story_version && understanding.story_version !== storyVersion) {
+      understanding = await s.understandings.get(
         'project/' + projectId + '/versions/' + storyVersion,
         { type: 'json' }
       ) as Record<string, any> | null;
@@ -153,10 +162,21 @@ export default async (request: Request) => {
       ? existingState.value
       : null;
 
+    const understandingBible = understanding?.understanding || (
+      understanding ? {
+        story_bible: understanding.story_bible,
+        characters: understanding.characters,
+        themes: understanding.themes,
+        spiritual_context: understanding.spiritual_context,
+        scenes: understanding.scenes,
+        review: understanding.review
+      } : null
+    );
+
     let canon = buildVisualCanon({
       projectId,
       storyVersion,
-      productionBible: adaptation?.production_bible || null,
+      productionBible: adaptation?.production_bible || understandingBible || null,
       continuity,
       existing: existingCanon
     });
