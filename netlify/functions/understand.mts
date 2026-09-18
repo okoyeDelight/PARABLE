@@ -1,6 +1,14 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import { sha256 } from './_lib/story-ai.mts';
 import { runStoryUnderstanding, type UnderstandInput } from './_lib/understand-ai.mts';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  readProjectRevision,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -132,6 +140,8 @@ export default async (request: Request) => {
   if (input.sourceText.length < 20) return json({ error: 'Give PARABLE at least a few sentences to understand.' }, 400);
   if (input.sourceText.length > 120000) return json({ error: 'This pass accepts up to 120,000 characters. Long-form orchestration is a later stage.' }, 413);
 
+  const startingRevision = projectId ? await readProjectRevision(projectId) : null;
+
   const sourceHash = await sha256(`${input.title}\n${input.setting}\n${input.primaryAudience}\n${input.sourceText}`);
   const storyVersion = `story_${sourceHash.slice(0, 12)}`;
   const modelRun = await runStoryUnderstanding(input);
@@ -162,37 +172,82 @@ export default async (request: Request) => {
   const { understandings, projects } = stores();
   const latestKey = projectId ? `project/${projectId}/latest` : `understanding/${result.id}`;
   const versionKey = projectId ? `project/${projectId}/versions/${storyVersion}` : `understanding/${result.id}/version/${storyVersion}`;
-  await Promise.all([
-    understandings.setJSON(latestKey, result),
-    understandings.setJSON(versionKey, result)
-  ]);
+  let lease: ProjectMutationLease | null = null;
 
-  if (projectId) {
-    const project = await projects.get(`project/${projectId}`, { type: 'json' }) as Record<string, any> | null;
-    if (project) {
-      await projects.setJSON(`project/${projectId}`, {
-        ...project,
-        title: input.title,
-        source_text: input.sourceText,
-        source_hash: sourceHash,
-        story_version: storyVersion,
-        setting: input.setting || project.setting || null,
-        primary_audience: input.primaryAudience || project.primary_audience || null,
-        understanding_engine: {
-          provider: modelRun.engine.provider,
-          model: modelRun.engine.model,
-          version: modelRun.engine.version,
-          mode: modelRun.engine.mode,
-          privacy_mode: modelRun.engine.privacy_mode
-        },
-        status: 'understood',
-        progress: Math.max(Number(project.progress || 0), modelRun.engine.mode === 'model' ? 22 : 16),
-        updated_at: now
+  if (projectId && startingRevision) {
+    try {
+      lease = await acquireProjectMutation({
+        projectId,
+        mutationType: 'story-understanding',
+        expectedRevision: startingRevision.revision,
+        ttlMs: 30000
       });
+    } catch (error) {
+      const handled = projectMutationErrorResponse(error);
+      if (handled) {
+        return json({
+          ...handled.body,
+          retryable: true,
+          hint: 'PARABLE protected the newer project revision. The durable job can safely retry.'
+        }, handled.status);
+      }
+      throw error;
     }
   }
 
-  return json(result, 201);
+  try {
+    await Promise.all([
+      understandings.setJSON(latestKey, result),
+      understandings.setJSON(versionKey, result)
+    ]);
+
+    if (projectId) {
+      const project = await projects.get(`project/${projectId}`, {
+        type: 'json',
+        consistency: 'strong'
+      } as any) as Record<string, any> | null;
+
+      if (project) {
+        await projects.setJSON(`project/${projectId}`, {
+          ...project,
+          title: input.title,
+          source_text: input.sourceText,
+          source_hash: sourceHash,
+          story_version: storyVersion,
+          setting: input.setting || project.setting || null,
+          primary_audience: input.primaryAudience || project.primary_audience || null,
+          understanding_engine: {
+            provider: modelRun.engine.provider,
+            model: modelRun.engine.model,
+            version: modelRun.engine.version,
+            mode: modelRun.engine.mode,
+            privacy_mode: modelRun.engine.privacy_mode
+          },
+          status: 'understood',
+          progress: Math.max(Number(project.progress || 0), modelRun.engine.mode === 'model' ? 22 : 16),
+          updated_at: now
+        });
+      }
+    }
+
+    if (lease) {
+      const committed = await commitProjectMutation(lease, {
+        story_version: storyVersion,
+        source_hash: sourceHash,
+        engine_mode: modelRun.engine.mode,
+        provider: modelRun.engine.provider
+      });
+      (result as any).project_revision = committed.revision;
+      (result as any).mutation_id = committed.mutation_id;
+    }
+
+    return json(result, 201);
+  } catch (error) {
+    if (lease) await abortProjectMutation(lease).catch(() => false);
+    const handled = projectMutationErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 };
 
 export const config = {
