@@ -91,10 +91,10 @@ export default async (request: Request) => {
     }, 409);
   }
 
-  const maxGenerations = Math.max(
-    1,
-    Math.min(12, Number(Netlify.env.get('PARABLE_KEYFRAME_MAX_GENERATIONS_PER_SHOT') || 5))
-  );
+  const configuredMaxGenerations = Number(Netlify.env.get('PARABLE_KEYFRAME_MAX_GENERATIONS_PER_SHOT') || 5);
+  const maxGenerations = Number.isFinite(configuredMaxGenerations)
+    ? Math.max(1, Math.min(12, Math.floor(configuredMaxGenerations)))
+    : 5;
   const priorGenerations = await listShotKeyframeGenerations({
     projectId,
     storyVersion,
