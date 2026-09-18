@@ -168,6 +168,7 @@ export type ShotRenderSpec = {
     continuity_before: unknown;
     transitions: unknown;
     continuity_after: unknown;
+    spatial_continuity?: unknown;
   };
   references: CanonReference[];
   inspiration_references?: CanonReference[];
@@ -636,7 +637,12 @@ export async function compileShotRenderSpec(args: {
       lens_mm: Number.isFinite(Number(shot?.lens_mm)) ? Number(shot.lens_mm) : null,
       motion: clean(shot?.motion || 'locked', 320),
       height: clean(shot?.camera_height, 160) || null,
-      axis_rule: clean(shot?.axis_rule, 220) || null
+      axis_rule: clean(
+        shot?.axis_rule ||
+        pkg?.spatial_continuity?.shot?.axis_action ||
+        (pkg?.spatial_continuity?.axis?.must_preserve ? 'preserve-established-axis' : ''),
+        220
+      ) || null
     },
     composition,
     lighting: {
@@ -657,7 +663,8 @@ export async function compileShotRenderSpec(args: {
     world_state: {
       continuity_before: pkg.continuity_before || null,
       transitions: pkg.shot_transitions || null,
-      continuity_after: pkg.continuity_after || null
+      continuity_after: pkg.continuity_after || null,
+      spatial_continuity: pkg.spatial_continuity || null
     },
     references,
     inspiration_references: inspirationReferences,
@@ -674,6 +681,8 @@ export async function compileShotRenderSpec(args: {
       'No invented extra characters.',
       'No generic cultural substitution.',
       'No unmotivated screen-direction reversal.',
+      'Do not cross the established 180-degree camera axis unless the spatial plan explicitly permits and re-establishes it.',
+      'Do not move doors, furniture, props or performers to a different room position between coverage angles unless continuity records the movement.',
       'No text mutation on established signage or props when visible.'
     ],
     output: {
@@ -693,10 +702,20 @@ export async function compileShotRenderSpec(args: {
       minimum_reference_slots: Math.min(6, references.length)
     },
     human_review: {
-      required_before_final_render: rightsIssues.length > 0 || Boolean(pkg.human_review_recommended),
+      required_before_final_render:
+        rightsIssues.length > 0 ||
+        Boolean(pkg.human_review_recommended) ||
+        Boolean(pkg?.spatial_continuity?.axis_critical && pkg?.spatial_continuity?.approval_status !== 'approved') ||
+        Boolean((pkg?.spatial_continuity?.blockers || []).length),
       reasons: [
         ...(rightsIssues.length ? ['One or more production references are not immutably vaulted with complete, active AI/likeness/voice rights provenance.'] : []),
-        ...(pkg.human_review_recommended ? ['The Continuity Brain recommended human review for this shot.'] : [])
+        ...(pkg.human_review_recommended ? ['The Continuity Brain recommended human review for this shot.'] : []),
+        ...(pkg?.spatial_continuity?.axis_critical && pkg?.spatial_continuity?.approval_status !== 'approved'
+          ? ['The scene camera-axis plan has not been human-approved.']
+          : []),
+        ...((pkg?.spatial_continuity?.blockers || []).length
+          ? ['The spatial continuity plan contains unresolved camera-axis or room-geography blockers.']
+          : [])
       ]
     },
     compiled_at: new Date().toISOString()
