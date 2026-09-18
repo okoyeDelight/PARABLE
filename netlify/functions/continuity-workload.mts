@@ -16,7 +16,7 @@ import {
 type ContinuityEvent = AsyncWorkloadEvent & {
   eventData: {
     jobId: string;
-    kind: 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation';
+    kind: 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic';
   };
 };
 
@@ -35,7 +35,7 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
   const jobId = clean(event.eventData?.jobId, 96);
   const kind = clean(event.eventData?.kind, 40);
 
-  if (!jobId || !['scene-state', 'shot-state', 'story-understanding', 'adaptation'].includes(kind)) {
+  if (!jobId || !['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic'].includes(kind)) {
     throw new ErrorDoNotRetry('Invalid PARABLE continuity workload event.');
   }
 
@@ -63,7 +63,9 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
       ? '/api/shot-state'
       : kind === 'story-understanding'
         ? '/api/understand'
-        : '/api/adapt';
+        : kind === 'film-critic'
+          ? '/api/director-critic'
+          : '/api/adapt';
   let response: Response;
 
   try {
