@@ -19,6 +19,7 @@ const clean = (value: unknown, max = 1800) => String(value ?? '').replace(/\s+/g
 
 function usableReferences(spec: ShotRenderSpec, mode: 'draft' | 'final') {
   return spec.references.filter((ref) => {
+    if (ref.render_usage === 'inspiration-only' || ref.render_usage === 'benchmark-only') return false;
     if (ref.rights_status === 'revoked' || ref.rights_status === 'restricted') return false;
     if (mode === 'final') return ref.rights_status === 'approved' && ref.approved_by_human;
     return ref.approved_by_human;
