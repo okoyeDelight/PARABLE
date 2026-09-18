@@ -1,5 +1,13 @@
 import { getStore } from '@netlify/blobs';
 import { getContext } from '@netlify/functions';
+import {
+  ensureTransactionalProviderTransaction,
+  readTransactionalProviderTransaction,
+  transitionTransactionalProviderTransaction,
+  transactionalStateMode,
+  transactionalRequestFingerprint,
+  TransactionalStateError
+} from './transactional-state.mts';
 
 export type ProviderTransactionState =
   | 'planned'
@@ -82,9 +90,7 @@ const money = (value: unknown) => {
 };
 
 export async function sha256Text(value: string) {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2,'0')).join('');
+  return transactionalRequestFingerprint(value);
 }
 
 function key(id: string) {
@@ -92,7 +98,7 @@ function key(id: string) {
   return scope.prefix + 'transaction/' + id;
 }
 
-async function readWithMetadata(id: string) {
+async function readBlobWithMetadata(id: string) {
   return store().transactions.getWithMetadata(key(id), { type: 'json' }) as Promise<{
     data: ProviderTransaction;
     etag: string;
@@ -100,9 +106,60 @@ async function readWithMetadata(id: string) {
   } | null>;
 }
 
-export async function readProviderTransaction(id: string) {
-  const current = await readWithMetadata(id);
+async function readBlobTransaction(id: string) {
+  const current = await readBlobWithMetadata(id);
   return current?.data || null;
+}
+
+function normalizeRemoteTransaction(row: Record<string, any> | null, logicalProjectId: string): ProviderTransaction | null {
+  if (!row) return null;
+  return {
+    transaction_version: 'parable-provider-transaction-v1',
+    id: clean(row.id, 180),
+    project_id: logicalProjectId,
+    operation_type: clean(row.operation_type, 80),
+    operation_id: clean(row.operation_id, 180),
+    provider: clean(row.provider, 80),
+    model: clean(row.model, 240),
+    request_hash: clean(row.request_hash, 64),
+    state: clean(row.state, 40) as ProviderTransactionState,
+    provider_request_id: clean(row.provider_request_id, 400) || null,
+    provider_status_url: clean(row.provider_status_url, 1800) || null,
+    provider_response_url: clean(row.provider_response_url, 1800) || null,
+    submission_started_at: clean(row.submission_started_at, 80) || null,
+    acknowledged_at: clean(row.acknowledged_at, 80) || null,
+    settled_at: clean(row.settled_at, 80) || null,
+    ambiguous_at: clean(row.ambiguous_at, 80) || null,
+    failed_at: clean(row.failed_at, 80) || null,
+    failure_class: clean(row.failure_class, 120) || null,
+    failure_detail: clean(row.failure_detail, 1200) || null,
+    estimated_cost_usd: money(row.estimated_cost_usd),
+    actual_cost_usd: money(row.actual_cost_usd),
+    submission_attempts: Math.max(0, Math.floor(Number(row.submission_attempts) || 0)),
+    created_at: clean(row.created_at, 80) || new Date().toISOString(),
+    updated_at: clean(row.updated_at, 80) || new Date().toISOString()
+  };
+}
+
+async function mirror(transaction: ProviderTransaction | null) {
+  if (!transaction) return;
+  try {
+    await store().transactions.setJSON(key(transaction.id), transaction);
+  } catch {
+    // PostgreSQL is authoritative; Blob is only the immutable/operational mirror.
+  }
+}
+
+export async function readProviderTransaction(id: string, projectId?: string | null) {
+  if (transactionalStateMode() === 'postgres' && projectId) {
+    const remote = normalizeRemoteTransaction(
+      await readTransactionalProviderTransaction({ projectId, id }),
+      projectId
+    );
+    await mirror(remote);
+    return remote;
+  }
+  return readBlobTransaction(id);
 }
 
 export async function ensureProviderTransaction(args: {
@@ -114,8 +171,8 @@ export async function ensureProviderTransaction(args: {
   requestBody: unknown;
   estimatedCostUsd?: number | null;
 }) {
-  const requestHash = await sha256Text(JSON.stringify(args.requestBody));
-  const deterministic = await sha256Text([
+  const requestHash = await transactionalRequestFingerprint(args.requestBody);
+  const deterministic = await transactionalRequestFingerprint([
     args.projectId,
     args.operationType,
     args.operationId,
@@ -124,7 +181,37 @@ export async function ensureProviderTransaction(args: {
   ].join('|'));
   const id = 'ptx_' + deterministic.slice(0, 40);
 
-  const existing = await readProviderTransaction(id);
+  if (transactionalStateMode() === 'postgres') {
+    try {
+      const remote = normalizeRemoteTransaction(
+        await ensureTransactionalProviderTransaction({
+          projectId: args.projectId,
+          id,
+          operationType: clean(args.operationType, 80),
+          operationId: clean(args.operationId, 180),
+          provider: clean(args.provider, 80),
+          model: clean(args.model, 240),
+          requestHash,
+          estimatedCostUsd: money(args.estimatedCostUsd)
+        }),
+        args.projectId
+      );
+      if (!remote) throw new Error('Transactional provider state returned no record.');
+      await mirror(remote);
+      return { transaction: remote, created: remote.submission_attempts === 0 && remote.state === 'planned' };
+    } catch (error) {
+      if (error instanceof TransactionalStateError && error.code === 'PROVIDER_TRANSACTION_REQUEST_CONFLICT') {
+        throw new ProviderTransactionError(
+          'PROVIDER_TRANSACTION_REQUEST_CONFLICT',
+          'The same provider operation id was reused with a different immutable request.',
+          null
+        );
+      }
+      throw error;
+    }
+  }
+
+  const existing = await readBlobTransaction(id);
   if (existing) {
     if (existing.request_hash !== requestHash) {
       throw new ProviderTransactionError(
@@ -166,18 +253,18 @@ export async function ensureProviderTransaction(args: {
 
   await store().transactions.setJSON(key(id), transaction, { onlyIfNew: true } as any);
   return {
-    transaction: (await readProviderTransaction(id)) || transaction,
+    transaction: (await readBlobTransaction(id)) || transaction,
     created: true
   };
 }
 
-async function mutate(
+async function mutateBlob(
   id: string,
   allowedStates: ProviderTransactionState[],
   updater: (current: ProviderTransaction) => ProviderTransaction
 ) {
   for (let attempt = 0; attempt < 8; attempt++) {
-    const current = await readWithMetadata(id);
+    const current = await readBlobWithMetadata(id);
     if (!current) throw new ProviderTransactionError('PROVIDER_TRANSACTION_NOT_FOUND', 'Provider transaction was not found.');
 
     if (!allowedStates.includes(current.data.state)) {
@@ -192,11 +279,11 @@ async function mutate(
     const write = await store().transactions.setJSON(key(id), next, { onlyIfMatch: current.etag } as any);
     if ((write as any)?.modified === false) continue;
 
-    const claimed = await readProviderTransaction(id);
+    const claimed = await readBlobTransaction(id);
     if (claimed?.updated_at === next.updated_at && claimed?.state === next.state) return claimed;
   }
 
-  const latest = await readProviderTransaction(id);
+  const latest = await readBlobTransaction(id);
   throw new ProviderTransactionError(
     'PROVIDER_TRANSACTION_CONCURRENT_CHANGE',
     'Provider transaction changed repeatedly while PARABLE was committing it.',
@@ -204,8 +291,73 @@ async function mutate(
   );
 }
 
-export async function beginProviderSubmission(id: string) {
-  const existing = await readProviderTransaction(id);
+async function transition(args: {
+  id: string;
+  projectId: string;
+  fromStates: ProviderTransactionState[];
+  toState: ProviderTransactionState;
+  providerRequestId?: string | null;
+  failureClass?: string | null;
+  failureDetail?: string | null;
+  actualCostUsd?: number | null;
+}) {
+  if (transactionalStateMode() === 'postgres') {
+    try {
+      const remote = normalizeRemoteTransaction(
+        await transitionTransactionalProviderTransaction({
+          projectId: args.projectId,
+          id: args.id,
+          fromStates: args.fromStates,
+          toState: args.toState,
+          providerRequestId: args.providerRequestId,
+          failureClass: args.failureClass,
+          failureDetail: args.failureDetail,
+          actualCostUsd: money(args.actualCostUsd)
+        }),
+        args.projectId
+      );
+      if (!remote) throw new Error('Transactional provider transition returned no record.');
+      await mirror(remote);
+      return remote;
+    } catch (error) {
+      if (error instanceof TransactionalStateError && error.code === 'PROVIDER_TRANSACTION_STATE_CONFLICT') {
+        const current = await readProviderTransaction(args.id, args.projectId).catch(() => null);
+        throw new ProviderTransactionError(
+          'PROVIDER_TRANSACTION_STATE_CONFLICT',
+          'Provider transaction state changed before this transition could commit.',
+          current
+        );
+      }
+      throw error;
+    }
+  }
+
+  return mutateBlob(args.id, args.fromStates, (current) => {
+    const now = new Date().toISOString();
+    return {
+      ...current,
+      state: args.toState,
+      provider_request_id: clean(args.providerRequestId, 400) || current.provider_request_id,
+      failure_class: clean(args.failureClass, 120) || current.failure_class,
+      failure_detail: clean(args.failureDetail, 1200) || current.failure_detail,
+      actual_cost_usd: money(args.actualCostUsd) ?? current.actual_cost_usd,
+      submission_started_at: args.toState === 'submitting'
+        ? current.submission_started_at || now
+        : current.submission_started_at,
+      acknowledged_at: args.toState === 'acknowledged'
+        ? current.acknowledged_at || now
+        : current.acknowledged_at,
+      settled_at: args.toState === 'settled' ? current.settled_at || now : current.settled_at,
+      ambiguous_at: args.toState === 'ambiguous' ? current.ambiguous_at || now : current.ambiguous_at,
+      failed_at: args.toState === 'failed' ? current.failed_at || now : current.failed_at,
+      submission_attempts: current.submission_attempts + (args.toState === 'submitting' ? 1 : 0),
+      updated_at: now
+    };
+  });
+}
+
+export async function beginProviderSubmission(id: string, projectId: string) {
+  const existing = await readProviderTransaction(id, projectId);
   if (!existing) throw new ProviderTransactionError('PROVIDER_TRANSACTION_NOT_FOUND', 'Provider transaction was not found.');
 
   if (['acknowledged','processing','settled'].includes(existing.state)) return existing;
@@ -224,124 +376,132 @@ export async function beginProviderSubmission(id: string) {
     );
   }
 
-  return mutate(id, ['planned'], (current) => {
-    const now = new Date().toISOString();
-    return {
-      ...current,
-      state: 'submitting',
-      submission_started_at: now,
-      submission_attempts: current.submission_attempts + 1,
-      updated_at: now
-    };
+  return transition({
+    id,
+    projectId,
+    fromStates: ['planned'],
+    toState: 'submitting'
   });
 }
 
 export async function acknowledgeProviderSubmission(args: {
   id: string;
+  projectId: string;
   providerRequestId: string;
   statusUrl?: string | null;
   responseUrl?: string | null;
 }) {
-  return mutate(args.id, ['submitting','acknowledged'], (current) => {
-    const now = new Date().toISOString();
-    return {
-      ...current,
-      state: 'acknowledged',
-      provider_request_id: clean(args.providerRequestId, 400),
-      provider_status_url: clean(args.statusUrl, 1800) || current.provider_status_url,
-      provider_response_url: clean(args.responseUrl, 1800) || current.provider_response_url,
-      acknowledged_at: current.acknowledged_at || now,
-      failure_class: null,
-      failure_detail: null,
-      updated_at: now
-    };
+  const updated = await transition({
+    id: args.id,
+    projectId: args.projectId,
+    fromStates: ['submitting','acknowledged'],
+    toState: 'acknowledged',
+    providerRequestId: args.providerRequestId
   });
+
+  if (args.statusUrl || args.responseUrl) {
+    // URLs remain mirrored in the operational record. Provider request identity,
+    // spending and state transitions are authoritative in PostgreSQL.
+    const next = {
+      ...updated,
+      provider_status_url: clean(args.statusUrl, 1800) || updated.provider_status_url,
+      provider_response_url: clean(args.responseUrl, 1800) || updated.provider_response_url,
+      updated_at: new Date().toISOString()
+    };
+    await mirror(next);
+    return next;
+  }
+
+  return updated;
 }
 
-export async function markProviderProcessing(id: string) {
-  const existing = await readProviderTransaction(id);
+export async function markProviderProcessing(id: string, projectId: string) {
+  const existing = await readProviderTransaction(id, projectId);
   if (!existing) return null;
-  if (existing.state === 'processing') return existing;
-  if (existing.state === 'settled') return existing;
-  return mutate(id, ['acknowledged'], (current) => ({
-    ...current,
-    state: 'processing',
-    updated_at: new Date().toISOString()
-  }));
+  if (existing.state === 'processing' || existing.state === 'settled') return existing;
+  return transition({ id, projectId, fromStates: ['acknowledged'], toState: 'processing' });
 }
 
 export async function settleProviderTransaction(args: {
   id: string;
+  projectId: string;
   actualCostUsd?: number | null;
 }) {
-  const existing = await readProviderTransaction(args.id);
+  const existing = await readProviderTransaction(args.id, args.projectId);
   if (!existing) return null;
   if (existing.state === 'settled') return existing;
-  return mutate(args.id, ['acknowledged','processing'], (current) => {
-    const now = new Date().toISOString();
-    return {
-      ...current,
-      state: 'settled',
-      actual_cost_usd: money(args.actualCostUsd) ?? current.actual_cost_usd,
-      settled_at: now,
-      updated_at: now
-    };
+  return transition({
+    id: args.id,
+    projectId: args.projectId,
+    fromStates: ['acknowledged','processing'],
+    toState: 'settled',
+    actualCostUsd: args.actualCostUsd
   });
 }
 
 export async function failProviderTransaction(args: {
   id: string;
+  projectId: string;
   failureClass: string;
   failureDetail: string;
   actualCostUsd?: number | null;
 }) {
-  const existing = await readProviderTransaction(args.id);
+  const existing = await readProviderTransaction(args.id, args.projectId);
   if (!existing) return null;
   if (['failed','settled','ambiguous','cancelled'].includes(existing.state)) return existing;
-  return mutate(args.id, ['planned','submitting','acknowledged','processing'], (current) => {
-    const now = new Date().toISOString();
-    return {
-      ...current,
-      state: 'failed',
-      failure_class: clean(args.failureClass, 120),
-      failure_detail: clean(args.failureDetail, 1200),
-      actual_cost_usd: money(args.actualCostUsd) ?? current.actual_cost_usd,
-      failed_at: now,
-      updated_at: now
-    };
+  return transition({
+    id: args.id,
+    projectId: args.projectId,
+    fromStates: ['planned','submitting','acknowledged','processing'],
+    toState: 'failed',
+    failureClass: args.failureClass,
+    failureDetail: args.failureDetail,
+    actualCostUsd: args.actualCostUsd
   });
 }
 
 export async function markProviderSubmissionAmbiguous(args: {
   id: string;
+  projectId: string;
   detail: string;
 }) {
-  const existing = await readProviderTransaction(args.id);
+  const existing = await readProviderTransaction(args.id, args.projectId);
   if (!existing) return null;
-  if (existing.state === 'ambiguous') return existing;
-  if (existing.state === 'settled') return existing;
+  if (existing.state === 'ambiguous' || existing.state === 'settled') return existing;
 
-  return mutate(args.id, ['submitting','acknowledged'], (current) => {
-    const now = new Date().toISOString();
-    return {
-      ...current,
-      state: 'ambiguous',
-      failure_class: 'ambiguous-submission',
-      failure_detail: clean(args.detail, 1200),
-      ambiguous_at: now,
-      updated_at: now
-    };
+  return transition({
+    id: args.id,
+    projectId: args.projectId,
+    fromStates: ['submitting','acknowledged'],
+    toState: 'ambiguous',
+    failureClass: 'ambiguous-submission',
+    failureDetail: args.detail
   });
 }
 
 export function providerTransactionErrorResponse(error: unknown) {
-  if (!(error instanceof ProviderTransactionError)) return null;
-  return {
-    status: error.code === 'PROVIDER_SUBMISSION_AMBIGUOUS' ? 409 : 409,
-    body: {
-      error: error.message,
-      code: error.code,
-      transaction: error.transaction
-    }
-  };
+  if (error instanceof ProviderTransactionError) {
+    return {
+      status: 409,
+      body: {
+        error: error.message,
+        code: error.code,
+        transaction: error.transaction
+      }
+    };
+  }
+
+  if (error instanceof TransactionalStateError) {
+    return {
+      status: error.status,
+      body: {
+        error: error.message,
+        code: error.code,
+        retryable: error.retryable,
+        state_backend: 'postgres'
+      }
+    };
+  }
+
+  return null;
 }
