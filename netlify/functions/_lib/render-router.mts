@@ -67,11 +67,11 @@ function defaultCapabilities(): RendererCapability[] {
         max_reference_slots: Math.max(1, Math.min(12, Number(Netlify.env.get('FAL_RENDER_REFERENCE_SLOTS') || 6)))
       },
       operating: {
-        quality_score: clamp(Netlify.env.get('FAL_RENDER_QUALITY_SCORE'), 0.72),
-        continuity_score: clamp(Netlify.env.get('FAL_RENDER_CONTINUITY_SCORE'), 0.72),
-        reliability_score: clamp(Netlify.env.get('FAL_RENDER_RELIABILITY_SCORE'), 0.74),
-        latency_score: clamp(Netlify.env.get('FAL_RENDER_LATENCY_SCORE'), 0.62),
-        cost_score: clamp(Netlify.env.get('FAL_RENDER_COST_SCORE'), 0.65)
+        quality_score: clamp(Netlify.env.get('FAL_RENDER_QUALITY_SCORE'), 0.5),
+        continuity_score: clamp(Netlify.env.get('FAL_RENDER_CONTINUITY_SCORE'), 0.5),
+        reliability_score: clamp(Netlify.env.get('FAL_RENDER_RELIABILITY_SCORE'), 0.5),
+        latency_score: clamp(Netlify.env.get('FAL_RENDER_LATENCY_SCORE'), 0.5),
+        cost_score: clamp(Netlify.env.get('FAL_RENDER_COST_SCORE'), 0.5)
       },
       notes: [
         'Model selection is runtime-configured so PARABLE can change fal endpoints without changing ShotRenderSpec.',
@@ -93,11 +93,11 @@ function defaultCapabilities(): RendererCapability[] {
         max_reference_slots: Math.max(1, Math.min(8, Number(Netlify.env.get('RUNWAY_RENDER_REFERENCE_SLOTS') || 3)))
       },
       operating: {
-        quality_score: clamp(Netlify.env.get('RUNWAY_RENDER_QUALITY_SCORE'), 0.75),
-        continuity_score: clamp(Netlify.env.get('RUNWAY_RENDER_CONTINUITY_SCORE'), 0.73),
-        reliability_score: clamp(Netlify.env.get('RUNWAY_RENDER_RELIABILITY_SCORE'), 0.72),
-        latency_score: clamp(Netlify.env.get('RUNWAY_RENDER_LATENCY_SCORE'), 0.62),
-        cost_score: clamp(Netlify.env.get('RUNWAY_RENDER_COST_SCORE'), 0.55)
+        quality_score: clamp(Netlify.env.get('RUNWAY_RENDER_QUALITY_SCORE'), 0.5),
+        continuity_score: clamp(Netlify.env.get('RUNWAY_RENDER_CONTINUITY_SCORE'), 0.5),
+        reliability_score: clamp(Netlify.env.get('RUNWAY_RENDER_RELIABILITY_SCORE'), 0.5),
+        latency_score: clamp(Netlify.env.get('RUNWAY_RENDER_LATENCY_SCORE'), 0.5),
+        cost_score: clamp(Netlify.env.get('RUNWAY_RENDER_COST_SCORE'), 0.5)
       },
       notes: [
         'Runway is an optional renderer. PARABLE must remain functional when this provider is unavailable.',
