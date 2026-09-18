@@ -81,8 +81,20 @@ export function buildKeyframeGenerationPlan(args: {
   model?: string | null;
 }): KeyframeGenerationPlan {
   const spec = args.spec;
-  const refs = selectKeyframeGenerationReferences(spec);
+  const handoffFrame = (spec.world_state?.previous_accepted_handoff as any)?.handoff_frame || null;
+  const handoffUri = safeHttpUrl(handoffFrame?.uri) ? String(handoffFrame.uri) : '';
+  const refs = selectKeyframeGenerationReferences(spec, handoffUri ? 5 : 6);
   const inspirationNotes = keyframeInspirationNotes(spec);
+
+  const sequenceContract = handoffUri
+    ? [
+        '',
+        'PREVIOUS ACCEPTED SHOT HANDOFF:',
+        '- Reference 0 is the trusted final frame of the previous accepted shot.',
+        '- This is continuity evidence, not a request to copy camera framing blindly.',
+        '- Preserve visible performer pose/action, wardrobe, props, room geography, screen direction and motivated lighting across the cut unless the current shot explicitly changes them.'
+      ]
+    : [];
 
   const referenceContract = refs.length
     ? [
@@ -151,6 +163,7 @@ export function buildKeyframeGenerationPlan(args: {
     '- Avoid beauty-filter skin, plastic texture, excessive rim light, fake anamorphic flares and over-designed AI lighting.',
     '- Hands, eyes, teeth, jewelry, furniture, architecture and readable text must be physically coherent.',
     ...spec.negative_constraints.map((item) => '- ' + clean(item, 500)),
+    ...sequenceContract,
     ...referenceContract,
     ...inspirationContract,
     '',
@@ -164,11 +177,20 @@ export function buildKeyframeGenerationPlan(args: {
     generation_plan_version: 'parable-keyframe-generation-plan-v1',
     model: clean(args.model || 'google/gemini-3.1-flash-image', 240),
     prompt,
-    input_references: refs.map((ref) => ({
-      type: 'image_url' as const,
-      image_url: { url: ref.uri }
-    })),
-    reference_ids: refs.map((ref) => ref.id),
+    input_references: [
+      ...(handoffUri ? [{
+        type: 'image_url' as const,
+        image_url: { url: handoffUri }
+      }] : []),
+      ...refs.map((ref) => ({
+        type: 'image_url' as const,
+        image_url: { url: ref.uri }
+      }))
+    ],
+    reference_ids: [
+      ...(handoffUri ? ['sequence-handoff:' + clean((spec.world_state?.previous_accepted_handoff as any)?.shot_id || 'previous-shot', 120)] : []),
+      ...refs.map((ref) => ref.id)
+    ],
     inspiration_notes: inspirationNotes,
     aspect_ratio: clean(spec.output.aspect_ratio || '16:9', 20),
     n: 1
