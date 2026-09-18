@@ -1,0 +1,33 @@
+name: PARABLE Continuity V4 Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/continuity-core.mts'
+      - 'netlify/functions/_lib/continuity-ai.mts'
+      - 'netlify/functions/scene-state.mts'
+      - 'netlify/functions/shot-state.mts'
+      - 'netlify/functions/render-context.mts'
+      - 'tools/continuity_v4_smoke.mts'
+      - '.github/workflows/continuity-v4-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-continuity-v4-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run deterministic Continuity V4 smoke
+        run: node tools/continuity_v4_smoke.mts
