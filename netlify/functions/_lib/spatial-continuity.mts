@@ -78,8 +78,10 @@ export type SceneSpatialPlan = {
   warnings: string[];
   source: {
     shot_count: number;
+    checked_shot_count: number;
     continuity_relation_count: number;
     known_character_count: number;
+    shot_state_fingerprints: Record<string, string>;
   };
   created_at: string;
 };
@@ -454,6 +456,20 @@ export async function buildSceneSpatialPlan(input: BuildInput): Promise<SceneSpa
   }
 
   const topology = roomTopology(input.continuityContract);
+  const shotStateFingerprints: Record<string, string> = {};
+  for (const shot of input.shots) {
+    const shotId = clean(shot?.id, 96);
+    const state = shotId ? input.shotStates?.[shotId] : null;
+    if (!shotId || !state) continue;
+    shotStateFingerprints[shotId] = await stableHash({
+      can_render: state?.can_render ?? null,
+      render_contract_before: state?.render_contract_before ?? null,
+      extracted_shot_state: state?.extracted_shot_state ?? null,
+      render_contract_after: state?.render_contract_after ?? null,
+      warnings: Array.isArray(state?.warnings) ? state.warnings : []
+    });
+  }
+
   const approvalStatus: SceneSpatialPlan['approval']['status'] = axisCritical
     ? input.existing?.approval?.status === 'approved' &&
       input.existing?.spatial_plan_hash
@@ -485,8 +501,10 @@ export async function buildSceneSpatialPlan(input: BuildInput): Promise<SceneSpa
     warnings: uniq(sceneWarnings),
     source: {
       shot_count: input.shots.length,
+      checked_shot_count: Object.keys(shotStateFingerprints).length,
       continuity_relation_count: topology.edges.length,
-      known_character_count: characters.length
+      known_character_count: characters.length,
+      shot_state_fingerprints: shotStateFingerprints
     }
   };
 
