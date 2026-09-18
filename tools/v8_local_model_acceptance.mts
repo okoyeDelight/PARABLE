@@ -77,7 +77,7 @@ const CRITIC_SCHEMA = obj({
   priorities: {
     type: 'array',
     minItems: 1,
-    maxItems: 4,
+    maxItems: 2,
     items: obj({
       area: str(),
       issue: str(),
@@ -91,9 +91,9 @@ const CRITIC_SCHEMA = obj({
       }
     })
   },
-  continuity_risks: { type: 'array', maxItems: 4, items: str() },
-  fidelity_risks: { type: 'array', maxItems: 4, items: str() },
-  human_questions: { type: 'array', maxItems: 4, items: str() }
+  continuity_risks: { type: 'array', maxItems: 1, items: str() },
+  fidelity_risks: { type: 'array', maxItems: 1, items: str() },
+  human_questions: { type: 'array', maxItems: 1, items: str() }
 });
 
 function clean(value: unknown, max = 900) {
@@ -262,7 +262,9 @@ const criticSystem = [
   'Never invent facts, characters, Scripture or events.',
   'Every priority must cite at least one affected_shot_id from the supplied shot plan.',
   'Make priorities fixture-specific by naming the concrete objects, actions or emotional beats they concern.',
-  'Give only high-leverage, actionable production notes.'
+  'Be concise: use 1-2 priorities only; keep each issue, why_it_matters and action to one short sentence.',
+  'Use at most one short continuity risk, one short fidelity risk and one short human question.',
+  'Do not narrate the whole scene. Give only high-leverage, actionable production notes.'
 ].join(' ');
 
 const report: any = {
@@ -324,7 +326,7 @@ for (const fixture of Object.values(BENCHMARK_FIXTURES)) {
       screenplay: adaptation.screenplay
     }),
     schema: CRITIC_SCHEMA,
-    maxTokens: 700
+    maxTokens: 1000
   });
   const critic = sanitizeCritic(response.parsed, adaptation);
   const gate = assessCriticBenchmark(fixture, adaptation, critic);
