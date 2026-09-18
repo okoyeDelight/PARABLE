@@ -1,7 +1,7 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 
 export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic';
-export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed';
+export type JobStatus = 'queued' | 'processing' | 'retrying' | 'succeeded' | 'failed';
 
 export type DurableJob = {
   id: string;
@@ -106,6 +106,23 @@ export async function markJobProcessing(jobId: string, attempts: number) {
     ...current,
     status: 'processing',
     attempts: Math.max(current.attempts, attempts),
+    completed_at: null,
+    updated_at: new Date().toISOString()
+  };
+  await jobs.setJSON('job/' + jobId, next);
+  return next;
+}
+
+export async function markJobRetrying(jobId: string, error: unknown, attempts: number) {
+  const { jobs } = stores();
+  const current = await readDurableJob(jobId);
+  if (!current) return null;
+  const next: DurableJob = {
+    ...current,
+    status: 'retrying',
+    attempts: Math.max(current.attempts, attempts),
+    last_error: clean(error instanceof Error ? error.message : error, 1200),
+    completed_at: null,
     updated_at: new Date().toISOString()
   };
   await jobs.setJSON('job/' + jobId, next);
