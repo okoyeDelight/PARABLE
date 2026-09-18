@@ -4,13 +4,29 @@ import {
   claimTransactionalJob,
   ensureTransactionalJob,
   readTransactionalJob,
+  storageProjectId,
   transactionalStateMode,
   transitionTransactionalJob,
   TransactionalStateError
 } from './transactional-state.mts';
 
-export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic' | 'keyframe-generate' | 'reference-profile' | 'scale-noop';
-export type JobStatus = 'queued' | 'processing' | 'retrying' | 'succeeded' | 'failed';
+export type JobKind =
+  | 'scene-state'
+  | 'shot-state'
+  | 'story-understanding'
+  | 'adaptation'
+  | 'film-critic'
+  | 'keyframe-generate'
+  | 'reference-profile'
+  | 'scale-noop';
+
+export type JobStatus =
+  | 'queued'
+  | 'processing'
+  | 'retrying'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
 
 export type DurableJob = {
   id: string;
@@ -54,7 +70,7 @@ function runtimeScope() {
 
   const deployContext = context?.deploy?.context || Netlify.context?.deploy?.context || 'unknown';
   const production = deployContext === 'production';
-  if (production) return { production: true, prefix: '', storageProjectPrefix: 'prod:' };
+  if (production) return { production: true, prefix: '' };
 
   const deployId = String(context?.deploy?.id || Netlify.context?.deploy?.id || 'local')
     .replace(/[^a-zA-Z0-9_-]/g, '')
@@ -62,8 +78,7 @@ function runtimeScope() {
 
   return {
     production: false,
-    prefix: 'deploy/' + (deployId || 'local') + '/',
-    storageProjectPrefix: 'preview:' + (deployId || 'local') + ':'
+    prefix: 'deploy/' + (deployId || 'local') + '/'
   };
 }
 
@@ -79,7 +94,8 @@ function stores() {
   };
 }
 
-const clean = (value: unknown, max = 500) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+const clean = (value: unknown, max = 500) =>
+  String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 export async function sha256(value: string) {
   const bytes = new TextEncoder().encode(value);
@@ -108,32 +124,43 @@ function classifyJobError(error: unknown) {
   return 'other';
 }
 
-function logicalProjectId(storageProjectId: string) {
-  const prefix = runtimeScope().storageProjectPrefix;
-  return storageProjectId.startsWith(prefix)
-    ? storageProjectId.slice(prefix.length)
-    : null;
+function jobKey(jobId: string) {
+  return stores().scope.prefix + 'job/' + jobId;
 }
 
-function jobFromRow(row: Record<string, any> | null): DurableJob | null {
+function payloadKey(jobId: string) {
+  return stores().scope.prefix + 'payload/' + jobId;
+}
+
+function currentStorageProjectPrefix() {
+  return storageProjectId('');
+}
+
+function logicalProjectId(storedProjectId: unknown) {
+  const stored = clean(storedProjectId, 240);
+  const prefix = currentStorageProjectPrefix();
+  return stored.startsWith(prefix) ? stored.slice(prefix.length) : null;
+}
+
+function normalizeTransactionalJob(row: Record<string, any> | null): DurableJob | null {
   if (!row) return null;
-  const projectId = logicalProjectId(clean(row.project_id, 240));
-  if (!projectId) return null;
+  const logicalProject = logicalProjectId(row.project_id);
+  if (!logicalProject) return null;
 
   const auth = row.auth_context && typeof row.auth_context === 'object'
-    ? row.auth_context as Record<string, any>
+    ? row.auth_context
     : null;
 
   return {
-    id: clean(row.id, 96),
+    id: clean(row.id, 180),
     kind: clean(row.kind, 80) as JobKind,
-    project_id: projectId,
+    project_id: logicalProject,
     status: clean(row.status, 40) as JobStatus,
-    payload_hash: clean(row.payload_hash, 128),
+    payload_hash: clean(row.payload_hash, 64),
     idempotency_key: clean(row.idempotency_key, 240) || null,
     attempts: Math.max(0, Math.floor(Number(row.attempts) || 0)),
     last_error: clean(row.last_error, 1200) || null,
-    result_ref: clean(row.result_ref, 800) || null,
+    result_ref: clean(row.result_ref, 600) || null,
     created_at: clean(row.created_at, 80) || new Date().toISOString(),
     updated_at: clean(row.updated_at, 80) || new Date().toISOString(),
     completed_at: clean(row.completed_at, 80) || null,
@@ -141,12 +168,12 @@ function jobFromRow(row: Record<string, any> | null): DurableJob | null {
     lease_expires_at: clean(row.lease_expires_at, 80) || null,
     queue_event_id: clean(row.queue_event_id, 180) || null,
     authorization: auth ? {
-      actor_id: clean(auth.actor_id,180),
-      provider: clean(auth.provider,120),
-      subject: clean(auth.subject,180),
-      workspace_id: clean(auth.workspace_id,180),
-      role: clean(auth.role,80),
-      action: clean(auth.action,80)
+      actor_id: clean(auth.actor_id || row.actor_user_id, 180),
+      provider: clean(auth.provider, 80),
+      subject: clean(auth.subject, 240),
+      workspace_id: clean(auth.workspace_id || row.workspace_id, 180),
+      role: clean(auth.role, 80),
+      action: clean(auth.action, 120)
     } : null
   };
 }
@@ -154,16 +181,11 @@ function jobFromRow(row: Record<string, any> | null): DurableJob | null {
 async function mirrorJob(job: DurableJob | null) {
   if (!job) return;
   try {
-    const { jobs, scope } = stores();
-    await jobs.setJSON(scope.prefix + 'job/' + job.id, job);
+    await stores().jobs.setJSON(jobKey(job.id), job);
   } catch {
-    // PostgreSQL is authoritative. Blob job state is only an operational mirror.
+    // PostgreSQL is authoritative in transactional mode. Blob job records are
+    // compatibility/observability mirrors only.
   }
-}
-
-async function readBlobJob(jobId: string) {
-  const { jobs, scope } = stores();
-  return jobs.get(scope.prefix + 'job/' + jobId, { type: 'json' }) as Promise<DurableJob | null>;
 }
 
 async function recordJobEvent(job: DurableJob) {
@@ -187,6 +209,12 @@ async function recordJobEvent(job: DurableJob) {
   }
 }
 
+async function mirrorAndRecord(job: DurableJob | null) {
+  if (!job) return job;
+  await Promise.allSettled([mirrorJob(job), recordJobEvent(job)]);
+  return job;
+}
+
 export async function createDurableJob(args: {
   kind: JobKind;
   projectId: string;
@@ -198,18 +226,19 @@ export async function createDurableJob(args: {
   const payloadJson = JSON.stringify(args.payload);
   const payloadHash = await sha256(payloadJson);
   const normalizedKey = clean(args.idempotencyKey, 240);
-  const deterministic = normalizedKey
-    ? await sha256([args.kind, args.projectId, normalizedKey].join('|'))
+  const deterministicBasis = normalizedKey
+    ? [args.kind, storageProjectId(args.projectId), normalizedKey].join('|')
     : crypto.randomUUID().replaceAll('-', '');
+  const deterministic = normalizedKey ? await sha256(deterministicBasis) : deterministicBasis;
   const id = 'job_' + deterministic.slice(0, 28);
 
-  // Payload bytes are immutable and staged before the transactional row. If
-  // the DB write fails, the only residue is an unreachable orphan payload.
-  await payloads.setJSON(scope.prefix + 'payload/' + id, args.payload, { onlyIfNew: true } as any);
+  // Immutable payload first. If the transactional job commit later fails, this
+  // is only an orphan blob and cannot be executed without an authoritative job.
+  await payloads.setJSON(payloadKey(id), args.payload, { onlyIfNew: true } as any);
 
   if (transactionalStateMode() === 'postgres') {
     try {
-      const ensured = await ensureTransactionalJob({
+      const state = await ensureTransactionalJob({
         id,
         kind: args.kind,
         projectId: args.projectId,
@@ -219,26 +248,46 @@ export async function createDurableJob(args: {
         payloadHash,
         idempotencyKey: normalizedKey || null
       });
-      const job = jobFromRow(ensured.job);
-      if (!job) throw new Error('Transactional durable job returned outside the current deployment scope.');
-      await mirrorJob(job);
-      await recordJobEvent(job);
+
+      const job = normalizeTransactionalJob(state.job);
+      if (!job) {
+        throw new Error('Transactional durable-job state resolved outside the current deployment scope.');
+      }
+      await mirrorAndRecord(job);
       return {
         job,
-        created: ensured.created === true,
+        created: state.created === true,
         conflict: false
       };
     } catch (error) {
-      if (error instanceof TransactionalStateError && error.code === 'JOB_IDEMPOTENCY_CONFLICT') {
-        const existing = jobFromRow(await readTransactionalJob(id).catch(() => null));
-        if (existing) {
-          return {
-            job: existing,
-            created: false,
-            conflict: true,
-            conflict_reason: 'The same idempotency key was reused with a different payload.'
-          };
-        }
+      if (
+        error instanceof TransactionalStateError &&
+        error.code === 'JOB_IDEMPOTENCY_CONFLICT'
+      ) {
+        const existing = await readDurableJob(id).catch(() => null);
+        return {
+          job: existing || {
+            id,
+            kind: args.kind,
+            project_id: args.projectId,
+            status: 'queued' as const,
+            payload_hash: payloadHash,
+            idempotency_key: normalizedKey || null,
+            attempts: 0,
+            last_error: null,
+            result_ref: null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            completed_at: null,
+            lease_token: null,
+            lease_expires_at: null,
+            queue_event_id: null,
+            authorization: args.authorization || null
+          },
+          created: false,
+          conflict: true,
+          conflict_reason: 'The same idempotency key was reused with a different payload.'
+        };
       }
       throw error;
     }
@@ -281,38 +330,44 @@ export async function createDurableJob(args: {
 
   await jobs.setJSON(key, job, { onlyIfNew: true } as any);
   await recordJobEvent(job);
-  return { job, created: true, conflict: false };
+  return { job: (await jobs.get(key, { type: 'json' }) as DurableJob | null) || job, created: true, conflict: false };
 }
 
 export async function readDurableJob(jobId: string) {
   if (transactionalStateMode() === 'postgres') {
-    const job = jobFromRow(await readTransactionalJob(jobId));
+    const job = normalizeTransactionalJob(await readTransactionalJob(jobId));
     await mirrorJob(job);
     return job;
   }
-  return readBlobJob(jobId);
+
+  const { jobs } = stores();
+  return jobs.get(jobKey(jobId), { type: 'json' }) as Promise<DurableJob | null>;
 }
 
 export async function readJobPayload(jobId: string) {
-  const { payloads, scope } = stores();
-  return payloads.get(scope.prefix + 'payload/' + jobId, { type: 'json' }) as Promise<Record<string, any> | null>;
+  const { payloads } = stores();
+  return payloads.get(payloadKey(jobId), { type: 'json' }) as Promise<Record<string, any> | null>;
 }
 
 export async function markJobQueued(jobId: string, eventId?: string | null) {
   if (transactionalStateMode() === 'postgres') {
-    const row = await transitionTransactionalJob({
+    const current = await readDurableJob(jobId);
+    if (!current) return null;
+
+    // The background worker can win the race and claim the job before the
+    // dispatcher stores its queue event. Never reset a processing lease.
+    if (current.status !== 'queued') return current;
+
+    const next = normalizeTransactionalJob(await transitionTransactionalJob({
       id: jobId,
       toStatus: 'queued',
-      queueEventId: clean(eventId,180) || null
-    });
-    const job = jobFromRow(row);
-    await mirrorJob(job);
-    if (job) await recordJobEvent(job);
-    return job;
+      queueEventId: clean(eventId, 180) || null
+    }));
+    return mirrorAndRecord(next);
   }
 
-  const { jobs, scope } = stores();
-  const current = await readBlobJob(jobId);
+  const { jobs } = stores();
+  const current = await readDurableJob(jobId);
   if (!current) return null;
   const next: DurableJob = {
     ...current,
@@ -320,28 +375,39 @@ export async function markJobQueued(jobId: string, eventId?: string | null) {
     queue_event_id: clean(eventId, 180) || current.queue_event_id || null,
     updated_at: new Date().toISOString()
   };
-  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
+  await jobs.setJSON(jobKey(jobId), next);
   await recordJobEvent(next);
   return next;
 }
 
-export async function markJobProcessing(jobId: string, attempts: number, leaseToken?: string, leaseMs = 120000) {
+export async function markJobProcessing(
+  jobId: string,
+  attempts: number,
+  leaseToken?: string,
+  leaseMs = 120000
+) {
   if (transactionalStateMode() === 'postgres') {
-    if (!leaseToken) throw new Error('PostgreSQL durable jobs require an explicit lease token.');
+    if (!leaseToken) throw new Error('A PostgreSQL durable-job claim requires a lease token.');
+
     const claimed = await claimTransactionalJob({
       id: jobId,
       leaseToken,
-      attempt: attempts,
+      attempt: Math.max(1, Math.floor(Number(attempts) || 1)),
       leaseMs
     });
-    const job = jobFromRow(claimed?.job || null);
-    await mirrorJob(job);
-    if (job && claimed?.claimed) await recordJobEvent(job);
-    return job;
+
+    if (!claimed?.claimed) {
+      const existing = normalizeTransactionalJob(claimed?.job || null);
+      await mirrorJob(existing);
+      return null;
+    }
+
+    const job = normalizeTransactionalJob(claimed.job);
+    return mirrorAndRecord(job);
   }
 
-  const { jobs, scope } = stores();
-  const current = await readBlobJob(jobId);
+  const { jobs } = stores();
+  const current = await readDurableJob(jobId);
   if (!current) return null;
   const now = new Date();
   const next: DurableJob = {
@@ -350,36 +416,34 @@ export async function markJobProcessing(jobId: string, attempts: number, leaseTo
     attempts: Math.max(current.attempts, attempts),
     completed_at: null,
     lease_token: leaseToken || current.lease_token || null,
-    lease_expires_at: leaseToken ? new Date(now.getTime() + leaseMs).toISOString() : current.lease_expires_at || null,
+    lease_expires_at: leaseToken
+      ? new Date(now.getTime() + leaseMs).toISOString()
+      : current.lease_expires_at || null,
     updated_at: now.toISOString()
   };
-  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
+  await jobs.setJSON(jobKey(jobId), next);
   await recordJobEvent(next);
   return next;
 }
 
-export async function markJobRetrying(
-  jobId: string,
-  error: unknown,
-  attempts: number,
-  leaseToken?: string | null
-) {
+export async function markJobRetrying(jobId: string, error: unknown, attempts: number) {
   if (transactionalStateMode() === 'postgres') {
-    const row = await transitionTransactionalJob({
+    const current = await readDurableJob(jobId);
+    if (!current) return null;
+    if (['succeeded','failed','cancelled'].includes(current.status)) return current;
+
+    const next = normalizeTransactionalJob(await transitionTransactionalJob({
       id: jobId,
       toStatus: 'retrying',
-      leaseToken,
-      attempt: attempts,
-      lastError: clean(error instanceof Error ? error.message : error,1200)
-    });
-    const job = jobFromRow(row);
-    await mirrorJob(job);
-    if (job) await recordJobEvent(job);
-    return job;
+      leaseToken: current.lease_token,
+      attempt: Math.max(current.attempts, Math.floor(Number(attempts) || 0)),
+      lastError: clean(error instanceof Error ? error.message : error, 1200)
+    }));
+    return mirrorAndRecord(next);
   }
 
-  const { jobs, scope } = stores();
-  const current = await readBlobJob(jobId);
+  const { jobs } = stores();
+  const current = await readDurableJob(jobId);
   if (!current) return null;
   const next: DurableJob = {
     ...current,
@@ -391,34 +455,31 @@ export async function markJobRetrying(
     lease_expires_at: null,
     updated_at: new Date().toISOString()
   };
-  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
+  await jobs.setJSON(jobKey(jobId), next);
   await recordJobEvent(next);
   return next;
 }
 
-export async function completeJob(jobId: string, result: unknown, leaseToken?: string | null) {
-  const { jobs, results, scope } = stores();
-  const resultRef = scope.prefix + 'result/' + jobId;
+export async function completeJob(jobId: string, result: unknown) {
+  const { jobs, results } = stores();
+  const current = await readDurableJob(jobId);
+  if (!current) return null;
+  if (current.status === 'succeeded') return current;
 
-  // Large/structured results stay in Blobs. The DB transition publishes only
-  // the immutable reference after the payload exists.
+  const resultRef = stores().scope.prefix + 'result/' + jobId;
   await results.setJSON(resultRef, result);
 
   if (transactionalStateMode() === 'postgres') {
-    const row = await transitionTransactionalJob({
+    const next = normalizeTransactionalJob(await transitionTransactionalJob({
       id: jobId,
       toStatus: 'succeeded',
-      leaseToken,
+      leaseToken: current.lease_token,
+      attempt: current.attempts,
       resultRef
-    });
-    const job = jobFromRow(row);
-    await mirrorJob(job);
-    if (job) await recordJobEvent(job);
-    return job;
+    }));
+    return mirrorAndRecord(next);
   }
 
-  const current = await readBlobJob(jobId);
-  if (!current) return null;
   const now = new Date().toISOString();
   const next: DurableJob = {
     ...current,
@@ -430,28 +491,28 @@ export async function completeJob(jobId: string, result: unknown, leaseToken?: s
     lease_token: null,
     lease_expires_at: null
   };
-  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
+  await jobs.setJSON(jobKey(jobId), next);
   await recordJobEvent(next);
   return next;
 }
 
-export async function failJob(jobId: string, error: unknown, leaseToken?: string | null) {
+export async function failJob(jobId: string, error: unknown) {
+  const { jobs } = stores();
+  const current = await readDurableJob(jobId);
+  if (!current) return null;
+  if (['succeeded','failed','cancelled'].includes(current.status)) return current;
+
   if (transactionalStateMode() === 'postgres') {
-    const row = await transitionTransactionalJob({
+    const next = normalizeTransactionalJob(await transitionTransactionalJob({
       id: jobId,
       toStatus: 'failed',
-      leaseToken,
-      lastError: clean(error instanceof Error ? error.message : error,1200)
-    });
-    const job = jobFromRow(row);
-    await mirrorJob(job);
-    if (job) await recordJobEvent(job);
-    return job;
+      leaseToken: current.lease_token,
+      attempt: current.attempts,
+      lastError: clean(error instanceof Error ? error.message : error, 1200)
+    }));
+    return mirrorAndRecord(next);
   }
 
-  const { jobs, scope } = stores();
-  const current = await readBlobJob(jobId);
-  if (!current) return null;
   const now = new Date().toISOString();
   const next: DurableJob = {
     ...current,
@@ -462,7 +523,7 @@ export async function failJob(jobId: string, error: unknown, leaseToken?: string
     lease_token: null,
     lease_expires_at: null
   };
-  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
+  await jobs.setJSON(jobKey(jobId), next);
   await recordJobEvent(next);
   return next;
 }
@@ -502,6 +563,7 @@ export async function readJobHealth() {
     const status_counts: Record<string, number> = {};
     const kind_counts: Record<string, number> = {};
     let retries = 0;
+
     for (const row of current) {
       status_counts[row.status] = (status_counts[row.status] || 0) + 1;
       kind_counts[row.kind] = (kind_counts[row.kind] || 0) + 1;
@@ -511,7 +573,7 @@ export async function readJobHealth() {
     return {
       window: 'approximately last 2 UTC hours',
       storage_scope: scope.production ? 'production' : scope.prefix,
-      authoritative_state: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
+      authoritative_backend: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
       jobs_observed: current.length,
       status_counts,
       kind_counts,
@@ -521,7 +583,7 @@ export async function readJobHealth() {
   } catch {
     return {
       window: 'approximately last 2 UTC hours',
-      authoritative_state: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
+      authoritative_backend: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
       jobs_observed: 0,
       status_counts: {},
       kind_counts: {},
