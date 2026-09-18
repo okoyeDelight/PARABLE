@@ -1,4 +1,5 @@
 import type { CanonReference, ShotRenderSpec } from './render-foundation.mts';
+import { referenceAllowedForRender, runtimeRightsEnforcementMode } from './rights-policy.mts';
 
 export type KeyframeGenerationPlan = {
   generation_plan_version: 'parable-keyframe-generation-plan-v1';
@@ -30,8 +31,11 @@ const safeHttpUrl = (value: unknown) => {
 
 function productionReference(ref: CanonReference) {
   return (
-    ref.approved_by_human === true &&
-    ref.rights_status === 'approved' &&
+    referenceAllowedForRender({
+      rightsStatus: ref.rights_status,
+      approvedByHuman: ref.approved_by_human,
+      mode: runtimeRightsEnforcementMode()
+    }) &&
     ref.render_usage !== 'inspiration-only' &&
     ref.render_usage !== 'benchmark-only' &&
     safeHttpUrl(ref.uri)

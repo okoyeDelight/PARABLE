@@ -1,5 +1,6 @@
 import type { CanonReference, ShotRenderSpec } from './render-foundation.mts';
 import type { KeyframeApproval } from './keyframe-approval-core.mts';
+import { referenceAllowedForRender, runtimeRightsEnforcementMode } from './rights-policy.mts';
 
 export type PreparedRendererRequest = {
   provider: 'fal' | 'higgsfield' | 'runway' | 'external';
@@ -18,11 +19,14 @@ export type PreparedRendererRequest = {
 const clean = (value: unknown, max = 1800) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 function usableReferences(spec: ShotRenderSpec, mode: 'draft' | 'final') {
+  const rightsMode = runtimeRightsEnforcementMode();
   return spec.references.filter((ref) => {
     if (ref.render_usage === 'inspiration-only' || ref.render_usage === 'benchmark-only') return false;
-    if (ref.rights_status === 'revoked' || ref.rights_status === 'restricted') return false;
-    if (mode === 'final') return ref.rights_status === 'approved' && ref.approved_by_human;
-    return ref.approved_by_human;
+    return referenceAllowedForRender({
+      rightsStatus: ref.rights_status,
+      approvedByHuman: ref.approved_by_human,
+      mode: rightsMode
+    });
   });
 }
 

@@ -1,3 +1,4 @@
+import { runtimeRightsEnforcementMode, referenceAllowedForRender } from './rights-policy.mts';
 export type CanonReferenceKind =
   | 'actor-face'
   | 'actor-visual'
@@ -637,6 +638,7 @@ export async function compileShotRenderSpec(args: {
     return false;
   });
 
+  const rightsEnforcementMode = runtimeRightsEnforcementMode();
   const dramaticPurpose = clean(shot?.purpose || shot?.dramatic_purpose || shot?.beat, 1000);
   const emotionalIntent = clean(shot?.performance || pkg?.shot_render_notes?.emotional_continuity?.join(' '), 1000);
   const composition = inferComposition(shot, args.canon);
@@ -732,12 +734,14 @@ export async function compileShotRenderSpec(args: {
     },
     human_review: {
       required_before_final_render:
-        rightsIssues.length > 0 ||
+        (rightsEnforcementMode === 'strict' && rightsIssues.length > 0) ||
         Boolean(pkg.human_review_recommended) ||
         Boolean(pkg?.spatial_continuity?.axis_critical && pkg?.spatial_continuity?.approval_status !== 'approved') ||
         Boolean((pkg?.spatial_continuity?.blockers || []).length),
       reasons: [
-        ...(rightsIssues.length ? ['One or more production references are not immutably vaulted with complete, active AI/likeness/voice rights provenance.'] : []),
+        ...(rightsEnforcementMode === 'strict' && rightsIssues.length
+          ? ['One or more production references are not immutably vaulted with complete, active AI/likeness/voice rights provenance.']
+          : []),
         ...(pkg.human_review_recommended ? ['The Continuity Brain recommended human review for this shot.'] : []),
         ...(pkg?.spatial_continuity?.axis_critical && pkg?.spatial_continuity?.approval_status !== 'approved'
           ? ['The scene camera-axis plan has not been human-approved.']
@@ -867,8 +871,13 @@ export type KeyframePlan = {
 };
 
 export function buildKeyframePlan(spec: ShotRenderSpec): KeyframePlan {
+  const rightsMode = runtimeRightsEnforcementMode();
   const approvedRefs = spec.references.filter((ref) =>
-    ref.approved_by_human && ref.rights_status !== 'revoked' && ref.rights_status !== 'restricted'
+    referenceAllowedForRender({
+      rightsStatus: ref.rights_status,
+      approvedByHuman: ref.approved_by_human,
+      mode: rightsMode
+    })
   );
 
   const acceptance = [

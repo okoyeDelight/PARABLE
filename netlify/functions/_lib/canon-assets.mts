@@ -1,6 +1,7 @@
 import { getStore } from '@netlify/blobs';
 import { getContext } from '@netlify/functions';
 import type { CanonReference, ShotRenderSpec } from './render-foundation.mts';
+import { evaluateRightsEnforcement, runtimeRightsEnforcementMode } from './rights-policy.mts';
 import { createSignedMediaUrl } from './media-signing.mts';
 import {
   readTransactionalRights,
@@ -202,9 +203,17 @@ export function validateRightsForReference(args: {
     }
   }
 
-  return {
-    allowed: blockers.length === 0,
+  const enforcement = evaluateRightsEnforcement({
+    rightsStatus: rights.status,
     blockers
+  });
+
+  return {
+    allowed: enforcement.allowed,
+    blockers,
+    enforcement_mode: enforcement.mode,
+    muted: enforcement.muted,
+    explicitly_revoked: enforcement.explicitly_revoked
   };
 }
 
@@ -400,6 +409,17 @@ async function hydrateReference(spec: ShotRenderSpec, ref: CanonReference) {
     );
   }
 
+  const assertion = {
+    asset_sha256: hash,
+    rights_revision: Math.max(1, Math.floor(Number(meta.rights.rights_revision) || 1)),
+    require_likeness:
+      String(ref.render_usage || '') === 'identity' ||
+      ref.kind === 'actor-face' ||
+      ref.kind === 'actor-visual',
+    require_voice: ref.kind === 'voice',
+    require_commercial: false
+  };
+
   return {
     ref: {
       ...ref,
@@ -410,15 +430,12 @@ async function hydrateReference(spec: ShotRenderSpec, ref: CanonReference) {
         ttlSeconds: 1200
       })
     } as CanonReference,
-    assertion: {
-      asset_sha256: hash,
-      rights_revision: Math.max(1, Math.floor(Number(meta.rights.rights_revision) || 1)),
-      require_likeness:
-        String(ref.render_usage || '') === 'identity' ||
-        ref.kind === 'actor-face' ||
-        ref.kind === 'actor-visual',
-      require_voice: ref.kind === 'voice',
-      require_commercial: false
+    assertion: runtimeRightsEnforcementMode() === 'strict' ? assertion : null,
+    observation: {
+      ...assertion,
+      enforcement_mode: rights.enforcement_mode,
+      muted: rights.muted,
+      blockers: rights.blockers
     }
   };
 }
@@ -446,7 +463,10 @@ export async function hydrateRenderSpecReferencesWithRights(spec: ShotRenderSpec
       ...spec,
       references: hydrated.map((item) => item.ref)
     } as ShotRenderSpec,
-    rights_assertions: [...assertionMap.values()]
+    rights_assertions: [...assertionMap.values()],
+    rights_observations: hydrated
+      .map((item: any) => item.observation)
+      .filter(Boolean)
   };
 }
 

@@ -1,0 +1,26 @@
+name: PARABLE Rights Observe Mode Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/rights-policy.mts'
+      - 'netlify/functions/_lib/canon-assets.mts'
+      - 'netlify/functions/_lib/render-foundation.mts'
+      - 'netlify/functions/_lib/render-adapters.mts'
+      - 'netlify/functions/_lib/keyframe-generation-core.mts'
+      - 'tools/rights_policy_smoke.mts'
+      - '.github/workflows/rights-observe-mode-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  rights-mode-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify temporary observe mode preserves revocation and human-approval hard stops
+        run: node tools/rights_policy_smoke.mts
