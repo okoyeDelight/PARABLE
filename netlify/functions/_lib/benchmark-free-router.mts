@@ -287,13 +287,14 @@ async function callGeminiBenchmark(
       // generateContent nesting interprets mime_type as an enum and rejects
       // application/json for this model family.
       const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta2/interactions',
+        'https://generativelanguage.googleapis.com/v1beta/interactions',
         {
           method: 'POST',
           signal,
           headers: {
             'x-goog-api-key': apiKey,
-            'content-type': 'application/json'
+            'content-type': 'application/json',
+            'Api-Revision': '2026-05-20'
           },
           body: JSON.stringify({
             model,
@@ -318,18 +319,42 @@ async function callGeminiBenchmark(
       const modelSteps = Array.isArray(body?.steps)
         ? body.steps.filter((step: any) => step?.type === 'model_output')
         : [];
-      const text = modelSteps
+      const stepText = modelSteps
         .flatMap((step: any) => Array.isArray(step?.content) ? step.content : [])
         .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
         .map((part: any) => part.text)
         .join('\n');
 
-      if (!text) {
-        throw new Error('Gemini Interactions returned no model_output text.');
+      const convenienceText = typeof body?.output_text === 'string'
+        ? body.output_text
+        : '';
+      const text = stepText || convenienceText;
+
+      // The REST interaction resource normally exposes model text in steps.
+      // Keep a narrow structured-body fallback because the structured-output
+      // endpoint may return the schema-shaped JSON directly in some revisions.
+      const parsed = text
+        ? parseJson(text)
+        : (
+            body &&
+            typeof body === 'object' &&
+            !body.error &&
+            !body.steps &&
+            !body.id &&
+            !body.status
+          )
+            ? body as Record<string, any>
+            : null;
+
+      if (!parsed) {
+        throw new Error(
+          'Gemini Interactions returned no structured model output. status=' +
+          String(body?.status || 'unknown')
+        );
       }
 
       return {
-        parsed: parseJson(text),
+        parsed,
         provider: 'gemini' as const,
         model,
         requested_model: model,
