@@ -76,24 +76,29 @@ Real manuscript data continues to use the protected provider lane. Scaling traff
 
 If compliant inference is unavailable, PARABLE degrades to local conservative processing or a durable retry instead of silently sending protected manuscripts through a weaker route.
 
-## Current known concurrency boundary
+## Same-project concurrency architecture
 
-Netlify Blobs is excellent for highly available object storage and read-heavy state, but overlapping writes to the same key are last-write-wins and do not provide database transactions.
+PARABLE no longer treats a mutable Blob called "latest" as the only source of truth for important project mutations.
 
-PARABLE therefore avoids depending on one globally-mutated key for high-volume telemetry and uses ordered workflows for shot state.
+The current hot-state path uses:
 
-For **multiple people editing the exact same project at the exact same moment**, the long-term production state layer should use transactional PostgreSQL for hot mutable records while keeping Blobs for immutable snapshots, assets, job claim-check payloads and archives.
+- one strongly-consistent **project revision head** per project;
+- conditional ETag writes (`onlyIfMatch`) for optimistic compare-and-swap;
+- short mutation leases so only one writer can commit a project revision at once;
+- an immutable per-mutation artifact store;
+- state references written into the CAS-protected revision head;
+- mutable "latest" records only as compatibility/read-performance caches;
+- explicit 409 revision conflicts instead of silent last-write-wins overwrites.
 
-The repository contains a PostgreSQL foundation and the next database migration should introduce:
+The intended mutation protocol is now:
 
-- project revision numbers;
-- continuity event rows;
-- transactional project locks / optimistic version checks;
-- idempotency records;
-- durable job metadata;
-- immutable snapshot references.
+`compute -> acquire project revision lease -> stage immutable artifacts -> CAS commit head/state refs -> refresh mutable caches`
 
-Do not claim multi-editor ACID safety until that migration is active.
+If two editors start from the same revision, one commit can advance the head and the other must reload/rebase instead of overwriting the winner.
+
+This gives PARABLE a safe, zero-extra-database transactional **commit boundary** on the current Netlify Free deployment for the operations that have been migrated to it.
+
+It is not identical to a general-purpose ACID relational database: complex operations involving arbitrary cross-project rows, SQL joins, foreign-key constraints, or multiple unrelated records still belong in PostgreSQL. The repository therefore keeps the prepared PostgreSQL schema as a future hot relational tier, but the application is no longer blocked on provisioning it before we can safely handle ordinary concurrent project edits.
 
 ## Failure isolation
 
@@ -160,3 +165,16 @@ Every new PARABLE engine should be classified before implementation as one of:
 - transactional state.
 
 No future engine should place expensive AI inference directly on a fragile request path merely because that is easier to code.
+
+
+## Infrastructure portability
+
+PARABLE's scale architecture is deliberately not "Netlify-only".
+
+The queue layer is behind a PARABLE dispatcher. The current deployment can use Netlify Background Functions and can later switch back to Async Workloads without changing Studio code.
+
+The authoritative project-state protocol is application-defined: revision number, immutable artifact references, idempotency keys and optimistic conflicts. Those concepts can be moved to PostgreSQL, Supabase, Neon, RDS or another transactional store later without rewriting the film intelligence engines.
+
+The renderer and AI providers are also behind engine/router boundaries. Platform limits should trigger an infrastructure migration or horizontal provider expansion, not force a rewrite of PARABLE itself.
+
+There is no responsible architecture that is literally unlimited. The goal is that each capacity ceiling has a replaceable layer, backpressure strategy and migration path rather than becoming a product ceiling.
