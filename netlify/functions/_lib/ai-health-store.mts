@@ -6,7 +6,8 @@ export type AIStage =
   | 'story-adaptation'
   | 'film-critic'
   | 'continuity-extraction'
-  | 'shot-continuity-extraction';
+  | 'shot-continuity-extraction'
+  | 'keyframe-visual-inspection';
 
 type HealthEvent = {
   stage: AIStage;
