@@ -1,4 +1,11 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -68,8 +75,35 @@ export default async (request: Request) => {
     updated_at: new Date().toISOString()
   };
 
-  await directions.setJSON(`project/${projectId}/${storyVersion}/${shotId}`, value);
-  return json(value, 201);
+  let lease: ProjectMutationLease | null = null;
+  try {
+    lease = await acquireProjectMutation({
+      projectId,
+      mutationType: 'director-direction',
+      expectedRevision: Number.isFinite(Number(body.expectedProjectRevision))
+        ? Number(body.expectedProjectRevision)
+        : null,
+      ttlMs: 20000
+    });
+
+    await directions.setJSON(`project/${projectId}/${storyVersion}/${shotId}`, value);
+    const committed = await commitProjectMutation(lease, {
+      story_version: storyVersion,
+      shot_id: shotId,
+      fields: ['lens_mm', 'motion', 'lighting', 'performance', 'blocking']
+    });
+
+    return json({
+      ...value,
+      project_revision: committed.revision,
+      mutation_id: committed.mutation_id
+    }, 201);
+  } catch (error) {
+    if (lease) await abortProjectMutation(lease).catch(() => false);
+    const handled = projectMutationErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 };
 
 export const config = {
