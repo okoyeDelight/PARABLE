@@ -152,14 +152,25 @@ export async function processDurableJob(args: {
 
   if (
     response.status === 409 &&
-    kind === 'shot-state' &&
-    /previous|processed in order|scene must pass|pre-scene/i.test(message)
+    (
+      body?.code === 'PROJECT_REVISION_CONFLICT' ||
+      body?.code === 'PROJECT_MUTATION_BUSY' ||
+      (
+        kind === 'shot-state' &&
+        /previous|processed in order|scene must pass|pre-scene/i.test(message)
+      )
+    )
   ) {
+    const hintedDelay = Number(body?.retry_after_ms || 0);
+    const delayMs = hintedDelay > 0
+      ? Math.min(60000, Math.max(500, hintedDelay))
+      : Math.min(60000, 2500 * Math.pow(2, Math.max(0, attempt - 1)));
+
     await markJobRetrying(jobId, message, attempt);
     return {
       status: 'retry',
       message,
-      delay_ms: Math.min(60000, 2500 * Math.pow(2, Math.max(0, attempt - 1)))
+      delay_ms: delayMs
     };
   }
 
