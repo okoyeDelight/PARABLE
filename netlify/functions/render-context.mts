@@ -1,5 +1,6 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import { buildRenderContinuityContract, upgradeContinuitySnapshot, type ContinuitySnapshot } from './_lib/continuity-core.mts';
+import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -52,10 +53,12 @@ export default async (request: Request) => {
   if (shotId && !safeId(shotId)) return json({ error: 'Invalid shotId.' }, 400);
 
   const s = stores();
-  const [rawContinuity, adaptation] = await Promise.all([
+  const authoritativeAdaptation = await readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest');
+  const [rawContinuity, cachedAdaptation] = await Promise.all([
     s.continuity.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<ContinuitySnapshot | null>,
     s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>
   ]);
+  const adaptation = authoritativeAdaptation?.value || cachedAdaptation;
 
   if (!rawContinuity) {
     return json({ error: 'Continuity has not been established. Run /api/scene-state first.' }, 409);
