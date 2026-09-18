@@ -21,10 +21,10 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 
 const clean = (value: unknown, max = 300) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
-const supported = new Set<JobKind>(['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic', 'keyframe-generate', 'reference-profile', 'motion-inspect', 'scale-noop']);
+const supported = new Set<JobKind>(['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic', 'keyframe-generate', 'reference-profile', 'motion-inspect', 'motion-evidence-extract', 'scale-noop']);
 
 function actionFor(kind: JobKind): ProjectAction {
-  if (kind === 'keyframe-generate' || kind === 'motion-inspect') return 'render:spend';
+  if (kind === 'keyframe-generate' || kind === 'motion-inspect' || kind === 'motion-evidence-extract') return 'render:spend';
   if (kind === 'film-critic' || kind === 'scale-noop') return 'render:plan';
   return 'project:edit';
 }
