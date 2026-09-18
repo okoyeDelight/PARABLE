@@ -10,6 +10,7 @@
     "@netlify/blobs": "11.1.0",
     "@netlify/functions": "6.0.0",
     "@netlify/async-workloads": "0.0.106",
-    "jose": "6.1.0"
+    "jose": "6.1.0",
+    "@higgsfield/client": "0.2.6"
   }
 }

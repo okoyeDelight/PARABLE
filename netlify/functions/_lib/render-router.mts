@@ -1,6 +1,6 @@
 import type { ShotRenderSpec } from './render-foundation.mts';
 
-export type RendererProvider = 'fal' | 'runway' | 'external';
+export type RendererProvider = 'fal' | 'higgsfield' | 'runway' | 'external';
 
 export type RendererCapability = {
   provider: RendererProvider;
@@ -48,15 +48,28 @@ const clamp = (value: unknown, fallback = 0.5) => {
   return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
 };
 
-function defaultCapabilities(): RendererCapability[] {
+function defaultCapabilities(mode: 'draft' | 'final' = 'final'): RendererCapability[] {
   const falModel = String(Netlify.env.get('FAL_VIDEO_MODEL') || '').trim();
   const runwayModel = String(Netlify.env.get('RUNWAY_VIDEO_MODEL') || '').trim();
+  const higgsfieldDraftModel = String(
+    Netlify.env.get('HIGGSFIELD_DRAFT_VIDEO_MODEL') || 'bytedance/seedance-2.5/reference-to-video'
+  ).trim();
+  const higgsfieldFinalModel = String(
+    Netlify.env.get('HIGGSFIELD_FINAL_VIDEO_MODEL') || 'bytedance/seedance-2.5/image-to-video'
+  ).trim();
+  const higgsfieldModel = mode === 'final' ? higgsfieldFinalModel : higgsfieldDraftModel;
   const falAdapterRegistered = new Set([
     'bytedance/seedance-2.0/us/image-to-video',
     'bytedance/seedance-2.0/us/reference-to-video'
   ]).has(falModel);
   const falFirstFrameConditioning = falModel === 'bytedance/seedance-2.0/us/image-to-video';
   const runwayAdapterRegistered = false;
+  const higgsfieldAdapterRegistered = new Set([
+    'bytedance/seedance-2.5/reference-to-video',
+    'bytedance/seedance-2.5/image-to-video'
+  ]).has(higgsfieldModel);
+  const globalBillableEnabled = String(Netlify.env.get('PARABLE_BILLABLE_RENDERERS_ENABLED') || '').toLowerCase() === 'true';
+  const higgsfieldBillableEnabled = String(Netlify.env.get('PARABLE_HIGGSFIELD_BILLABLE_ENABLED') || '').toLowerCase() === 'true';
 
   return [
     {
@@ -84,6 +97,41 @@ function defaultCapabilities(): RendererCapability[] {
         falModel && !falAdapterRegistered
           ? 'This configured fal model has no tested PARABLE adapter yet and is intentionally ineligible.'
           : 'A versioned fal adapter is registered for the configured model.'
+      ]
+    },
+
+    {
+      provider: 'higgsfield',
+      model: higgsfieldModel || 'unconfigured',
+      configured: Boolean(
+        Netlify.env.get('HF_CREDENTIALS') &&
+        higgsfieldModel &&
+        higgsfieldAdapterRegistered &&
+        globalBillableEnabled &&
+        higgsfieldBillableEnabled
+      ),
+      supports: {
+        text_to_video: mode === 'draft',
+        image_to_video: true,
+        reference_video: mode === 'draft',
+        multi_reference: mode === 'draft',
+        native_audio: false,
+        first_frame_conditioning: mode === 'final',
+        max_reference_slots: mode === 'draft' ? 30 : 1
+      },
+      operating: {
+        quality_score: clamp(Netlify.env.get('HIGGSFIELD_RENDER_QUALITY_SCORE'), 0.72),
+        continuity_score: clamp(Netlify.env.get('HIGGSFIELD_RENDER_CONTINUITY_SCORE'), 0.78),
+        reliability_score: clamp(Netlify.env.get('HIGGSFIELD_RENDER_RELIABILITY_SCORE'), 0.65),
+        latency_score: clamp(Netlify.env.get('HIGGSFIELD_RENDER_LATENCY_SCORE'), 0.5),
+        cost_score: clamp(Netlify.env.get('HIGGSFIELD_RENDER_COST_SCORE'), 0.42)
+      },
+      notes: [
+        mode === 'final'
+          ? 'Higgsfield final motion uses Seedance 2.5 image-to-video bound to the exact approved first frame.'
+          : 'Higgsfield draft motion uses Seedance 2.5 reference-to-video with rights-filtered references.',
+        'Higgsfield stays ineligible unless both global and provider billable-render gates are enabled.',
+        'Even when globally enabled, dispatch still requires a server-authoritative project entitlement before any paid request is submitted.'
       ]
     },
     {
@@ -160,9 +208,10 @@ function eligibility(spec: ShotRenderSpec, capability: RendererCapability) {
 
 export function routeRenderSpec(
   spec: ShotRenderSpec,
-  overrides: RendererCapability[] = []
+  overrides: RendererCapability[] = [],
+  mode: 'draft' | 'final' = 'final'
 ): RenderRoute {
-  const profiles = overrides.length ? overrides : defaultCapabilities();
+  const profiles = overrides.length ? overrides : defaultCapabilities(mode);
   const candidates = profiles.map((capability) => {
     const rejection_reasons = eligibility(spec, capability);
     const operating = capability.operating;

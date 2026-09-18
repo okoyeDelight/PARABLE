@@ -125,6 +125,82 @@ async function pollFal(attempt: any) {
   };
 }
 
+
+async function pollHiggsfield(attempt: any) {
+  const credentials = Netlify.env.get('HF_CREDENTIALS') || '';
+  if (!credentials) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'Higgsfield renderer credentials are not configured in the deployed PARABLE runtime.',
+      retryable: true
+    };
+  }
+  if (!attempt.provider_request_id) {
+    return { ok: false, status: 409, error: 'Attempt has no provider request id.', retryable: false };
+  }
+
+  const url = 'https://api.higgsfield.ai/requests/' + encodeURIComponent(attempt.provider_request_id) + '/status';
+  const response = await fetch(url, {
+    headers: { authorization: 'Key ' + credentials }
+  });
+  const body = await response.json().catch(() => ({})) as Record<string, any>;
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status >= 500 || response.status === 429 ? 503 : response.status,
+      error: clean(body?.detail || body?.error?.message || body?.message || 'Could not read Higgsfield status.', 1000),
+      retryable: response.status >= 500 || response.status === 429
+    };
+  }
+
+  const providerStatus = clean(body?.status, 80).toLowerCase();
+  if (providerStatus === 'queued') {
+    return { ok: true, state: 'queued', provider_status: providerStatus, queue_position: null };
+  }
+  if (providerStatus === 'in_progress' || providerStatus === 'processing') {
+    return { ok: true, state: 'rendering', provider_status: providerStatus, queue_position: null };
+  }
+  if (['failed','canceled','cancelled','nsfw','moderated'].includes(providerStatus)) {
+    return {
+      ok: false,
+      status: providerStatus === 'nsfw' || providerStatus === 'moderated' ? 422 : 502,
+      error: providerStatus === 'nsfw' || providerStatus === 'moderated'
+        ? 'Higgsfield moderated this generation.'
+        : 'Higgsfield generation ended with status: ' + providerStatus,
+      retryable: false
+    };
+  }
+  if (providerStatus !== 'completed') {
+    return {
+      ok: false,
+      status: 502,
+      error: 'Unknown Higgsfield status: ' + (providerStatus || 'empty'),
+      retryable: true
+    };
+  }
+
+  const assetUri = clean(body?.video?.url || body?.data?.video?.url || body?.output?.video?.url, 1800);
+  if (!assetUri) {
+    return {
+      ok: false,
+      status: 502,
+      error: 'Higgsfield completed but returned no video URL.',
+      retryable: false
+    };
+  }
+
+  return {
+    ok: true,
+    state: 'succeeded',
+    provider_status: providerStatus,
+    asset_uri: assetUri,
+    seed: body?.seed ?? null,
+    provider_result: body
+  };
+}
+
 export default async (request: Request) => {
   if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
 
@@ -154,6 +230,8 @@ export default async (request: Request) => {
   let polled: any;
   if (attempt.provider === 'fal') {
     polled = await pollFal(attempt);
+  } else if (attempt.provider === 'higgsfield') {
+    polled = await pollHiggsfield(attempt);
   } else {
     return json({
       error: 'No provider-status adapter is registered for this renderer.',

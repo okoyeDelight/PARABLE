@@ -1,5 +1,6 @@
 import { prepareRendererRequest } from './_lib/render-adapters.mts';
 import { routeRenderSpec } from './_lib/render-router.mts';
+import { evaluateProviderSpend } from './_lib/render-commerce.mts';
 import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
 import {
   acknowledgeProviderSubmission,
@@ -188,6 +189,196 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
   };
 }
 
+
+async function dispatchHiggsfield(attempt: any, spec: any, approvedKeyframe: any = null) {
+  const credentials = Netlify.env.get('HF_CREDENTIALS') || '';
+  if (!credentials) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'Higgsfield renderer credentials are not configured in the deployed PARABLE runtime.',
+      code: 'RENDERER_RUNTIME_NOT_CONFIGURED'
+    };
+  }
+
+  const spend = await evaluateProviderSpend({
+    projectId: attempt.project_id,
+    provider: 'higgsfield',
+    estimatedCostUsd: attempt.estimated_cost_usd
+  });
+  if (!spend.allowed) {
+    return {
+      ok: false,
+      status: spend.status,
+      error: spend.message,
+      code: spend.code,
+      spend
+    };
+  }
+
+  const hydrated = await hydrateRenderSpecReferencesWithRights(spec);
+  const prepared = prepareRendererRequest({
+    spec: hydrated.spec,
+    provider: 'higgsfield',
+    model: attempt.model,
+    mode: attempt.mode,
+    approvedKeyframe
+  });
+
+  const transactionState = await ensureProviderTransaction({
+    projectId: attempt.project_id,
+    operationType: 'video-render',
+    operationId: attempt.id,
+    provider: attempt.provider,
+    model: attempt.model,
+    requestBody: prepared.body,
+    estimatedCostUsd: attempt.estimated_cost_usd
+  });
+  const transaction = await beginProviderSubmission(
+    transactionState.transaction.id,
+    attempt.project_id,
+    hydrated.rights_assertions
+  );
+
+  if (
+    ['acknowledged','processing','settled'].includes(transaction.state) &&
+    transaction.provider_request_id
+  ) {
+    return {
+      ok: true,
+      request_id: transaction.provider_request_id,
+      status_url: transaction.provider_status_url,
+      response_url: transaction.provider_response_url,
+      queue_position: null,
+      latency_ms: 0,
+      prepared,
+      transaction,
+      deduplicated_provider_submission: true,
+      spend
+    };
+  }
+
+  const started = Date.now();
+  try {
+    const { createHiggsfieldClient } = await import('@higgsfield/client/v2');
+    const client = createHiggsfieldClient({
+      credentials,
+      timeout: 120000,
+      maxRetries: 0,
+      pollInterval: 2000,
+      maxPollTime: 300000
+    });
+
+    const result: any = await client.subscribe(attempt.model, {
+      input: prepared.body,
+      withPolling: false
+    });
+
+    const status = clean(result?.status, 80).toLowerCase();
+    if (['failed','canceled','cancelled','nsfw','moderated'].includes(status)) {
+      const failed = await failProviderTransaction({
+        id: transaction.id,
+        projectId: attempt.project_id,
+        failureClass: status === 'nsfw' || status === 'moderated' ? 'provider-moderated' : 'provider-rejected',
+        failureDetail: 'Higgsfield returned terminal status: ' + status
+      });
+      return {
+        ok: false,
+        status: status === 'nsfw' || status === 'moderated' ? 422 : 502,
+        error: status === 'nsfw' || status === 'moderated'
+          ? 'Higgsfield moderated this generation request.'
+          : 'Higgsfield rejected or canceled this generation request.',
+        code: status === 'nsfw' || status === 'moderated' ? 'RENDERER_MODERATED' : 'RENDERER_SUBMISSION_FAILED',
+        latency_ms: Date.now() - started,
+        transaction: failed,
+        spend
+      };
+    }
+
+    const requestId = clean(result?.request_id || result?.id, 300);
+    if (!requestId) {
+      const ambiguous = await markProviderSubmissionAmbiguous({
+        id: transaction.id,
+        projectId: attempt.project_id,
+        detail: 'Higgsfield SDK returned no durable request id.'
+      });
+      return {
+        ok: false,
+        status: 409,
+        error: 'Higgsfield submission returned no durable request id. PARABLE locked the transaction to prevent duplicate spend.',
+        code: 'PROVIDER_SUBMISSION_AMBIGUOUS',
+        latency_ms: Date.now() - started,
+        transaction: ambiguous,
+        spend
+      };
+    }
+
+    const acknowledged = await acknowledgeProviderSubmission({
+      id: transaction.id,
+      projectId: attempt.project_id,
+      providerRequestId: requestId,
+      statusUrl: clean(result?.status_url, 1800) || ('https://api.higgsfield.ai/requests/' + encodeURIComponent(requestId) + '/status'),
+      responseUrl: null
+    });
+
+    return {
+      ok: true,
+      request_id: requestId,
+      status_url: acknowledged.provider_status_url,
+      response_url: null,
+      queue_position: null,
+      latency_ms: Date.now() - started,
+      prepared,
+      transaction: acknowledged,
+      deduplicated_provider_submission: false,
+      spend
+    };
+  } catch (error: any) {
+    const name = clean(error?.name, 120);
+    const detail = clean(error?.message || error, 1000) || 'Higgsfield submission failed.';
+    const knownPreSubmission = [
+      'AuthenticationError',
+      'NotEnoughCreditsError',
+      'BadInputError',
+      'ValidationError',
+      'BrowserNotSupportedError'
+    ].includes(name);
+
+    if (knownPreSubmission) {
+      const failed = await failProviderTransaction({
+        id: transaction.id,
+        projectId: attempt.project_id,
+        failureClass: name === 'NotEnoughCreditsError' ? 'insufficient-provider-credit' : 'provider-rejected',
+        failureDetail: detail
+      });
+      return {
+        ok: false,
+        status: name === 'NotEnoughCreditsError' ? 402 : 422,
+        error: detail,
+        code: name === 'NotEnoughCreditsError' ? 'PROVIDER_CREDITS_REQUIRED' : 'RENDERER_SUBMISSION_FAILED',
+        latency_ms: Date.now() - started,
+        transaction: failed,
+        spend
+      };
+    }
+
+    const ambiguous = await markProviderSubmissionAmbiguous({
+      id: transaction.id,
+      projectId: attempt.project_id,
+      detail
+    });
+    return {
+      ok: false,
+      status: 409,
+      error: 'The Higgsfield request may have been received before the connection failed. PARABLE locked the transaction instead of retrying and risking duplicate spend.',
+      code: 'PROVIDER_SUBMISSION_AMBIGUOUS',
+      latency_ms: Date.now() - started,
+      transaction: ambiguous,
+      spend
+    };
+  }
+}
+
 export default async (request: Request) => {
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
@@ -264,7 +455,7 @@ export default async (request: Request) => {
     }, 409);
   }
 
-  const route = routeRenderSpec(spec);
+  const route = routeRenderSpec(spec, [], attempt.mode);
   if (!route.selected) {
     return json({
       error: 'No deployed renderer currently satisfies this ShotRenderSpec.',
@@ -290,7 +481,24 @@ export default async (request: Request) => {
   let dispatched: any;
   try {
     if (attempt.provider === 'fal') {
-      dispatched = await dispatchFal(attempt, spec, hydratedKeyframeApproval);
+      const spend = await evaluateProviderSpend({
+        projectId: attempt.project_id,
+        provider: 'fal',
+        estimatedCostUsd: attempt.estimated_cost_usd
+      });
+      if (!spend.allowed) {
+        dispatched = {
+          ok: false,
+          status: spend.status,
+          error: spend.message,
+          code: spend.code,
+          spend
+        };
+      } else {
+        dispatched = await dispatchFal(attempt, spec, hydratedKeyframeApproval);
+      }
+    } else if (attempt.provider === 'higgsfield') {
+      dispatched = await dispatchHiggsfield(attempt, spec, hydratedKeyframeApproval);
     } else {
       dispatched = {
         ok: false,
@@ -317,7 +525,8 @@ export default async (request: Request) => {
       code: dispatched.code,
       retryable: dispatched.status === 503 && dispatched.code !== 'PROVIDER_SUBMISSION_AMBIGUOUS',
       route,
-      provider_transaction: dispatched.transaction || null
+      provider_transaction: dispatched.transaction || null,
+      spend_gate: dispatched.spend || null
     }, dispatched.status);
   }
 

@@ -2,7 +2,7 @@ import type { CanonReference, ShotRenderSpec } from './render-foundation.mts';
 import type { KeyframeApproval } from './keyframe-approval-core.mts';
 
 export type PreparedRendererRequest = {
-  provider: 'fal' | 'runway' | 'external';
+  provider: 'fal' | 'higgsfield' | 'runway' | 'external';
   model: string;
   request_url: string | null;
   body: Record<string, unknown>;
@@ -206,6 +206,126 @@ function falSeedance2ImageToVideo(
   };
 }
 
+
+function higgsfieldSeedance25ImageToVideo(
+  spec: ShotRenderSpec,
+  model: string,
+  mode: 'draft' | 'final',
+  approvedKeyframe: KeyframeApproval | null
+): PreparedRendererRequest {
+  if (!approvedKeyframe || approvedKeyframe.status !== 'approved') {
+    throw new Error('Higgsfield Seedance 2.5 image-to-video requires an approved first-frame asset.');
+  }
+  if (approvedKeyframe.spec_hash !== spec.spec_hash) {
+    throw new Error('The approved first frame belongs to a different ShotRenderSpec.');
+  }
+
+  const duration = Math.max(4, Math.min(30, Math.round(spec.output.duration_seconds)));
+  const reference_map: PreparedRendererRequest['reference_map'] = [{
+    token: 'START_FRAME',
+    reference_id: 'approved-keyframe:' + approvedKeyframe.shot_id,
+    kind: 'approved-first-frame',
+    uri: approvedKeyframe.asset.uri
+  }];
+
+  const body: Record<string, unknown> = {
+    prompt: [
+      'PARABLE APPROVED-FIRST-FRAME MOTION CONTRACT.',
+      'Animate from the supplied human-approved start frame without redesigning identity, wardrobe, props, set geography, lighting direction or composition.',
+      '',
+      'DRAMATIC BEAT: ' + clean(spec.narrative.beat, 1200),
+      'DRAMATIC PURPOSE: ' + clean(spec.narrative.dramatic_purpose, 800),
+      'EMOTIONAL INTENT: ' + clean(spec.narrative.emotional_intent, 800),
+      'CAMERA MOTION: ' + clean(spec.camera.motion || 'locked', 320),
+      'SHOT TYPE: ' + clean(spec.camera.shot_type, 180),
+      'PERFORMANCE: ' + clean(spec.performance.direction, 900),
+      '',
+      'MOTION RULES:',
+      '- The supplied image is the exact approved first frame.',
+      '- Preserve face identity, body proportions, wardrobe, visible injuries and props.',
+      '- Preserve screen direction, room geography and motivated lighting.',
+      '- Do not invent people, text, signage, props or environmental events.',
+      '- Keep performance human, specific and restrained.'
+    ].join('\n').slice(0, 9000),
+    duration,
+    image_url: approvedKeyframe.asset.uri,
+    resolution: mode === 'draft' ? '480p' : '720p',
+    generate_audio: false,
+    output_format: 'mp4'
+  };
+
+  return {
+    provider: 'higgsfield',
+    model,
+    request_url: 'https://api.higgsfield.ai/' + model,
+    body,
+    reference_map,
+    notes: [
+      'Adapter: Higgsfield Seedance 2.5 image-to-video via the official server-side SDK.',
+      'The exact human-approved keyframe is the required image_url start frame.',
+      'Native audio is disabled because PARABLE owns dialogue, ambience, foley and music as separate stems.',
+      'Billable submission remains blocked unless the project has a server-authoritative paid entitlement and global/provider spend gates are enabled.'
+    ]
+  };
+}
+
+function higgsfieldSeedance25ReferenceToVideo(
+  spec: ShotRenderSpec,
+  model: string,
+  mode: 'draft' | 'final'
+): PreparedRendererRequest {
+  if (mode === 'final') {
+    throw new Error('Final Higgsfield motion must use the image-to-video adapter bound to the exact approved first frame.');
+  }
+
+  const references = usableReferences(spec, mode);
+  const imageRefs = references.filter(visualReference).slice(0, 24);
+  const videoRefs = references.filter(videoReference).slice(0, 6);
+  const reference_map: PreparedRendererRequest['reference_map'] = [
+    ...imageRefs.map((ref, index) => ({
+      token: '@Image' + (index + 1),
+      reference_id: ref.id,
+      kind: ref.kind,
+      uri: ref.uri
+    })),
+    ...videoRefs.map((ref, index) => ({
+      token: '@Video' + (index + 1),
+      reference_id: ref.id,
+      kind: ref.kind,
+      uri: ref.uri
+    }))
+  ];
+
+  const allowedRatios = new Set(['21:9', '16:9', '4:3', '1:1', '3:4', '9:16']);
+  const ratio = allowedRatios.has(spec.output.aspect_ratio) ? spec.output.aspect_ratio : '16:9';
+  const body: Record<string, unknown> = {
+    prompt: promptFor(spec, reference_map),
+    duration: Math.max(4, Math.min(30, Math.round(spec.output.duration_seconds))),
+    resolution: '480p',
+    aspect_ratio: ratio,
+    output_format: 'mp4',
+    generate_audio: false,
+    image_urls: imageRefs.map((ref) => ref.uri),
+    video_urls: videoRefs.map((ref) => ref.uri)
+  };
+  if (!imageRefs.length) delete body.image_urls;
+  if (!videoRefs.length) delete body.video_urls;
+
+  return {
+    provider: 'higgsfield',
+    model,
+    request_url: 'https://api.higgsfield.ai/' + model,
+    body,
+    reference_map,
+    notes: [
+      'Adapter: Higgsfield Seedance 2.5 reference-to-video for draft motion exploration.',
+      'Production references are rights-filtered before they reach the provider.',
+      'Native audio is disabled so PARABLE can keep dialogue/voice/music rights and timing independent.',
+      'This draft adapter is not allowed to substitute for the final approved-first-frame gate.'
+    ]
+  };
+}
+
 export function prepareRendererRequest(args: {
   spec: ShotRenderSpec;
   provider: string;
@@ -228,6 +348,19 @@ export function prepareRendererRequest(args: {
     throw new Error(
       'No versioned PARABLE adapter is registered for fal model "' + model + '". ' +
       'Add and test a model-specific adapter rather than guessing its input schema.'
+    );
+  }
+
+  if (provider === 'higgsfield') {
+    if (model === 'bytedance/seedance-2.5/image-to-video') {
+      return higgsfieldSeedance25ImageToVideo(args.spec, model, args.mode, args.approvedKeyframe || null);
+    }
+    if (model === 'bytedance/seedance-2.5/reference-to-video') {
+      return higgsfieldSeedance25ReferenceToVideo(args.spec, model, args.mode);
+    }
+    throw new Error(
+      'No versioned PARABLE adapter is registered for Higgsfield model "' + model + '". ' +
+      'Use a documented model-specific adapter rather than guessing provider fields.'
     );
   }
 

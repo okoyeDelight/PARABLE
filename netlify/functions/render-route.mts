@@ -25,6 +25,9 @@ export default async (request: Request) => {
   const sceneId = clean(source.sceneId, 96);
   const shotId = clean(source.shotId, 96);
   const specHash = clean(source.specHash, 96);
+  const mode: 'draft' | 'final' = source.draft === true || source.draft === 'true' || source.mode === 'draft'
+    ? 'draft'
+    : 'final';
 
   if (![projectId, storyVersion, sceneId, shotId].every((value) => value && safeId(value))) {
     return json({ error: 'Valid projectId, storyVersion, sceneId and shotId are required.' }, 400);
@@ -54,10 +57,11 @@ export default async (request: Request) => {
     }, 409);
   }
 
-  const route = routeRenderSpec(spec);
+  const route = routeRenderSpec(spec, [], mode);
   return json({
     spec_hash: spec.spec_hash,
     shot_id: spec.shot_id,
+    mode,
     route,
     ready_to_dispatch: Boolean(route.selected),
     note: route.selected
