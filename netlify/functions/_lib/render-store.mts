@@ -11,7 +11,8 @@ function stores() {
     specs: make('parable-render-specs'),
     attempts: make('parable-render-attempts'),
     attemptEvents: make('parable-render-attempt-events'),
-    qa: make('parable-render-qa')
+    qa: make('parable-render-qa'),
+    keyframes: make('parable-keyframe-plans')
   };
 }
 
@@ -128,4 +129,35 @@ export async function saveRenderQA(report: RenderQAReport, attempt: RenderAttemp
 
 export async function readLatestRenderQA(attemptId: string) {
   return stores().qa.get('latest/' + safe(attemptId), { type: 'json' }) as Promise<RenderQAReport | null>;
+}
+
+
+export async function saveKeyframePlan(plan: Record<string, any>) {
+  const key = [
+    'project',
+    safe(plan.project_id),
+    safe(plan.story_version),
+    safe(plan.scene_id),
+    safe(plan.shot_id),
+    safe(plan.spec_hash)
+  ].join('/');
+  await stores().keyframes.setJSON(key, plan, { onlyIfNew: true } as any);
+  await stores().keyframes.setJSON(
+    ['latest', safe(plan.project_id), safe(plan.story_version), safe(plan.scene_id), safe(plan.shot_id)].join('/'),
+    plan
+  );
+  return key;
+}
+
+export async function readKeyframePlan(args: {
+  projectId: string;
+  storyVersion: string;
+  sceneId: string;
+  shotId: string;
+  specHash?: string | null;
+}) {
+  const key = args.specHash
+    ? ['project', safe(args.projectId), safe(args.storyVersion), safe(args.sceneId), safe(args.shotId), safe(args.specHash)].join('/')
+    : ['latest', safe(args.projectId), safe(args.storyVersion), safe(args.sceneId), safe(args.shotId)].join('/');
+  return stores().keyframes.get(key, { type: 'json' }) as Promise<Record<string, any> | null>;
 }
