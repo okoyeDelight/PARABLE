@@ -2,6 +2,7 @@ import { getDeployStore, getStore } from '@netlify/blobs';
 import { buildRenderContinuityContract, upgradeContinuitySnapshot, type ContinuitySnapshot } from './_lib/continuity-core.mts';
 import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
+import { signedMotionFrameUrl } from './_lib/motion-frame-assets.mts';
 import {
   buildSceneSpatialPlan,
   spatialContractForShot,
@@ -227,6 +228,22 @@ export default async (request: Request) => {
         )
       : null;
     const previousHandoff = previousHandoffState?.value || null;
+    let resolvedPreviousHandoff = previousHandoff;
+    const handoffHash = clean(resolvedPreviousHandoff?.handoff_frame?.sha256, 64).toLowerCase();
+    if (previousHandoff && /^[a-f0-9]{64}$/.test(handoffHash)) {
+      resolvedPreviousHandoff = {
+        ...previousHandoff,
+        handoff_frame: {
+          ...previousHandoff.handoff_frame,
+          uri: await signedMotionFrameUrl({
+            projectId,
+            hash: handoffHash,
+            purpose: 'sequence-handoff',
+            ttlSeconds: 1800
+          })
+        }
+      };
+    }
     const shotState = id ? (shotStateById[id] || null) : null;
 
     const spatial = spatialContractForShot(spatialPlan, id);
@@ -252,7 +269,7 @@ export default async (request: Request) => {
           'Shot ' + id + ' continues directly from ' + previousShotId +
           ', but the previous shot has not been accepted into the authoritative sequence yet.'
       }] : []),
-      ...(previousShotId && !continuityBreak && previousHandoff && !previousHandoff?.handoff_frame ? [{
+      ...(previousShotId && !continuityBreak && previousHandoff && !resolvedPreviousHandoff?.handoff_frame ? [{
         severity: 'blocker',
         code: 'PREVIOUS_HANDOFF_FRAME_REQUIRED',
         message:
@@ -295,13 +312,13 @@ export default async (request: Request) => {
       scene_render_notes: sceneState?.render_notes || {},
       shot_render_notes: shotState?.render_notes || {},
       spatial_continuity: spatial,
-      previous_accepted_handoff: previousHandoff,
+      previous_accepted_handoff: resolvedPreviousHandoff,
       sequence_handoff: {
         previous_shot_id: previousShotId || null,
         continuity_break: continuityBreak,
         status: continuityBreak || !previousShotId
           ? 'not-required'
-          : previousHandoff?.handoff_frame
+          : resolvedPreviousHandoff?.handoff_frame
             ? 'ready'
             : previousHandoff
               ? 'missing-trusted-frame'
@@ -319,7 +336,7 @@ export default async (request: Request) => {
         preserve_room_topology: true,
         preserve_character_knowledge: true,
         match_previous_accepted_handoff:
-          Boolean(previousShotId && !continuityBreak && previousHandoff?.handoff_frame),
+          Boolean(previousShotId && !continuityBreak && resolvedPreviousHandoff?.handoff_frame),
         no_unmarked_state_changes: true
       },
       can_render: checked && Boolean(sceneState?.can_render) && Boolean(shotState?.can_render) && shotBlockers.length === 0,
@@ -329,7 +346,7 @@ export default async (request: Request) => {
         shotState?.requires_human_review ||
         spatialApprovalRequired ||
         (spatial?.overridden_blockers || []).length ||
-        (previousShotId && !continuityBreak && !previousHandoff?.handoff_frame)
+        (previousShotId && !continuityBreak && !resolvedPreviousHandoff?.handoff_frame)
       )
     };
   }));
