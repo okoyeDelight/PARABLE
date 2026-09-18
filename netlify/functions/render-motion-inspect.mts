@@ -33,19 +33,24 @@ const safeHttpUrl=(value:string)=>{
   }
 };
 
+function minAvailable(...values:unknown[]) {
+  const present=values.map(Number).filter((value)=>Number.isFinite(value));
+  return present.length?Math.min(...present):undefined;
+}
+
 function qaEvidence(report:Record<string,any>):RenderQAInput {
   return {
     identity: report.scores?.identity,
     wardrobe: report.scores?.wardrobe,
     prop_continuity: report.scores?.prop_continuity,
-    spatial_continuity: Math.min(
-      report.scores?.spatial_continuity ?? 1,
-      report.scores?.camera_axis ?? 1
+    spatial_continuity: minAvailable(
+      report.scores?.spatial_continuity,
+      report.scores?.camera_axis
     ),
     composition: report.scores?.composition,
-    motion: Math.min(
-      report.scores?.motion ?? 1,
-      report.scores?.temporal_artifacts ?? 1
+    motion: minAvailable(
+      report.scores?.motion,
+      report.scores?.temporal_artifacts
     ),
     lighting: report.scores?.lighting,
     technical: report.scores?.technical,
