@@ -54,18 +54,38 @@ export default async (request: Request) => {
 
   const s = stores();
   const authoritativeAdaptation = await readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest');
-  const [rawContinuity, cachedAdaptation] = await Promise.all([
+  const [latestContinuity, cachedLatestAdaptation] = await Promise.all([
     s.continuity.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<ContinuitySnapshot | null>,
     s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>
   ]);
-  const adaptation = authoritativeAdaptation?.value || cachedAdaptation;
+
+  let adaptation = authoritativeAdaptation?.value || cachedLatestAdaptation;
+  const resolvedStoryVersion = storyVersion || adaptation?.story_version || latestContinuity?.story_version || 'story_unknown';
+
+  if (adaptation?.story_version && adaptation.story_version !== resolvedStoryVersion) {
+    adaptation = await s.adaptations.get(
+      'project/' + projectId + '/versions/' + resolvedStoryVersion,
+      { type: 'json' }
+    ) as Record<string, any> | null;
+  }
+
+  const versionContinuity = await s.continuity.get(
+    'project/' + projectId + '/versions/' + resolvedStoryVersion + '/latest',
+    { type: 'json' }
+  ) as ContinuitySnapshot | null;
+
+  const rawContinuity = versionContinuity || (
+    latestContinuity?.story_version === resolvedStoryVersion ? latestContinuity : null
+  );
 
   if (!rawContinuity) {
-    return json({ error: 'Continuity has not been established. Run /api/scene-state first.' }, 409);
+    return json({
+      error: 'Continuity has not been established for this story version. Run /api/scene-state first.',
+      story_version: resolvedStoryVersion
+    }, 409);
   }
 
   const continuity = upgradeContinuitySnapshot(rawContinuity);
-  const resolvedStoryVersion = storyVersion || continuity.story_version || adaptation?.story_version || 'story_unknown';
   const resolvedSceneId = sceneId || continuity.last_scene_id || '';
   if (!resolvedSceneId) return json({ error: 'No scene has passed through Continuity Brain.' }, 409);
 
@@ -96,7 +116,19 @@ export default async (request: Request) => {
 
   if (shotId && !filteredShots.length) return json({ error: 'shotId does not exist in the latest shot plan.' }, 404);
 
-  const sceneContract = buildRenderContinuityContract(continuity, resolvedSceneId);
+  let sceneContract = sceneState?.render_contract || null;
+  if (!sceneContract) {
+    if (continuity.last_scene_id !== resolvedSceneId) {
+      return json({
+        error: 'This older scene does not contain a stored as-of continuity contract. Re-run /api/scene-state for this scene before rendering so future state cannot leak backwards.',
+        code: 'SCENE_AS_OF_STATE_REQUIRED',
+        scene_id: resolvedSceneId,
+        continuity_last_scene_id: continuity.last_scene_id
+      }, 409);
+    }
+    sceneContract = buildRenderContinuityContract(continuity, resolvedSceneId);
+  }
+
   const sceneBlockers = [
     ...(Array.isArray(sceneState?.warnings) ? sceneState.warnings : []),
     ...(Array.isArray(sceneContract?.hard_blockers) ? sceneContract.hard_blockers : [])
