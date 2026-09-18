@@ -20,7 +20,11 @@ import {
   type KeyframeApproval
 } from './_lib/keyframe-approval-core.mts';
 import { stableHash } from './_lib/render-foundation.mts';
-import { readKeyframePlan, readRenderSpec } from './_lib/render-store.mts';
+import {
+  readKeyframePlan,
+  readLatestKeyframeInspection,
+  readRenderSpec
+} from './_lib/render-store.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -185,6 +189,35 @@ export default async (request: Request) => {
         }, 409);
       }
 
+      const inspection = await readLatestKeyframeInspection({
+        projectId,
+        storyVersion,
+        sceneId,
+        shotId,
+        specHash: spec.spec_hash
+      });
+      const matchingInspection = inspection?.asset_uri === assetUri ? inspection : null;
+      const inspectorBlocked = matchingInspection?.decision === 'REPAIR_BEFORE_REVIEW';
+      const inspectorOverride = inspectorBlocked && body.overrideInspector === true;
+      const reviewerNote = clean(body.note, 1000) || null;
+
+      if (inspectorBlocked && !inspectorOverride) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({
+          error: 'The Visual Inspector found defects in this exact still. Repair it, or explicitly set overrideInspector: true with a human review note.',
+          code: 'KEYFRAME_INSPECTOR_BLOCKED',
+          inspection: matchingInspection
+        }, 409);
+      }
+
+      if (inspectorOverride && !reviewerNote) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({
+          error: 'A human review note is required when overriding a Visual Inspector blocker.',
+          code: 'KEYFRAME_INSPECTOR_OVERRIDE_NOTE_REQUIRED'
+        }, 400);
+      }
+
       approval = {
         approval_version: 'parable-keyframe-approval-v1',
         status: 'approved',
@@ -205,7 +238,12 @@ export default async (request: Request) => {
         checks,
         reviewer: {
           human_approved: true,
-          note: clean(body.note, 1000) || null
+          note: reviewerNote
+        },
+        visual_inspection: {
+          inspection_id: matchingInspection?.id || null,
+          decision: matchingInspection?.decision || null,
+          overridden_by_human: Boolean(inspectorOverride)
         },
         approved_at: new Date().toISOString(),
         revoked_at: null,
