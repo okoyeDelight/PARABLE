@@ -1,7 +1,7 @@
 import { getStore } from '@netlify/blobs';
 import { getContext } from '@netlify/functions';
 
-export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic' | 'keyframe-generate' | 'scale-noop';
+export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic' | 'keyframe-generate' | 'reference-profile' | 'scale-noop';
 export type JobStatus = 'queued' | 'processing' | 'retrying' | 'succeeded' | 'failed';
 
 export type DurableJob = {
