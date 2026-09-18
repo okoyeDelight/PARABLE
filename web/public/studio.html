@@ -268,10 +268,20 @@
               </div>
 
               <div class="keyframe-controls">
-                <label>
-                  <span>Candidate image URL</span>
-                  <input id="keyframeAssetUrl" type="url" placeholder="https://…" autocomplete="off" />
-                </label>
+                <div class="keyframe-generate-row">
+                  <label>
+                    <span>Candidate image URL</span>
+                    <input id="keyframeAssetUrl" type="url" placeholder="https://…" autocomplete="off" />
+                  </label>
+                  <button type="button" class="copy-btn keyframe-generate-btn" id="generateKeyframeBtn">Generate candidate</button>
+                </div>
+
+                <div class="keyframe-inspector" id="keyframeInspector" hidden>
+                  <div><small>VISUAL INSPECTOR</small><span id="keyframeInspectorBadge">waiting</span></div>
+                  <strong id="keyframeInspectorDecision">—</strong>
+                  <p id="keyframeInspectorSummary">PARABLE checks the generated still before you decide whether it becomes canon.</p>
+                  <div id="keyframeInspectorDetails"></div>
+                </div>
 
                 <div class="keyframe-meta-grid">
                   <label>
