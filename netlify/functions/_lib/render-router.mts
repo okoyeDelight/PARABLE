@@ -50,12 +50,14 @@ const clamp = (value: unknown, fallback = 0.5) => {
 function defaultCapabilities(): RendererCapability[] {
   const falModel = String(Netlify.env.get('FAL_VIDEO_MODEL') || '').trim();
   const runwayModel = String(Netlify.env.get('RUNWAY_VIDEO_MODEL') || '').trim();
+  const falAdapterRegistered = falModel === 'bytedance/seedance-2.0/us/reference-to-video';
+  const runwayAdapterRegistered = false;
 
   return [
     {
       provider: 'fal',
       model: falModel || 'unconfigured',
-      configured: Boolean(Netlify.env.get('FAL_KEY') && falModel),
+      configured: Boolean(Netlify.env.get('FAL_KEY') && falModel && falAdapterRegistered),
       supports: {
         text_to_video: true,
         image_to_video: true,
@@ -71,12 +73,17 @@ function defaultCapabilities(): RendererCapability[] {
         latency_score: clamp(Netlify.env.get('FAL_RENDER_LATENCY_SCORE'), 0.62),
         cost_score: clamp(Netlify.env.get('FAL_RENDER_COST_SCORE'), 0.65)
       },
-      notes: ['Model selection is runtime-configured so PARABLE can change fal endpoints without changing ShotRenderSpec.']
+      notes: [
+        'Model selection is runtime-configured so PARABLE can change fal endpoints without changing ShotRenderSpec.',
+        falModel && !falAdapterRegistered
+          ? 'This configured fal model has no tested PARABLE adapter yet and is intentionally ineligible.'
+          : 'A versioned fal adapter is registered for the configured model.'
+      ]
     },
     {
       provider: 'runway',
       model: runwayModel || 'unconfigured',
-      configured: Boolean(Netlify.env.get('RUNWAY_API_KEY') && runwayModel),
+      configured: Boolean(Netlify.env.get('RUNWAY_API_KEY') && runwayModel && runwayAdapterRegistered),
       supports: {
         text_to_video: true,
         image_to_video: true,
@@ -92,7 +99,10 @@ function defaultCapabilities(): RendererCapability[] {
         latency_score: clamp(Netlify.env.get('RUNWAY_RENDER_LATENCY_SCORE'), 0.62),
         cost_score: clamp(Netlify.env.get('RUNWAY_RENDER_COST_SCORE'), 0.55)
       },
-      notes: ['Runway is an optional renderer. PARABLE must remain functional when this provider is unavailable.']
+      notes: [
+        'Runway is an optional renderer. PARABLE must remain functional when this provider is unavailable.',
+        'A tested deployed Runway runtime adapter is not registered in Foundation V1, so this route remains ineligible even if credentials are later added.'
+      ]
     }
   ];
 }
