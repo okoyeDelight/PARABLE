@@ -23,7 +23,7 @@ PARABLE should not simply generate *for* a place or audience. It should understa
 
 ## Current checkpoint
 
-**Story Intelligence V8 + Continuity Brain V1 — September 18, 2026**
+**Story Intelligence V8 + Continuity Brain V2 — September 18, 2026**
 
 The `immersive-v2` branch now includes:
 
@@ -32,11 +32,21 @@ The `immersive-v2` branch now includes:
 - screenplay / shot-plan generation
 - Film Quality Critic and provider health telemetry
 - Production Bible persistence
-- a provider-independent Continuity Brain
-- scene-by-scene world-state memory for characters, wardrobe, emotion, location, props, relationships, timeline, knowledge and theology flags
+- persistent world-state memory for characters, wardrobe, emotion, locations, injuries, props, relationships, timeline, knowledge and theology flags
+- automatic scene-state extraction through a protected Continuity Intelligence lane
+- conservative local continuity extraction when protected model routing is unavailable
+- identity locking and explicit state-transition history
 - continuity conflict detection before render
-- compact continuity context for later directing/render stages
+- character knowledge-leak detection
+- scene-level human-review flags and uncertainty provenance
+- continuity-gated render handoff packages
+- human director overrides layered onto the shot plan without bypassing continuity
+- renderer hard constraints for identity, wardrobe, injury, props, screen geography and character knowledge
 
-The next build step is to connect automatic scene-state extraction and render handoff so every generated shot receives the exact established world state instead of treating each scene as a new prompt.
+The production path is now:
+
+`Story -> Story Understanding -> Production Bible -> Scene State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
+
+The next Continuity milestone is deeper physical-world memory: prop ownership and transfers, spatial graphs / screen direction, per-shot transitions, casting reference IDs, location visual references and continuity-aware renderer seeds.
 
 `main` remains unchanged until the `immersive-v2` checkpoint is deliberately approved and merged.
