@@ -1,4 +1,5 @@
 import { readDurableJob, readJobResult } from './_lib/job-store.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200, extraHeaders: Record<string, string> = {}) => new Response(JSON.stringify(data), {
   status,
@@ -29,12 +30,21 @@ export default async (request: Request) => {
   const job = await readDurableJob(jobId);
   if (!job) return json({ error: 'Job not found.' }, 404);
 
+  try {
+    await authorizeProject(request, job.project_id, 'project:read');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   const includeResult = url.searchParams.get('result') !== '0';
   const result = includeResult && job.status === 'succeeded' ? await readJobResult(job) : null;
   const pollAfterMs = recommendedPollMs(job.status, job.attempts);
 
+  const { authorization, ...publicJob } = job;
   return json({
-    job,
+    job: publicJob,
     result,
     poll_after_ms: pollAfterMs
   }, 200, pollAfterMs ? { 'retry-after': String(Math.max(1, Math.ceil(pollAfterMs / 1000))) } : {});
