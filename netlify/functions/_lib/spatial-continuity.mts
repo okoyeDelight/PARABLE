@@ -156,6 +156,18 @@ const REESTABLISH_RE = /\b(wide|master|two[- ]shot|re[- ]?establish|establishing
 
 function latestScreenPositions(contract: Record<string, any> | null | undefined) {
   const out: Record<string, 'left' | 'right' | 'center' | 'unknown'> = {};
+
+  const axes = contract?.camera_axes && typeof contract.camera_axes === 'object'
+    ? Object.values(contract.camera_axes) as any[]
+    : [];
+  for (const axis of axes) {
+    const a = clean(axis?.subject_a, 180);
+    const b = clean(axis?.subject_b, 180);
+    const sideA = clean(axis?.subject_a_screen_side, 20);
+    const sideB = clean(axis?.subject_b_screen_side, 20);
+    if (a && ['left','right','center'].includes(sideA)) out[norm(a)] = sideA as 'left' | 'right' | 'center';
+    if (b && ['left','right','center'].includes(sideB)) out[norm(b)] = sideB as 'left' | 'right' | 'center';
+  }
   const graph = Array.isArray(contract?.spatial_graph)
     ? contract.spatial_graph
     : Array.isArray(contract?.spatial_relations)
@@ -180,6 +192,46 @@ function roomTopology(contract: Record<string, any> | null | undefined) {
     if (!key) return;
     if (!nodes.has(key)) nodes.set(key, { id: kind + '_' + slug(label), label: clean(label, 180), kind });
   };
+
+  const physicalRooms = contract?.room_topology && typeof contract.room_topology === 'object'
+    ? Object.values(contract.room_topology) as any[]
+    : [];
+
+  const anchorKind = (kind: string): SpatialNodeKind => {
+    if (kind === 'door' || kind === 'entry' || kind === 'exit' || kind === 'window') return 'portal';
+    if (kind === 'furniture' || kind === 'altar') return 'furniture';
+    if (kind === 'landmark') return 'zone';
+    return 'world';
+  };
+
+  const physicalRelation = new Set<SpatialEdgeRelation>([
+    'left_of','right_of','in_front_of','behind','inside','outside','near','facing'
+  ]);
+
+  for (const room of physicalRooms) {
+    addNode(clean(room?.location_name, 180), 'location');
+
+    for (const anchor of Object.values(room?.anchors || {}) as any[]) {
+      const label = clean(anchor?.label, 180);
+      if (label) addNode(label, anchorKind(clean(anchor?.kind, 40)));
+    }
+
+    for (const row of Array.isArray(room?.relations) ? room.relations.slice(-160) : []) {
+      const subject = clean(row?.subject, 180);
+      const target = clean(row?.target, 180);
+      const relation = clean(row?.relation, 80);
+      if (!subject || !target || !physicalRelation.has(relation as SpatialEdgeRelation)) continue;
+      addNode(subject, 'world');
+      addNode(target, 'world');
+      edges.push({
+        subject,
+        relation: relation as SpatialEdgeRelation,
+        target,
+        confidence: Math.max(0, Math.min(1, Number(row?.confidence) || 0.5)),
+        source: 'continuity'
+      });
+    }
+  }
 
   const characters = Array.isArray(contract?.characters) ? contract.characters : [];
   const props = Array.isArray(contract?.props) ? contract.props : [];
@@ -218,8 +270,18 @@ function roomTopology(contract: Record<string, any> | null | undefined) {
 function axisSubjects(
   shots: Array<Record<string, any>>,
   characters: Array<{ id: string; name: string }>,
-  overrideSubjects?: string[]
+  overrideSubjects?: string[],
+  continuityContract?: Record<string, any> | null
 ) {
+  const continuityAxes = continuityContract?.camera_axes && typeof continuityContract.camera_axes === 'object'
+    ? Object.values(continuityContract.camera_axes) as any[]
+    : [];
+
+  for (const axis of continuityAxes) {
+    const a = characters.find((character) => norm(character.name) === norm(axis?.subject_a));
+    const b = characters.find((character) => norm(character.name) === norm(axis?.subject_b));
+    if (a && b && a.id !== b.id) return [a, b];
+  }
   const override = (overrideSubjects || [])
     .map((value) => characters.find((character) =>
       character.id === value || norm(character.name) === norm(value)
@@ -244,14 +306,38 @@ function axisSubjects(
 
 export async function buildSceneSpatialPlan(input: BuildInput): Promise<SceneSpatialPlan> {
   const characters = knownCharacters(input.continuityContract);
-  const pair = axisSubjects(input.shots, characters, input.overrides?.axis_subjects);
+  const pair = axisSubjects(
+    input.shots,
+    characters,
+    input.overrides?.axis_subjects,
+    input.continuityContract
+  );
   const axisCritical = pair.length >= 2;
   const initialScreenPositions = latestScreenPositions(input.continuityContract);
   const allowCrossings = new Set((input.overrides?.allow_crossings || []).map(String));
   const shotSides = input.overrides?.shot_sides || {};
 
   const pairNames = pair.map((row) => row.name);
-  const defaultSide: CameraAxisSide = input.existing?.axis?.default_camera_side || 'A';
+  const continuityAxes = input.continuityContract?.camera_axes && typeof input.continuityContract.camera_axes === 'object'
+    ? Object.values(input.continuityContract.camera_axes) as any[]
+    : [];
+  const matchingContinuityAxis = continuityAxes.find((axis) => {
+    const names = [norm(axis?.subject_a), norm(axis?.subject_b)].sort();
+    return pairNames.length >= 2 &&
+      names[0] === [norm(pairNames[0]), norm(pairNames[1])].sort()[0] &&
+      names[1] === [norm(pairNames[0]), norm(pairNames[1])].sort()[1];
+  });
+  const continuitySide: CameraAxisSide =
+    matchingContinuityAxis?.last_camera_side === 'side_a'
+      ? 'A'
+      : matchingContinuityAxis?.last_camera_side === 'side_b'
+        ? 'B'
+        : ['neutral','on_axis'].includes(String(matchingContinuityAxis?.last_camera_side || ''))
+          ? 'on-axis'
+          : 'unknown';
+  const defaultSide: CameraAxisSide =
+    input.existing?.axis?.default_camera_side ||
+    (continuitySide !== 'unknown' ? continuitySide : 'A');
   let establishedShotId: string | null = input.existing?.axis?.established_shot_id || null;
   let activeSide: CameraAxisSide = defaultSide;
   const sceneWarnings: string[] = [];
@@ -390,7 +476,7 @@ export async function buildSceneSpatialPlan(input: BuildInput): Promise<SceneSpa
       axis_id: axisCritical ? 'axis_' + slug(pairNames.join('_')) : null,
       subject_a: pairNames[0] || null,
       subject_b: pairNames[1] || null,
-      established_shot_id: establishedShotId,
+      established_shot_id: establishedShotId || clean(matchingContinuityAxis?.established_shot_id, 96) || null,
       default_camera_side: defaultSide,
       must_preserve: axisCritical
     },
