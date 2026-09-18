@@ -1,155 +1,186 @@
-# PARABLE Production Bible / Continuity Brain — V2
+# PARABLE Production Bible / Continuity Brain — V3
 
-PARABLE remembers a film as a world instead of treating every scene as a fresh prompt.
+PARABLE now treats continuity as a physical world timeline, not only scene memory.
 
-V2 moves the Continuity Brain beyond manual structured updates. PARABLE can now extract scene state automatically, compare it with the established Production Bible and prior scenes, block serious continuity contradictions, then generate a continuity-gated render package for every shot.
+V3 adds object ownership, hand-to-hand prop transfers, screen geography, per-shot state transitions and human-approved visual / voice reference locks.
 
-## What the Continuity Brain remembers
+## Current production path
 
-The current snapshot tracks:
+`Story -> Story Understanding -> Production Bible -> Scene State -> Shot State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
 
-- character identity and locked visual / performance facts;
-- appearance, clothing / wardrobe and emotional state;
-- character position and current location;
-- injuries and other stateful physical changes;
-- props and prop state;
-- relationship state;
-- what each character currently knows;
-- scene order and current time label;
-- unresolved story threads;
-- Scripture / theology review flags;
-- every accepted state transition and continuity warning.
+A renderer should never rebuild the world from a bare prompt. It receives a world-state contract.
 
-Durable character identity facts can be locked. Stateful changes such as wardrobe, injury, location or emotion are allowed when the scene explicitly establishes a transition.
+## Physical world memory
 
-## Automatic scene-state extraction
+The V3 continuity snapshot now stores:
 
-`POST /api/scene-state`
+- durable character identity and approved reference IDs;
+- wardrobe, injuries, emotional state, position and location;
+- what each character knows;
+- props, current holder, current location and current state;
+- scene and shot transition history;
+- spatial relationships such as left/right, foreground/background, facing and screen side;
+- unresolved story threads and theology-review flags;
+- continuity warnings and blockers.
+
+Old V1/V2 snapshots are upgraded in memory to V3 when used.
+
+## Prop ownership and transfers
+
+Scene or shot extraction can return `prop_transfers`.
 
 Example:
 
 ```json
 {
-  "projectId": "project_123",
-  "storyVersion": "story_abc",
-  "mode": "apply",
-  "scene": {
-    "id": "scene_17",
-    "index": 17,
-    "heading": "INT. KITCHEN - NIGHT",
-    "text": "Daniel stands in the doorway..."
-  }
+  "prop": "house keys",
+  "from": "Daniel",
+  "to": "Miriam",
+  "location": "",
+  "state": "held",
+  "transition": true,
+  "confidence": 0.94
 }
 ```
 
-If scene text is omitted, PARABLE attempts to derive the current scene from the latest adaptation.
+PARABLE then remembers who holds the keys.
 
-The protected Continuity Intelligence lane requests Zero Data Retention / no-training routing through OpenRouter. If a compliant provider is unavailable, PARABLE falls back to conservative local extraction rather than weakening manuscript privacy.
+If a later shot claims the keys come from someone who never received them, the Continuity Brain can emit `PROP_OWNERSHIP_CONFLICT` and stop the render package.
 
-The extraction stage produces:
+Putting an object down is represented by clearing its holder and assigning a location.
 
-- scene facts;
-- explicit state transitions;
-- character knowledge gained or forgotten;
-- knowledge requirements that may expose information leaks;
-- unresolved / resolved story threads;
-- theology review flags;
-- renderer notes for identity, wardrobe, props, spatial relationships and emotional continuity;
-- uncertainties and model/fallback provenance.
+## Spatial graph and screen direction
 
-## Knowledge-leak detection
+V3 stores filmable geography through `spatial_relations`.
 
-A scene can now be blocked if a character acts on information continuity does not record them learning.
+Supported relations include:
 
-Example:
+- left_of / right_of;
+- in_front_of / behind;
+- inside / outside;
+- near / facing;
+- screen_left / screen_right;
+- foreground / background.
 
-Scene 8 records that only Miriam sees the letter.
+An unexplained screen-side reversal can emit `SCREEN_DIRECTION_BREAK`.
 
-If Scene 9 makes Daniel confront someone about the letter before learning about it, the Continuity Brain can emit:
+The point is not to forbid camera changes. The point is to require a real movement, blocking or camera transition before PARABLE silently flips established geography.
 
-`KNOWLEDGE_LEAK`
+## Scene checkpoint
 
-with blocker severity.
+`POST /api/scene-state`
 
-This is deliberately evaluated before new knowledge from the scene is applied.
+The scene checkpoint now stores both:
 
-## Identity and state locks
+- `continuity_before_snapshot`
+- `continuity_after_snapshot`
 
-V2 distinguishes durable identity from legitimate story change.
+This gives the per-shot timeline a clean pre-scene starting state without losing the scene-level final state used by the next scene.
 
-A locked identity contradiction can produce:
+## Per-shot continuity
 
-`LOCKED_FACT_CONFLICT`
+`POST /api/shot-state`
 
-while an unexplained wardrobe, injury, emotional, location or prop-state change can produce:
+Required fields:
 
-`UNEXPLAINED_CHANGE`.
+```json
+{
+  "projectId": "project_123",
+  "storyVersion": "story_abc",
+  "sceneId": "scene_17",
+  "shotId": "shot_3"
+}
+```
 
-Explicit transitions are recorded in history rather than treated as errors.
+Shots must be processed in order.
 
-## Render handoff
+The first shot starts from the scene's pre-scene checkpoint. Every later shot starts from the previous shot's post-shot snapshot.
+
+Each shot stores:
+
+- pre-shot continuity;
+- extracted in-shot state changes;
+- prop transfers;
+- spatial movement;
+- knowledge changes;
+- post-shot continuity;
+- blockers and uncertainties;
+- pre-shot and post-shot render contracts.
+
+This means a prop picked up in Shot 2 is already in that character's hand when Shot 3 is prepared.
+
+## Render gate V2
 
 `GET /api/render-context?projectId=project_123&sceneId=scene_17`
 
-Optional query parameters:
+A shot is no longer render-ready merely because its scene passed continuity.
 
-- `storyVersion`
-- `shotId`
+Every shot must have a `/api/shot-state` checkpoint.
 
-The render endpoint refuses to treat an unchecked scene as render-ready.
+The render package now carries:
 
-For a checked scene it returns one package per shot containing:
+- shot plan plus human director overrides;
+- continuity before the shot;
+- in-shot transitions;
+- continuity after the shot;
+- prop ownership;
+- spatial graph;
+- locked identity / casting references;
+- knowledge state;
+- hard blockers;
+- human-review recommendation.
 
-- the shot plan;
-- human director overrides where present;
-- the current continuity contract;
-- locked character identity;
-- wardrobe, injury, prop and location state;
-- character knowledge;
-- unresolved story threads;
-- theology flags;
-- scene-specific render notes;
-- hard continuity blockers;
-- a final `can_render` gate.
+Unchecked shots are returned as `awaiting-shot-continuity` and `can_render=false`.
 
-The renderer boundary therefore becomes:
+## Human-approved reference locks
 
-`Story -> Production Bible -> Scene State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
+`POST /api/reference-locks`
 
-not:
+Reference locks cannot be created silently by a model. The request must include:
 
-`Scene text -> random new video prompt`.
+`"humanApproved": true`
 
-## Manual continuity API
+Supported character references include:
 
-The lower-level `/api/continuity` endpoint still exists for human/editorial control.
+- actor_face_ref;
+- actor_visual_ref;
+- voice_ref;
+- wardrobe_reference_ref;
+- performance_reference_ref.
 
-It supports:
+Supported location references include:
 
-- `bootstrap`
-- `check_scene`
-- `apply_scene`
+- location_visual_ref;
+- layout_reference_ref;
+- lighting_reference_ref.
 
-and current continuity can be read with:
+Once locked, renderer contracts carry them as durable identity / place constraints.
 
-`GET /api/continuity?projectId=project_123`
+Replacing an existing locked reference requires `replaceExisting=true`, making a recast or deliberate location redesign explicit rather than accidental.
 
-or compacted for downstream engines with:
+## Privacy boundary
 
-`GET /api/continuity?projectId=project_123&compact=1`
+Automatic scene and shot extraction remains on PARABLE's protected manuscript lane.
 
-## Current limitations
+It requests provider routing with Zero Data Retention and data-collection denial. If that requirement cannot be satisfied, PARABLE uses conservative local extraction instead of weakening manuscript privacy.
 
-V2 is scene-level, not yet frame-level.
+## What V3 changes in practice
 
-The next layer should add:
+If Scene 4 establishes that Daniel places the keys on the dining table, the system can preserve that fact.
 
-- automatic prop ownership and hand-to-hand transfers;
-- richer spatial graph / screen-direction memory;
-- per-shot state transitions inside a scene;
-- actor face / voice reference IDs after casting;
-- location visual reference IDs;
-- continuity-aware image/video seed management;
-- automatic repair suggestions that never overwrite writer/director choices without approval.
+If Shot 2 of Scene 9 has Miriam pick them up, Shot 3 begins with Miriam holding the keys.
 
-By Scene 17, PARABLE now has an enforceable memory of Scenes 1–16. The next milestone is making every renderer consume that memory automatically.
+If Shot 4 suddenly renders Daniel holding them again without a handover, PARABLE has enough physical-world state to stop and ask why.
+
+That is the shift from prompt continuity to production continuity.
+
+## Next milestone
+
+The next Continuity Brain layer should focus on:
+
+- camera-axis / 180-degree rule memory;
+- room topology and persistent furniture landmarks;
+- entrances/exits and door state;
+- per-character pose and eyeline continuity;
+- continuity-aware renderer seed/reference management;
+- automatic repair proposals that remain advisory until a human approves them.
