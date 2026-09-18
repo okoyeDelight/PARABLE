@@ -7,6 +7,7 @@ import {
   type ContinuitySnapshot
 } from './_lib/continuity-core.mts';
 import { runContinuityExtraction } from './_lib/continuity-ai.mts';
+import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
 import {
   acquireProjectMutation,
   abortProjectMutation,
@@ -119,11 +120,16 @@ export default async (request: Request) => {
     }, 409);
   }
 
-  const [sceneState, adaptation, direction] = await Promise.all([
+  const [sceneState, authoritativeAdaptation, cachedVersionAdaptation, direction] = await Promise.all([
     s.sceneStates.get('project/' + projectId + '/' + storyVersion + '/' + sceneId, { type: 'json' }) as Promise<Record<string, any> | null>,
-    s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>,
+    readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest'),
+    s.adaptations.get('project/' + projectId + '/versions/' + storyVersion, { type: 'json' }) as Promise<Record<string, any> | null>,
     getDirection(projectId, storyVersion, shotId)
   ]);
+
+  const adaptation = authoritativeAdaptation?.value?.story_version === storyVersion
+    ? authoritativeAdaptation.value
+    : cachedVersionAdaptation;
 
   if (!sceneState) {
     return json({
