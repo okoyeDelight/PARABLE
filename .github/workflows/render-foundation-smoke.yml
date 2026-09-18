@@ -33,6 +33,7 @@ on:
       - 'netlify/functions/_lib/visual-inspector-ai.mts'
       - 'netlify/functions/render-motion-inspect.mts'
       - 'netlify/functions/_lib/motion-inspector-ai.mts'
+      - 'netlify/functions/_lib/motion-frame-extractor.mts'
       - 'netlify/functions/motion-evidence-extract.mts'
       - 'netlify/functions/motion-frame-asset.mts'
       - 'netlify/functions/_lib/motion-frame-assets.mts'
