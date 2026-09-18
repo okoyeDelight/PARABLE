@@ -6,6 +6,12 @@ import {
   evaluateRenderQA
 } from '../netlify/functions/_lib/render-foundation.mts';
 import { prepareRendererRequest } from '../netlify/functions/_lib/render-adapters.mts';
+import {
+  defaultRenderBudgetPolicy,
+  evaluateRenderBudget,
+  normalizeRenderBudgetPolicy,
+  summarizeRenderBudget
+} from '../netlify/functions/_lib/render-budget-core.mts';
 
 const continuity = {
   entities: {
@@ -120,6 +126,81 @@ assert.equal(Array.isArray(prepared.body.image_urls), true);
 assert.equal((prepared.body.image_urls as string[]).length, 2);
 assert.match(String(prepared.body.prompt), /negative_space/);
 
+const budgetEvents = [
+  {
+    attempt_id: 'render_a',
+    shot_id: 'shot_2',
+    scene_id: 'scene_4',
+    mode: 'draft',
+    estimated_cost_usd: 0.2,
+    actual_cost_usd: null,
+    at: '2026-09-18T09:00:00.000Z'
+  },
+  {
+    attempt_id: 'render_a',
+    shot_id: 'shot_2',
+    scene_id: 'scene_4',
+    mode: 'draft',
+    estimated_cost_usd: 0.2,
+    actual_cost_usd: 0.18,
+    at: '2026-09-18T09:01:00.000Z'
+  },
+  {
+    attempt_id: 'render_b',
+    shot_id: 'shot_2',
+    scene_id: 'scene_4',
+    mode: 'final',
+    estimated_cost_usd: 0.8,
+    actual_cost_usd: null,
+    at: '2026-09-18T09:02:00.000Z'
+  }
+];
+
+const budgetSummary = summarizeRenderBudget({
+  projectId: 'project_smoke',
+  storyVersion: 'story_smoke',
+  events: budgetEvents
+});
+assert.equal(budgetSummary.attempts_observed, 2);
+assert.equal(budgetSummary.shots.shot_2.attempts, 2);
+assert.equal(budgetSummary.actual_cost_usd, 0.18);
+assert.equal(budgetSummary.committed_or_estimated_cost_usd, 0.98);
+
+const budgetPolicy = normalizeRenderBudgetPolicy('project_smoke', {
+  ...defaultRenderBudgetPolicy('project_smoke'),
+  max_estimated_cost_per_shot_usd: 2,
+  max_estimated_cost_per_project_usd: 5,
+  approval_required_over_usd: 1
+});
+
+const budgetOk = evaluateRenderBudget({
+  policy: budgetPolicy,
+  summary: budgetSummary,
+  shotId: 'shot_2',
+  mode: 'draft',
+  estimatedCostUsd: 0.4
+});
+assert.equal(budgetOk.allowed, true);
+
+const approvalRequired = evaluateRenderBudget({
+  policy: budgetPolicy,
+  summary: budgetSummary,
+  shotId: 'shot_2',
+  mode: 'final',
+  estimatedCostUsd: 1.2
+});
+assert.equal(approvalRequired.allowed, false);
+assert.equal(approvalRequired.code, 'RENDER_SHOT_BUDGET_EXCEEDED');
+
+const missingEstimate = evaluateRenderBudget({
+  policy: budgetPolicy,
+  summary: budgetSummary,
+  shotId: 'shot_3',
+  mode: 'draft',
+  estimatedCostUsd: null
+});
+assert.equal(missingEstimate.code, 'RENDER_COST_ESTIMATE_REQUIRED');
+
 const pass = evaluateRenderQA('render_pass', {
   identity: 0.96,
   wardrobe: 0.97,
@@ -156,6 +237,8 @@ console.log(JSON.stringify({
   spec_hash: spec.spec_hash.slice(0, 16),
   final_reference_count: prepared.reference_map.length,
   keyframe_gate: keyframe.final_motion_render_blocked_until_approved,
+  budget_attempts_observed: budgetSummary.attempts_observed,
+  budget_guard: missingEstimate.code,
   qa_pass: pass.decision,
   qa_repair: repair.decision
 }, null, 2));
