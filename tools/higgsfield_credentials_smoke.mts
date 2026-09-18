@@ -17,6 +17,11 @@ assert.equal(
 );
 
 assert.equal(
+  composeHiggsfieldCredentials({ keySecret: 'id4:secret4' }),
+  'id4:secret4'
+);
+
+assert.equal(
   composeHiggsfieldCredentials({ combined: 'badcombined', keyId: 'id3', keySecret: 'secret3' }),
   'id3:secret3'
 );
