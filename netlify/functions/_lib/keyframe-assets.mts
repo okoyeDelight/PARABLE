@@ -101,13 +101,15 @@ export async function signedKeyframeAssetUrl(args: {
   hash: string;
   purpose?: string;
   ttlSeconds?: number;
+  origin?: string;
 }) {
   return createSignedMediaUrl({
     route: '/api/keyframe-asset',
     assetId: args.hash,
     projectId: args.projectId,
     purpose: args.purpose || 'preview',
-    ttlSeconds: args.ttlSeconds || 900
+    ttlSeconds: args.ttlSeconds || 900,
+    origin: args.origin
   });
 }
 
