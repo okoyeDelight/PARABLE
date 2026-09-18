@@ -35,7 +35,7 @@ export default async (request: Request) => {
   const deployContext = Netlify.context?.deploy?.context || 'unknown';
   const openrouter = Boolean(Netlify.env.get('OPENROUTER_API_KEY'));
   const asyncKey = Boolean(Netlify.env.get('AWL_API_KEY'));
-  const queueMode = Netlify.env.get('PARABLE_QUEUE_MODE') || 'auto';
+  const queueMode = Netlify.env.get('PARABLE_QUEUE_MODE') || (deployContext === 'deploy-preview' ? 'background' : 'auto');
   const jobHealth = await readJobHealth();
 
   const healthy = storageOk;
