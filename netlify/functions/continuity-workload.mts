@@ -16,7 +16,7 @@ import {
 type ContinuityEvent = AsyncWorkloadEvent & {
   eventData: {
     jobId: string;
-    kind: 'scene-state' | 'shot-state';
+    kind: 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation';
   };
 };
 
@@ -35,7 +35,7 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
   const jobId = clean(event.eventData?.jobId, 96);
   const kind = clean(event.eventData?.kind, 40);
 
-  if (!jobId || !['scene-state', 'shot-state'].includes(kind)) {
+  if (!jobId || !['scene-state', 'shot-state', 'story-understanding', 'adaptation'].includes(kind)) {
     throw new ErrorDoNotRetry('Invalid PARABLE continuity workload event.');
   }
 
@@ -57,7 +57,13 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
     throw new ErrorDoNotRetry('No deployment origin is available.');
   }
 
-  const path = kind === 'scene-state' ? '/api/scene-state' : '/api/shot-state';
+  const path = kind === 'scene-state'
+    ? '/api/scene-state'
+    : kind === 'shot-state'
+      ? '/api/shot-state'
+      : kind === 'story-understanding'
+        ? '/api/understand'
+        : '/api/adapt';
   let response: Response;
 
   try {
