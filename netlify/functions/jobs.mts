@@ -2,6 +2,7 @@ import { AsyncWorkloadsClient } from '@netlify/async-workloads';
 import {
   createDurableJob,
   failJob,
+  markJobQueued,
   readDurableJob,
   readJobResult,
   type JobKind
@@ -73,12 +74,16 @@ export default async (request: Request) => {
   if (shouldDispatch) {
     try {
       const client = new AsyncWorkloadsClient();
-      await client.send('parable.pipeline.process', {
+      const sent = await client.send('parable.pipeline.process', {
         data: {
           jobId: created.job.id,
           kind
         }
       });
+      if (sent?.sendStatus && sent.sendStatus !== 'succeeded') {
+        throw new Error('Async Workloads router did not acknowledge the event.');
+      }
+      await markJobQueued(created.job.id, sent?.eventId || null);
     } catch (error) {
       await failJob(created.job.id, error);
       return json({
