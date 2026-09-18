@@ -199,7 +199,6 @@ jobs:
               text.includes('insufficient credit') ||
               text.includes('insufficient balance') ||
               text.includes('billing') ||
-              text.includes('circuit-open') ||
               text.includes('resource_exhausted') ||
               text.includes('rate limit') ||
               text.includes('too many requests') ||
@@ -212,12 +211,26 @@ jobs:
 
           async function benchmark(fixture, stage) {
             let last;
-            const maxAttempts = stage === 'critic' ? 3 : 3;
+            const maxAttempts = stage === 'critic' ? 5 : 3;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               try {
                 last = await post({ fixture, stage });
                 console.log(`${fixture}/${stage} attempt ${attempt}: ${last.r.status} ${JSON.stringify(last.body).slice(0, 1100)}`);
                 if (last.r.ok && last.body?.passed) return { kind: 'model', body: last.body };
+
+                const serialized = JSON.stringify(last.body || {}).toLowerCase();
+                const circuitOpen = serialized.includes('circuit-open');
+
+                if (
+                  last.r.ok &&
+                  last.body?.engine?.mode === 'deterministic-fallback' &&
+                  circuitOpen &&
+                  attempt < maxAttempts
+                ) {
+                  console.log(`${fixture}/${stage}: provider circuit is cooling down; retrying instead of declaring quality unavailable.`);
+                  await sleep(18000);
+                  continue;
+                }
 
                 if (
                   last.r.ok &&
@@ -231,7 +244,7 @@ jobs:
                 console.log(`${fixture}/${stage} attempt ${attempt}: transport failure ${JSON.stringify(last.body)}`);
               }
 
-              if (attempt < maxAttempts) await sleep(stage === 'critic' ? 5000 : 4000);
+              if (attempt < maxAttempts) await sleep(stage === 'critic' ? 9000 : 4000);
             }
 
             throw new Error(`${fixture}/${stage} failed for a non-quota reason: ${JSON.stringify(last?.body).slice(0, 1500)}`);
