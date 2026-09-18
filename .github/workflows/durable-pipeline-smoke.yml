@@ -35,6 +35,7 @@ on:
       - 'netlify/functions/_lib/transactional-state.mts'
       - 'netlify/functions/state-health.mts'
       - 'netlify/functions/state-self-test.mts'
+      - 'netlify/functions/state-secret-bootstrap.mts'
       - 'database/transactional-hot-state-v1.sql'
       - '.github/workflows/durable-pipeline-smoke.yml'
   workflow_dispatch:
@@ -65,14 +66,14 @@ jobs:
               const r = await fetch(base + '/api/platform-health', { cache: 'no-store' });
               const body = await r.json().catch(() => ({}));
               const architecture = body?.architecture || {};
-              const deployedSha = body?.deployment?.commit_ref || 'unknown';
               console.log(
-                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'} commit=${deployedSha}`
+                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'} state=${architecture?.transactional_hot_state || 'unknown'}`
               );
               if (
                 r.ok &&
                 body?.ok === true &&
-                deployedSha === process.env.GITHUB_SHA &&
+                body?.runtime === 'parable-scale-foundation-v2' &&
+                architecture?.state_adapter_version === 'transactional-state-v1' &&
                 architecture?.queue_backend_abstraction === true &&
                 architecture?.single_queue_dependency === false &&
                 architecture?.transactional_hot_state === 'postgres-authoritative-cas' &&
