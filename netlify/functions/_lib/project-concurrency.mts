@@ -9,12 +9,13 @@ type LeaseState = {
 };
 
 type ProjectHead = {
-  version: 'parable-project-head-v1';
+  version: 'parable-project-head-v2';
   project_id: string;
   revision: number;
   active_lease: LeaseState | null;
   last_mutation_id: string | null;
   last_mutation_type: string | null;
+  state_refs: Record<string, string>;
   updated_at: string;
 };
 
@@ -94,12 +95,13 @@ async function ensureHead(projectId: string) {
 
   const now = new Date().toISOString();
   const initial: ProjectHead = {
-    version: 'parable-project-head-v1',
+    version: 'parable-project-head-v2',
     project_id: projectId,
     revision: 0,
     active_lease: null,
     last_mutation_id: null,
     last_mutation_type: null,
+    state_refs: {},
     updated_at: now
   };
 
@@ -116,6 +118,7 @@ export async function readProjectRevision(projectId: string) {
     project_id: projectId,
     revision: Number(current.data.revision || 0),
     active_lease: current.data.active_lease,
+    state_refs: current.data.state_refs || {},
     updated_at: current.data.updated_at
   };
 }
@@ -217,7 +220,8 @@ async function appendEvent(head: ProjectHead, metadata: Record<string, unknown>)
 
 export async function commitProjectMutation(
   lease: ProjectMutationLease,
-  metadata: Record<string, unknown> = {}
+  metadata: Record<string, unknown> = {},
+  statePatch: Record<string, string | null> = {}
 ) {
   const { heads } = state();
   const current = await readHead(lease.project_id);
@@ -232,12 +236,20 @@ export async function commitProjectMutation(
   }
 
   const now = new Date().toISOString();
+  const stateRefs = { ...(current.data.state_refs || {}) };
+  for (const [name, ref] of Object.entries(statePatch)) {
+    if (ref) stateRefs[name] = ref;
+    else delete stateRefs[name];
+  }
+
   const next: ProjectHead = {
     ...current.data,
+    version: 'parable-project-head-v2',
     revision: Number(current.data.revision || 0) + 1,
     active_lease: null,
     last_mutation_id: lease.mutation_id,
     last_mutation_type: lease.mutation_type,
+    state_refs: stateRefs,
     updated_at: now
   };
 
@@ -257,7 +269,8 @@ export async function commitProjectMutation(
     previous_revision: lease.base_revision,
     revision: next.revision,
     mutation_id: lease.mutation_id,
-    mutation_type: lease.mutation_type
+    mutation_type: lease.mutation_type,
+    state_refs: next.state_refs
   };
 }
 
