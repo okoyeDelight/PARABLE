@@ -1,4 +1,6 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
+import { createSignedMediaUrl } from './media-signing.mts';
+import type { KeyframeApproval } from './keyframe-approval-core.mts';
 
 function stores() {
   const production = Netlify.context?.deploy?.context === 'production';
@@ -49,7 +51,7 @@ export async function saveKeyframeAsset(args: {
   if (bytes.byteLength > 30 * 1024 * 1024) throw new Error('Generated keyframe exceeds the 30 MB asset limit.');
 
   const hash = await sha256Bytes(bytes);
-  const assetKey = 'asset/' + hash;
+  const assetKey = 'project/' + safePart(args.projectId) + '/asset/' + hash;
   const mediaType = /^image\/(png|jpeg|webp)$/i.test(args.mediaType)
     ? args.mediaType.toLowerCase()
     : 'image/png';
@@ -78,19 +80,60 @@ export async function saveKeyframeAsset(args: {
     created_at: new Date().toISOString()
   };
 
-  await stores().meta.setJSON('meta/' + hash, metadata);
+  await stores().meta.setJSON('project/' + safePart(args.projectId) + '/meta/' + hash, metadata);
 
   return metadata;
 }
 
-export async function readKeyframeAsset(hash: string) {
+export async function readKeyframeAsset(projectId: string, hash: string) {
   if (!safeHash(hash)) return null;
+  const project = safePart(projectId);
   const [bytes, metadata] = await Promise.all([
-    stores().assets.get('asset/' + hash, { type: 'arrayBuffer' }) as Promise<ArrayBuffer | null>,
-    stores().meta.get('meta/' + hash, { type: 'json' }) as Promise<Record<string, any> | null>
+    stores().assets.get('project/' + project + '/asset/' + hash, { type: 'arrayBuffer' }) as Promise<ArrayBuffer | null>,
+    stores().meta.get('project/' + project + '/meta/' + hash, { type: 'json' }) as Promise<Record<string, any> | null>
   ]);
-  if (!bytes || !metadata) return null;
+  if (!bytes || !metadata || metadata.project_id !== projectId) return null;
   return { bytes, metadata };
+}
+
+export async function signedKeyframeAssetUrl(args: {
+  projectId: string;
+  hash: string;
+  purpose?: string;
+  ttlSeconds?: number;
+}) {
+  return createSignedMediaUrl({
+    route: '/api/keyframe-asset',
+    assetId: args.hash,
+    projectId: args.projectId,
+    purpose: args.purpose || 'preview',
+    ttlSeconds: args.ttlSeconds || 900
+  });
+}
+
+export async function hydrateKeyframeApprovalAsset(
+  projectId: string,
+  approval: KeyframeApproval
+): Promise<KeyframeApproval> {
+  const hash = String(approval.asset.content_sha256 || '').toLowerCase();
+  if (!safeHash(hash)) throw new Error('Approved keyframe has no valid immutable content hash.');
+
+  const stored = await readKeyframeAsset(projectId, hash);
+  if (!stored) throw new Error('Approved keyframe bytes are missing from the private asset vault.');
+
+  return {
+    ...approval,
+    asset: {
+      ...approval.asset,
+      uri: await signedKeyframeAssetUrl({
+        projectId,
+        hash,
+        purpose: 'renderer',
+        ttlSeconds: 1200
+      }),
+      immutable_binding: true
+    }
+  };
 }
 
 const safePart = (value: unknown) => String(value || '')
