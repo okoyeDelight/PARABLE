@@ -48,6 +48,7 @@ function routeFor(kind: JobKind) {
   if (kind === 'adaptation') return '/api/adapt';
   if (kind === 'keyframe-generate') return '/api/keyframe-generate';
   if (kind === 'reference-profile') return '/api/reference-profile';
+  if (kind === 'motion-inspect') return '/api/render-motion-inspect';
   return null;
 }
 
