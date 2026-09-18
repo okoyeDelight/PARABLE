@@ -16,7 +16,7 @@ concurrency:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
       - name: Resolve exact Netlify deploy for this commit
         env:
@@ -120,7 +120,7 @@ jobs:
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(body),
-              signal: AbortSignal.timeout(25000)
+              signal: AbortSignal.timeout(60000)
             });
             const text = await r.text();
             let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
@@ -131,10 +131,15 @@ jobs:
             let last;
             const maxAttempts = stage === 'critic' ? 5 : 3;
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-              last = await post({ fixture, stage });
-              console.log(`${fixture}/${stage} attempt ${attempt}: ${last.r.status} ${JSON.stringify(last.body).slice(0, 1100)}`);
-              if (last.r.ok && last.body?.passed) return last.body;
-              if (attempt < maxAttempts) await sleep(stage === 'critic' ? 7000 : 5000);
+              try {
+                last = await post({ fixture, stage });
+                console.log(`${fixture}/${stage} attempt ${attempt}: ${last.r.status} ${JSON.stringify(last.body).slice(0, 1100)}`);
+                if (last.r.ok && last.body?.passed) return last.body;
+              } catch (error) {
+                last = { body: { transport_error: error?.name || 'Error', detail: error?.message || String(error) } };
+                console.log(`${fixture}/${stage} attempt ${attempt}: transport failure ${JSON.stringify(last.body)}`);
+              }
+              if (attempt < maxAttempts) await sleep(stage === 'critic' ? 8000 : 6000);
             }
             throw new Error(`${fixture}/${stage} did not get a real model result: ${JSON.stringify(last?.body).slice(0, 1500)}`);
           }
