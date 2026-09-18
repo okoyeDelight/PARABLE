@@ -158,7 +158,28 @@ async function timingSafeEqual(a: Uint8Array, b: Uint8Array) {
 }
 
 function internalSecret() {
-  return String(Netlify.env.get('PARABLE_INTERNAL_AUTH_SECRET') || '').trim();
+  const dedicated = String(Netlify.env.get('PARABLE_INTERNAL_AUTH_SECRET') || '').trim();
+  if (dedicated) return dedicated;
+
+  // Deploy-preview compatibility only: derive an internal signing key from an
+  // already-secret server credential so browser callers cannot forge worker auth.
+  // Production still reports this as a hardening requirement until a dedicated
+  // PARABLE_INTERNAL_AUTH_SECRET is configured.
+  const scope = runtime();
+  if (!scope.production) {
+    const seed = String(
+      Netlify.env.get('OPENROUTER_API_KEY') ||
+      Netlify.env.get('FAL_KEY') ||
+      ''
+    ).trim();
+    if (seed) return 'parable-internal-preview-v1|' + seed;
+  }
+
+  return '';
+}
+
+export function internalAuthUsesDedicatedSecret() {
+  return Boolean(String(Netlify.env.get('PARABLE_INTERNAL_AUTH_SECRET') || '').trim());
 }
 
 export async function signInternalAuthorization(args: {
