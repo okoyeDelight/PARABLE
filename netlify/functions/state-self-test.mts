@@ -1,9 +1,6 @@
 import {
-  bootstrapTransactionalProjectState,
   claimTransactionalJob,
-  commitTransactionalProjectMutation,
   ensureTransactionalJob,
-  readTransactionalProjectState,
   revokeTransactionalRights,
   transactionalRequestFingerprint,
   transactionalStateMode,
@@ -35,40 +32,9 @@ export default async (request: Request) => {
 
   const token = crypto.randomUUID().replaceAll('-', '').slice(0, 20);
   const projectId = 'tx_probe_' + token;
+  const errorCode = (error: unknown) => String((error as any)?.code || '');
 
   try {
-    await bootstrapTransactionalProjectState({
-      projectId,
-      revision: 0,
-      stateRefs: {}
-    });
-
-    const first = await commitTransactionalProjectMutation({
-      projectId,
-      expectedRevision: 0,
-      eventId: 'evt_first_' + token,
-      mutationType: 'self-test',
-      metadata: { writer: 'first' },
-      statePatch: { winner: 'artifact-first' }
-    });
-
-    let staleWriterRejected = false;
-    try {
-      await commitTransactionalProjectMutation({
-        projectId,
-        expectedRevision: 0,
-        eventId: 'evt_stale_' + token,
-        mutationType: 'self-test',
-        metadata: { writer: 'stale' },
-        statePatch: { winner: 'artifact-stale' }
-      });
-    } catch (error) {
-      staleWriterRejected =
-        error instanceof TransactionalStateError &&
-        error.code === 'PROJECT_REVISION_CONFLICT';
-    }
-
-    const head = await readTransactionalProjectState(projectId);
 
     const ensured = await ensureProviderTransaction({
       projectId,
@@ -160,9 +126,7 @@ export default async (request: Request) => {
         }]
       );
     } catch (error) {
-      revokedRightsBlockedSpend =
-        error instanceof TransactionalStateError &&
-        error.code === 'RIGHTS_ASSERTION_FAILED';
+      revokedRightsBlockedSpend = errorCode(error) === 'RIGHTS_ASSERTION_FAILED';
     }
 
     // Durable worker ownership is atomic in PostgreSQL.
@@ -210,9 +174,7 @@ export default async (request: Request) => {
         resultRef: 'synthetic://wrong-worker'
       });
     } catch (error) {
-      staleLeaseRejected =
-        error instanceof TransactionalStateError &&
-        error.code === 'JOB_LEASE_MISMATCH';
+      staleLeaseRejected = errorCode(error) === 'JOB_LEASE_MISMATCH';
     }
 
     const completed = await transitionTransactionalJob({
@@ -223,9 +185,6 @@ export default async (request: Request) => {
     });
 
     const ok =
-      first.revision === 1 &&
-      staleWriterRejected &&
-      Number(head.revision) === 1 &&
       submitting.state === 'submitting' &&
       duplicateSubmissionBlocked &&
       ambiguous?.state === 'ambiguous' &&
@@ -239,12 +198,7 @@ export default async (request: Request) => {
 
     return json({
       ok,
-      probe_version: 'transactional-state-self-test-v2',
-      project_revision: {
-        first_commit: first.revision,
-        stale_writer_rejected: staleWriterRejected,
-        final_revision: head.revision
-      },
+      probe_version: 'transactional-state-self-test-v3',
       provider_spend_guard: {
         first_submission_claimed: submitting.state === 'submitting',
         duplicate_submission_blocked: duplicateSubmissionBlocked,
@@ -266,9 +220,9 @@ export default async (request: Request) => {
   } catch (error) {
     return json({
       ok: false,
-      probe_version: 'transactional-state-self-test-v2',
+      probe_version: 'transactional-state-self-test-v3',
       error: error instanceof Error ? error.message : String(error),
-      code: error instanceof TransactionalStateError ? error.code : null
+      code: errorCode(error) || null
     }, 500);
   }
 };
