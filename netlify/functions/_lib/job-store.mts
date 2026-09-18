@@ -1,5 +1,13 @@
 import { getStore } from '@netlify/blobs';
 import { getContext } from '@netlify/functions';
+import {
+  claimTransactionalJob,
+  ensureTransactionalJob,
+  readTransactionalJob,
+  transactionalStateMode,
+  transitionTransactionalJob,
+  TransactionalStateError
+} from './transactional-state.mts';
 
 export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic' | 'keyframe-generate' | 'reference-profile' | 'scale-noop';
 export type JobStatus = 'queued' | 'processing' | 'retrying' | 'succeeded' | 'failed';
@@ -46,7 +54,7 @@ function runtimeScope() {
 
   const deployContext = context?.deploy?.context || Netlify.context?.deploy?.context || 'unknown';
   const production = deployContext === 'production';
-  if (production) return { production: true, prefix: '' };
+  if (production) return { production: true, prefix: '', storageProjectPrefix: 'prod:' };
 
   const deployId = String(context?.deploy?.id || Netlify.context?.deploy?.id || 'local')
     .replace(/[^a-zA-Z0-9_-]/g, '')
@@ -54,7 +62,8 @@ function runtimeScope() {
 
   return {
     production: false,
-    prefix: 'deploy/' + (deployId || 'local') + '/'
+    prefix: 'deploy/' + (deployId || 'local') + '/',
+    storageProjectPrefix: 'preview:' + (deployId || 'local') + ':'
   };
 }
 
@@ -68,10 +77,6 @@ function stores() {
     results: getStore('parable-job-results' + suffix, { consistency: 'strong' }),
     events: getStore('parable-job-events' + suffix, { consistency: 'strong' })
   };
-}
-
-function scopedKey(path: string) {
-  return stores().scope.prefix + path;
 }
 
 const clean = (value: unknown, max = 500) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -101,6 +106,64 @@ function classifyJobError(error: unknown) {
   if (value.includes('previous') || value.includes('processed in order')) return 'dependency-wait';
   if (value.includes('privacy') || value.includes('zdr')) return 'privacy-policy';
   return 'other';
+}
+
+function logicalProjectId(storageProjectId: string) {
+  const prefix = runtimeScope().storageProjectPrefix;
+  return storageProjectId.startsWith(prefix)
+    ? storageProjectId.slice(prefix.length)
+    : null;
+}
+
+function jobFromRow(row: Record<string, any> | null): DurableJob | null {
+  if (!row) return null;
+  const projectId = logicalProjectId(clean(row.project_id, 240));
+  if (!projectId) return null;
+
+  const auth = row.auth_context && typeof row.auth_context === 'object'
+    ? row.auth_context as Record<string, any>
+    : null;
+
+  return {
+    id: clean(row.id, 96),
+    kind: clean(row.kind, 80) as JobKind,
+    project_id: projectId,
+    status: clean(row.status, 40) as JobStatus,
+    payload_hash: clean(row.payload_hash, 128),
+    idempotency_key: clean(row.idempotency_key, 240) || null,
+    attempts: Math.max(0, Math.floor(Number(row.attempts) || 0)),
+    last_error: clean(row.last_error, 1200) || null,
+    result_ref: clean(row.result_ref, 800) || null,
+    created_at: clean(row.created_at, 80) || new Date().toISOString(),
+    updated_at: clean(row.updated_at, 80) || new Date().toISOString(),
+    completed_at: clean(row.completed_at, 80) || null,
+    lease_token: clean(row.lease_token, 180) || null,
+    lease_expires_at: clean(row.lease_expires_at, 80) || null,
+    queue_event_id: clean(row.queue_event_id, 180) || null,
+    authorization: auth ? {
+      actor_id: clean(auth.actor_id,180),
+      provider: clean(auth.provider,120),
+      subject: clean(auth.subject,180),
+      workspace_id: clean(auth.workspace_id,180),
+      role: clean(auth.role,80),
+      action: clean(auth.action,80)
+    } : null
+  };
+}
+
+async function mirrorJob(job: DurableJob | null) {
+  if (!job) return;
+  try {
+    const { jobs, scope } = stores();
+    await jobs.setJSON(scope.prefix + 'job/' + job.id, job);
+  } catch {
+    // PostgreSQL is authoritative. Blob job state is only an operational mirror.
+  }
+}
+
+async function readBlobJob(jobId: string) {
+  const { jobs, scope } = stores();
+  return jobs.get(scope.prefix + 'job/' + jobId, { type: 'json' }) as Promise<DurableJob | null>;
 }
 
 async function recordJobEvent(job: DurableJob) {
@@ -139,6 +202,48 @@ export async function createDurableJob(args: {
     ? await sha256([args.kind, args.projectId, normalizedKey].join('|'))
     : crypto.randomUUID().replaceAll('-', '');
   const id = 'job_' + deterministic.slice(0, 28);
+
+  // Payload bytes are immutable and staged before the transactional row. If
+  // the DB write fails, the only residue is an unreachable orphan payload.
+  await payloads.setJSON(scope.prefix + 'payload/' + id, args.payload, { onlyIfNew: true } as any);
+
+  if (transactionalStateMode() === 'postgres') {
+    try {
+      const ensured = await ensureTransactionalJob({
+        id,
+        kind: args.kind,
+        projectId: args.projectId,
+        workspaceId: args.authorization?.workspace_id || null,
+        actorUserId: args.authorization?.actor_id || null,
+        authContext: args.authorization || null,
+        payloadHash,
+        idempotencyKey: normalizedKey || null
+      });
+      const job = jobFromRow(ensured.job);
+      if (!job) throw new Error('Transactional durable job returned outside the current deployment scope.');
+      await mirrorJob(job);
+      await recordJobEvent(job);
+      return {
+        job,
+        created: ensured.created === true,
+        conflict: false
+      };
+    } catch (error) {
+      if (error instanceof TransactionalStateError && error.code === 'JOB_IDEMPOTENCY_CONFLICT') {
+        const existing = jobFromRow(await readTransactionalJob(id).catch(() => null));
+        if (existing) {
+          return {
+            job: existing,
+            created: false,
+            conflict: true,
+            conflict_reason: 'The same idempotency key was reused with a different payload.'
+          };
+        }
+      }
+      throw error;
+    }
+  }
+
   const key = scope.prefix + 'job/' + id;
   const existing = await jobs.get(key, { type: 'json' }) as DurableJob | null;
 
@@ -174,17 +279,18 @@ export async function createDurableJob(args: {
     authorization: args.authorization || null
   };
 
-  await Promise.all([
-    payloads.setJSON(scope.prefix + 'payload/' + id, args.payload),
-    jobs.setJSON(key, job)
-  ]);
+  await jobs.setJSON(key, job, { onlyIfNew: true } as any);
   await recordJobEvent(job);
   return { job, created: true, conflict: false };
 }
 
 export async function readDurableJob(jobId: string) {
-  const { jobs, scope } = stores();
-  return jobs.get(scope.prefix + 'job/' + jobId, { type: 'json' }) as Promise<DurableJob | null>;
+  if (transactionalStateMode() === 'postgres') {
+    const job = jobFromRow(await readTransactionalJob(jobId));
+    await mirrorJob(job);
+    return job;
+  }
+  return readBlobJob(jobId);
 }
 
 export async function readJobPayload(jobId: string) {
@@ -193,8 +299,20 @@ export async function readJobPayload(jobId: string) {
 }
 
 export async function markJobQueued(jobId: string, eventId?: string | null) {
+  if (transactionalStateMode() === 'postgres') {
+    const row = await transitionTransactionalJob({
+      id: jobId,
+      toStatus: 'queued',
+      queueEventId: clean(eventId,180) || null
+    });
+    const job = jobFromRow(row);
+    await mirrorJob(job);
+    if (job) await recordJobEvent(job);
+    return job;
+  }
+
   const { jobs, scope } = stores();
-  const current = await readDurableJob(jobId);
+  const current = await readBlobJob(jobId);
   if (!current) return null;
   const next: DurableJob = {
     ...current,
@@ -208,8 +326,22 @@ export async function markJobQueued(jobId: string, eventId?: string | null) {
 }
 
 export async function markJobProcessing(jobId: string, attempts: number, leaseToken?: string, leaseMs = 120000) {
+  if (transactionalStateMode() === 'postgres') {
+    if (!leaseToken) throw new Error('PostgreSQL durable jobs require an explicit lease token.');
+    const claimed = await claimTransactionalJob({
+      id: jobId,
+      leaseToken,
+      attempt: attempts,
+      leaseMs
+    });
+    const job = jobFromRow(claimed?.job || null);
+    await mirrorJob(job);
+    if (job && claimed?.claimed) await recordJobEvent(job);
+    return job;
+  }
+
   const { jobs, scope } = stores();
-  const current = await readDurableJob(jobId);
+  const current = await readBlobJob(jobId);
   if (!current) return null;
   const now = new Date();
   const next: DurableJob = {
@@ -226,9 +358,28 @@ export async function markJobProcessing(jobId: string, attempts: number, leaseTo
   return next;
 }
 
-export async function markJobRetrying(jobId: string, error: unknown, attempts: number) {
+export async function markJobRetrying(
+  jobId: string,
+  error: unknown,
+  attempts: number,
+  leaseToken?: string | null
+) {
+  if (transactionalStateMode() === 'postgres') {
+    const row = await transitionTransactionalJob({
+      id: jobId,
+      toStatus: 'retrying',
+      leaseToken,
+      attempt: attempts,
+      lastError: clean(error instanceof Error ? error.message : error,1200)
+    });
+    const job = jobFromRow(row);
+    await mirrorJob(job);
+    if (job) await recordJobEvent(job);
+    return job;
+  }
+
   const { jobs, scope } = stores();
-  const current = await readDurableJob(jobId);
+  const current = await readBlobJob(jobId);
   if (!current) return null;
   const next: DurableJob = {
     ...current,
@@ -245,13 +396,30 @@ export async function markJobRetrying(jobId: string, error: unknown, attempts: n
   return next;
 }
 
-export async function completeJob(jobId: string, result: unknown) {
+export async function completeJob(jobId: string, result: unknown, leaseToken?: string | null) {
   const { jobs, results, scope } = stores();
-  const current = await readDurableJob(jobId);
-  if (!current) return null;
   const resultRef = scope.prefix + 'result/' + jobId;
-  const now = new Date().toISOString();
+
+  // Large/structured results stay in Blobs. The DB transition publishes only
+  // the immutable reference after the payload exists.
   await results.setJSON(resultRef, result);
+
+  if (transactionalStateMode() === 'postgres') {
+    const row = await transitionTransactionalJob({
+      id: jobId,
+      toStatus: 'succeeded',
+      leaseToken,
+      resultRef
+    });
+    const job = jobFromRow(row);
+    await mirrorJob(job);
+    if (job) await recordJobEvent(job);
+    return job;
+  }
+
+  const current = await readBlobJob(jobId);
+  if (!current) return null;
+  const now = new Date().toISOString();
   const next: DurableJob = {
     ...current,
     status: 'succeeded',
@@ -267,9 +435,22 @@ export async function completeJob(jobId: string, result: unknown) {
   return next;
 }
 
-export async function failJob(jobId: string, error: unknown) {
+export async function failJob(jobId: string, error: unknown, leaseToken?: string | null) {
+  if (transactionalStateMode() === 'postgres') {
+    const row = await transitionTransactionalJob({
+      id: jobId,
+      toStatus: 'failed',
+      leaseToken,
+      lastError: clean(error instanceof Error ? error.message : error,1200)
+    });
+    const job = jobFromRow(row);
+    await mirrorJob(job);
+    if (job) await recordJobEvent(job);
+    return job;
+  }
+
   const { jobs, scope } = stores();
-  const current = await readDurableJob(jobId);
+  const current = await readBlobJob(jobId);
   if (!current) return null;
   const now = new Date().toISOString();
   const next: DurableJob = {
@@ -330,6 +511,7 @@ export async function readJobHealth() {
     return {
       window: 'approximately last 2 UTC hours',
       storage_scope: scope.production ? 'production' : scope.prefix,
+      authoritative_state: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
       jobs_observed: current.length,
       status_counts,
       kind_counts,
@@ -339,6 +521,7 @@ export async function readJobHealth() {
   } catch {
     return {
       window: 'approximately last 2 UTC hours',
+      authoritative_state: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
       jobs_observed: 0,
       status_counts: {},
       kind_counts: {},
