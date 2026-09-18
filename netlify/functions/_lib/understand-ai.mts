@@ -1,4 +1,9 @@
 import { recordAIHealth, type AILane } from './ai-health-store.mts';
+import {
+  acquireProviderGuard,
+  releaseProviderGuard,
+  type ProviderGuardLease
+} from './provider-resilience.mts';
 
 export type UnderstandInput = {
   title: string;
@@ -279,7 +284,16 @@ async function callOpenRouter(input: UnderstandInput, apiKey: string, lane: AILa
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const started = Date.now();
     const timeout = timeoutSignal(lane === 'benchmark' ? 9000 : 10500);
+    let providerLease: ProviderGuardLease | null = null;
     try {
+      providerLease = await acquireProviderGuard({
+        service: 'ai',
+        provider: 'openrouter',
+        model: requestedModel,
+        operationId: 'story-understanding:' + lane + ':' + attempt,
+        leaseMs: 25000
+      });
+
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         signal: timeout.signal,
@@ -309,6 +323,8 @@ async function callOpenRouter(input: UnderstandInput, apiKey: string, lane: AILa
       const parsed = parseJson(body?.choices?.[0]?.message?.content);
       const data = sanitizeUnderstanding(parsed, input);
       const actualModel = String(body?.model || requestedModel);
+      await releaseProviderGuard(providerLease, { outcome: 'success' }).catch(() => null);
+      providerLease = null;
       await recordAIHealth({
         stage: 'story-understanding', lane, provider: 'openrouter', model: actualModel,
         ok: true, latency_ms: Date.now() - started
@@ -325,6 +341,10 @@ async function callOpenRouter(input: UnderstandInput, apiKey: string, lane: AILa
         }
       };
     } catch (error) {
+      if (providerLease) {
+        await releaseProviderGuard(providerLease, { outcome: 'failure', error }).catch(() => null);
+        providerLease = null;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       errors.push(`attempt ${attempt}: ${reason}`);
       await recordAIHealth({
@@ -342,7 +362,16 @@ async function callGroqProtected(input: UnderstandInput, apiKey: string): Promis
   const model = env('PARABLE_GROQ_MODEL') || 'openai/gpt-oss-120b';
   const started = Date.now();
   const timeout = timeoutSignal(9500);
+  let providerLease: ProviderGuardLease | null = null;
   try {
+    providerLease = await acquireProviderGuard({
+      service: 'ai',
+      provider: 'groq',
+      model,
+      operationId: 'story-understanding:protected:groq',
+      leaseMs: 25000
+    });
+
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST', signal: timeout.signal,
       headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
@@ -363,6 +392,8 @@ async function callGroqProtected(input: UnderstandInput, apiKey: string): Promis
     const body = await response.json().catch(() => ({})) as any;
     if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
     const data = sanitizeUnderstanding(parseJson(body?.choices?.[0]?.message?.content), input);
+    await releaseProviderGuard(providerLease, { outcome: 'success' }).catch(() => null);
+    providerLease = null;
     await recordAIHealth({ stage: 'story-understanding', lane: 'protected', provider: 'groq', model, ok: true, latency_ms: Date.now() - started });
     return {
       data,
@@ -372,6 +403,10 @@ async function callGroqProtected(input: UnderstandInput, apiKey: string): Promis
       }
     };
   } catch (error) {
+    if (providerLease) {
+      await releaseProviderGuard(providerLease, { outcome: 'failure', error }).catch(() => null);
+      providerLease = null;
+    }
     const reason = error instanceof Error ? error.message : String(error);
     await recordAIHealth({ stage: 'story-understanding', lane: 'protected', provider: 'groq', model, ok: false, latency_ms: Date.now() - started, error: reason });
     throw error;
