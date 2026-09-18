@@ -39,7 +39,16 @@ type Aggregate = {
   last_seen_at: string;
 };
 
-function healthStore() {
+function healthStore(lane: AILane = 'protected') {
+  // Synthetic benchmark telemetry is intentionally global so a long CI run
+  // is not split across deploy-scoped stores when the moving Deploy Preview
+  // alias advances to a newer commit. Benchmark events never contain
+  // manuscript/prompt text. Protected non-production telemetry stays scoped
+  // to its deploy so real test manuscripts cannot leak across previews.
+  if (lane === 'benchmark') {
+    return getStore('parable-ai-health-benchmark', { consistency: 'strong' });
+  }
+
   const production = Netlify.context?.deploy?.context === 'production';
   return production
     ? getStore('parable-ai-health', { consistency: 'strong' })
@@ -73,7 +82,7 @@ function hourPrefix(date: Date) {
 
 export async function recordAIHealth(event: HealthEvent) {
   try {
-    const store = healthStore();
+    const store = healthStore(event.lane);
     const now = new Date();
     const at = now.toISOString();
     const provider = clean(event.provider, 80) || 'unknown';
@@ -126,22 +135,28 @@ function aggregate(events: StoredEvent[]) {
 
 export async function readAIHealth() {
   try {
-    const store = healthStore();
     const now = new Date();
     const previousHour = new Date(now.getTime() - 60 * 60 * 1000);
     const prefixes = [...new Set([hourPrefix(now), hourPrefix(previousHour)])];
     const rows: StoredEvent[] = [];
-
-    for (const prefix of prefixes) {
-      const { blobs } = await store.list({ prefix });
-      const newest = blobs.slice(-300);
-      const values = await Promise.all(
-        newest.map(({ key }) => store.get(key, { type: 'json' }) as Promise<StoredEvent | null>)
-      );
-      rows.push(...values.filter(Boolean) as StoredEvent[]);
+    const stores = [healthStore('protected')];
+    if (Netlify.context?.deploy?.context === 'deploy-preview') {
+      stores.push(healthStore('benchmark'));
     }
 
-    const recent = rows
+    for (const store of stores) {
+      for (const prefix of prefixes) {
+        const { blobs } = await store.list({ prefix });
+        const newest = blobs.slice(-300);
+        const values = await Promise.all(
+          newest.map(({ key }) => store.get(key, { type: 'json' }) as Promise<StoredEvent | null>)
+        );
+        rows.push(...values.filter(Boolean) as StoredEvent[]);
+      }
+    }
+
+    const unique = [...new Map(rows.map((event) => [event.id, event])).values()];
+    const recent = unique
       .sort((a, b) => b.at.localeCompare(a.at))
       .slice(0, 200);
 
