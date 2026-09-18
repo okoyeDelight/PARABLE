@@ -10,7 +10,7 @@ import {
   providerTransactionErrorResponse
 } from './_lib/provider-transactions.mts';
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
-import { hydrateRenderSpecReferences } from './_lib/canon-assets.mts';
+import { hydrateRenderSpecReferencesWithRights } from './_lib/canon-assets.mts';
 import { hydrateKeyframeApprovalAsset } from './_lib/keyframe-assets.mts';
 import {
   appendRenderAttemptEvent,
@@ -41,7 +41,8 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
     };
   }
 
-  const hydratedSpec = await hydrateRenderSpecReferences(spec);
+  const hydrated = await hydrateRenderSpecReferencesWithRights(spec);
+  const hydratedSpec = hydrated.spec;
 
   const prepared = prepareRendererRequest({
     spec: hydratedSpec,
@@ -61,7 +62,11 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
     estimatedCostUsd: attempt.estimated_cost_usd
   });
 
-  const transaction = await beginProviderSubmission(transactionState.transaction.id, attempt.project_id);
+  const transaction = await beginProviderSubmission(
+    transactionState.transaction.id,
+    attempt.project_id,
+    hydrated.rights_assertions
+  );
 
   if (
     ['acknowledged','processing','settled'].includes(transaction.state) &&
