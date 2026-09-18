@@ -33,11 +33,16 @@ export type MotionFrameSet = {
   created_at: string;
 };
 
-function store() {
+function stores() {
   const production = Netlify.context?.deploy?.context === 'production';
-  return production
-    ? getStore('parable-motion-frame-sets', { consistency: 'strong' })
-    : getDeployStore('parable-motion-frame-sets');
+  const make = (name: string) => production
+    ? getStore(name, { consistency: 'strong' })
+    : getDeployStore(name);
+  return {
+    frameSets: make('parable-motion-frame-sets'),
+    evidence: make('parable-motion-evidence-assets'),
+    evidenceMeta: make('parable-motion-evidence-meta')
+  };
 }
 
 const clean = (value: unknown, max = 1800) =>
@@ -57,7 +62,7 @@ function key(attemptId: string) {
 }
 
 async function readCached(attempt: RenderAttempt) {
-  const cached = await store().get(key(attempt.id), { type: 'json' }) as MotionFrameSet | null;
+  const cached = await stores().frameSets.get(key(attempt.id), { type: 'json' }) as MotionFrameSet | null;
   if (!cached) return null;
   if (
     cached.attempt_id !== attempt.id ||
@@ -68,8 +73,67 @@ async function readCached(attempt: RenderAttempt) {
 }
 
 async function saveCached(value: MotionFrameSet) {
-  await store().setJSON(key(value.attempt_id), value);
+  await stores().frameSets.setJSON(key(value.attempt_id), value);
   return value;
+}
+
+async function sha256Bytes(bytes: Uint8Array) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function snapshotEvidenceFrame(args: {
+  uri: string;
+  attemptId: string;
+  index: number;
+}) {
+  const response = await fetch(args.uri, {
+    headers: { accept: 'image/*' },
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!response.ok) {
+    throw Object.assign(new Error('Could not snapshot extracted motion evidence frame: HTTP ' + response.status), {
+      retryableEvidence: response.status === 429 || response.status >= 500
+    });
+  }
+
+  const contentType = clean(response.headers.get('content-type'), 120).toLowerCase();
+  if (!/^image\/(jpeg|jpg|png|webp)(?:;|$)/i.test(contentType)) {
+    throw new Error('Motion evidence frame returned an unsupported content type.');
+  }
+
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (declared > 15 * 1024 * 1024) throw new Error('Motion evidence frame exceeds the 15 MB evidence limit.');
+
+  const buffer = await response.arrayBuffer();
+  if (!buffer.byteLength || buffer.byteLength > 15 * 1024 * 1024) {
+    throw new Error('Motion evidence frame is empty or exceeds the 15 MB evidence limit.');
+  }
+
+  const bytes = new Uint8Array(buffer);
+  const hash = await sha256Bytes(bytes);
+  const assetKey = 'frame/' + hash;
+
+  if (!await stores().evidence.getMetadata(assetKey)) {
+    await stores().evidence.set(assetKey, buffer, { onlyIfNew: true } as any);
+  }
+
+  await stores().evidenceMeta.setJSON('meta/' + hash, {
+    evidence_asset_version: 'parable-motion-evidence-asset-v1',
+    sha256: hash,
+    media_type: contentType.split(';')[0],
+    byte_length: buffer.byteLength,
+    attempt_id: args.attemptId,
+    frame_index: args.index,
+    source_uri: args.uri,
+    captured_at: new Date().toISOString()
+  });
+
+  return {
+    sha256: hash,
+    byte_length: buffer.byteLength,
+    media_type: contentType.split(';')[0]
+  };
 }
 
 function falUrls(endpoint: string, requestId: string) {
@@ -411,6 +475,23 @@ export async function extractMotionFrames(args: {
     result
   });
 
+  // Evidence is copied into PARABLE-owned content-addressed storage before QA.
+  // A later provider URL expiry or mutation therefore cannot destroy the audit
+  // trail used to accept the shot.
+  const snapshots = await Promise.all(
+    frameSet.frames.map((frame, index) =>
+      snapshotEvidenceFrame({
+        uri: frame.uri,
+        attemptId: args.attempt.id,
+        index
+      })
+    )
+  );
+  frameSet.frames = frameSet.frames.map((frame, index) => ({
+    ...frame,
+    sha256: snapshots[index].sha256
+  }));
+
   await saveCached(frameSet);
   await settleProviderTransaction({
     id: transaction.id,
@@ -424,5 +505,5 @@ export async function extractMotionFrames(args: {
 }
 
 export async function readMotionFrameSet(attemptId: string) {
-  return store().get(key(attemptId), { type: 'json' }) as Promise<MotionFrameSet | null>;
+  return stores().frameSets.get(key(attemptId), { type: 'json' }) as Promise<MotionFrameSet | null>;
 }
