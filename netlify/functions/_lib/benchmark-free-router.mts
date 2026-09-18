@@ -138,9 +138,13 @@ async function openRouterFree(
   // The free router's concrete backing model changes over time. Do not pin a free
   // slug here. Instead require native structured-output support and let OpenRouter
   // choose among the currently healthy free endpoints on every attempt.
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  // Keep every serverless benchmark invocation below the platform deadline.
+  // Provider retries happen at the workflow level too, so two bounded model
+  // attempts are safer than letting one Lambda sit idle until the edge returns
+  // a 502/504 without a usable diagnostic.
+  for (let attempt = 1; attempt <= 2; attempt++) {
     const started = Date.now();
-    const timeout = timeoutSignal(15000);
+    const timeout = timeoutSignal(8500);
     try {
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST', signal: timeout.signal,
@@ -153,7 +157,7 @@ async function openRouterFree(
         body: JSON.stringify({
           model: 'openrouter/free',
           temperature: 0.1,
-          max_tokens: 1800,
+          max_tokens: stage === 'story-understanding' ? 1200 : 1000,
           messages,
           response_format: { type: 'json_schema', json_schema: { name: schemaName, strict: true, schema } },
           provider: { require_parameters: true, allow_fallbacks: true, sort: { by: 'throughput', partition: 'none' } }
