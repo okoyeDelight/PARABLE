@@ -41,6 +41,22 @@ export type MotionInspectionReport = {
   asset_uri: string;
   sample_set_hash: string;
   frame_count: number;
+  evidence_manifest: Array<{
+    uri: string;
+    timestamp_seconds: number;
+    sha256: string | null;
+    role: 'first' | 'sample' | 'handoff';
+  }>;
+  first_sample: {
+    uri: string;
+    timestamp_seconds: number;
+    sha256: string | null;
+  } | null;
+  handoff_sample: {
+    uri: string;
+    timestamp_seconds: number;
+    sha256: string | null;
+  } | null;
   coverage: {
     duration_seconds: number;
     first_timestamp: number;
@@ -255,6 +271,22 @@ function unavailable(input:InspectInput,evidence:ReturnType<typeof validateMotio
     asset_uri:input.attempt.asset_uri || '',
     sample_set_hash:'',
     frame_count:evidence.frames.length,
+    evidence_manifest:evidence.frames.map((frame,index)=>({
+      uri:frame.uri,
+      timestamp_seconds:frame.timestamp_seconds,
+      sha256:frame.sha256||null,
+      role:(frame.role||(index===0?'first':index===evidence.frames.length-1?'handoff':'sample')) as 'first'|'sample'|'handoff'
+    })),
+    first_sample:evidence.frames.length?{
+      uri:evidence.frames[0].uri,
+      timestamp_seconds:evidence.frames[0].timestamp_seconds,
+      sha256:evidence.frames[0].sha256||null
+    }:null,
+    handoff_sample:evidence.frames.length?{
+      uri:evidence.frames[evidence.frames.length-1].uri,
+      timestamp_seconds:evidence.frames[evidence.frames.length-1].timestamp_seconds,
+      sha256:evidence.frames[evidence.frames.length-1].sha256||null
+    }:null,
     coverage:{
       duration_seconds:evidence.duration_seconds,
       first_timestamp:evidence.first_timestamp,
@@ -382,6 +414,22 @@ function sanitize(
     asset_uri:input.attempt.asset_uri || '',
     sample_set_hash:sampleSetHash,
     frame_count:evidence.frames.length,
+    evidence_manifest:evidence.frames.map((frame,index)=>({
+      uri:frame.uri,
+      timestamp_seconds:frame.timestamp_seconds,
+      sha256:frame.sha256||null,
+      role:(frame.role||(index===0?'first':index===evidence.frames.length-1?'handoff':'sample')) as 'first'|'sample'|'handoff'
+    })),
+    first_sample:evidence.frames.length?{
+      uri:evidence.frames[0].uri,
+      timestamp_seconds:evidence.frames[0].timestamp_seconds,
+      sha256:evidence.frames[0].sha256||null
+    }:null,
+    handoff_sample:evidence.frames.length?{
+      uri:evidence.frames[evidence.frames.length-1].uri,
+      timestamp_seconds:evidence.frames[evidence.frames.length-1].timestamp_seconds,
+      sha256:evidence.frames[evidence.frames.length-1].sha256||null
+    }:null,
     coverage:{
       duration_seconds:evidence.duration_seconds,
       first_timestamp:evidence.first_timestamp,
