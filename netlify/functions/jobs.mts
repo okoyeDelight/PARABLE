@@ -4,7 +4,6 @@ import {
   failJob,
   markJobQueued,
   readDurableJob,
-  readJobResult,
   type JobKind
 } from './_lib/job-store.mts';
 
