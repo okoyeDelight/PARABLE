@@ -23,14 +23,20 @@ PARABLE should not simply generate *for* a place or audience. It should understa
 
 ## Current checkpoint
 
-**Day 1 — Studio foundation**
+**Story Intelligence V8 + Continuity Brain V1 — September 18, 2026**
 
-- Real Postgres-backed project storage
-- New Story workflow
-- Audience scope: global / regional / local
-- Story period: present / historical / future
-- Living-context foundations
-- Seven independent engine modules
-- Premium cinematic writer workspace
+The `immersive-v2` branch now includes:
 
-Day 1 checkpoint: September 16, 2026.
+- protected manuscript routing with privacy-preserving provider failover
+- Story Understanding before adaptation
+- screenplay / shot-plan generation
+- Film Quality Critic and provider health telemetry
+- Production Bible persistence
+- a provider-independent Continuity Brain
+- scene-by-scene world-state memory for characters, wardrobe, emotion, location, props, relationships, timeline, knowledge and theology flags
+- continuity conflict detection before render
+- compact continuity context for later directing/render stages
+
+The next build step is to connect automatic scene-state extraction and render handoff so every generated shot receives the exact established world state instead of treating each scene as a new prompt.
+
+`main` remains unchanged until the `immersive-v2` checkpoint is deliberately approved and merged.
