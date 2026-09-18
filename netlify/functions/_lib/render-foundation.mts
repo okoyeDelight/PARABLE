@@ -20,6 +20,25 @@ export type CanonReference = {
   rights_status: RightsStatus;
   approved_by_human: boolean;
   source: 'continuity-lock' | 'human-upload' | 'generated' | 'external';
+  render_usage?:
+    | 'identity'
+    | 'performance'
+    | 'wardrobe'
+    | 'location'
+    | 'production-design'
+    | 'visual-style'
+    | 'inspiration-only'
+    | 'benchmark-only';
+  origin?:
+    | 'owned'
+    | 'licensed'
+    | 'generated'
+    | 'official-media'
+    | 'public-domain'
+    | 'unknown';
+  source_title?: string;
+  source_creator?: string;
+  source_url?: string;
   notes?: string;
 };
 
@@ -134,6 +153,7 @@ export type ShotRenderSpec = {
     continuity_after: unknown;
   };
   references: CanonReference[];
+  inspiration_references?: CanonReference[];
   hard_constraints: Record<string, boolean>;
   negative_constraints: string[];
   output: {
@@ -283,6 +303,18 @@ function referencesFromFacts(entity: any): CanonReference[] {
       rights_status: 'unverified',
       approved_by_human: Boolean(fact?.locked && fact?.basis === 'human'),
       source: 'continuity-lock',
+      render_usage: kind === 'actor-face' || kind === 'actor-visual'
+        ? 'identity'
+        : kind === 'voice' || kind === 'performance'
+          ? 'performance'
+          : kind === 'wardrobe'
+            ? 'wardrobe'
+            : kind.startsWith('location-')
+              ? 'location'
+              : kind === 'prop-visual'
+                ? 'production-design'
+                : 'visual-style',
+      origin: 'unknown',
       notes: fact?.note ? clean(fact.note, 500) : undefined
     });
   }
@@ -539,7 +571,13 @@ export async function compileShotRenderSpec(args: {
 }) {
   const pkg = args.renderPackage || {};
   const shot = pkg.shot || {};
-  const references = allCanonReferences(args.canon).filter((ref) => ref.approved_by_human);
+  const allReferences = allCanonReferences(args.canon).filter((ref) => ref.approved_by_human);
+  const inspirationReferences = allReferences.filter((ref) =>
+    ref.render_usage === 'inspiration-only' || ref.render_usage === 'benchmark-only'
+  );
+  const references = allReferences.filter((ref) =>
+    ref.render_usage !== 'inspiration-only' && ref.render_usage !== 'benchmark-only'
+  );
   const rightsIssues = references.filter((ref) => ref.rights_status !== 'approved');
 
   const dramaticPurpose = clean(shot?.purpose || shot?.dramatic_purpose || shot?.beat, 1000);
@@ -587,6 +625,7 @@ export async function compileShotRenderSpec(args: {
       continuity_after: pkg.continuity_after || null
     },
     references,
+    inspiration_references: inspirationReferences,
     hard_constraints: {
       ...(pkg.hard_constraints || {}),
       preserve_visual_canon: true,
