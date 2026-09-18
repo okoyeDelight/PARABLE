@@ -71,7 +71,8 @@ export default async (request: Request) => {
     deployment: {
       commit_ref: Netlify.env.get('COMMIT_REF') || null,
       deploy_id: Netlify.env.get('DEPLOY_ID') || null,
-      deploy_url: Netlify.env.get('DEPLOY_PRIME_URL') || null
+      deploy_url: Netlify.env.get('DEPLOY_PRIME_URL') || null,
+      immutable_url: Netlify.env.get('DEPLOY_URL') || Netlify.env.get('DEPLOY_PRIME_URL') || null
     },
     measured_at: new Date().toISOString(),
     response_ms: Date.now() - started
