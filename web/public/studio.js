@@ -153,10 +153,52 @@ async function createProject(payload){
   return body;
 }
 
+async function stableIdempotencyKey(value){
+  const bytes=new TextEncoder().encode(value);
+  const digest=await crypto.subtle.digest('SHA-256',bytes);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,48);
+}
+
+async function waitForJob(jobId,{timeoutMs=180000,onProgress}={}){
+  const started=Date.now();
+  let delay=700;
+  while(Date.now()-started<timeoutMs){
+    const r=await fetch('/api/jobs?id='+encodeURIComponent(jobId),{cache:'no-store'});
+    const body=await r.json();if(!r.ok)throw new Error(body.error||'Could not read production job');
+    const status=body.job?.status||'queued';
+    onProgress?.(status,body.job);
+    if(status==='succeeded'){
+      if(!body.result)throw new Error('Production completed without a result.');
+      return body.result;
+    }
+    if(status==='failed')throw new Error(body.job?.last_error||'Production job failed.');
+    await new Promise(resolve=>setTimeout(resolve,delay));
+    delay=Math.min(2500,Math.round(delay*1.25));
+  }
+  throw new Error('Production is still processing. You can safely retry; PARABLE will reuse the same job.');
+}
+
 async function adaptProject(payload,projectId){
-  const r=await fetch('/api/adapt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,projectId})});
-  const body=await r.json();if(!r.ok)throw new Error(body.error||'Story Intelligence could not complete this pass');
-  return body;
+  const jobPayload={...payload,projectId};
+  const idempotencyKey=await stableIdempotencyKey(JSON.stringify({
+    projectId,
+    title:payload.title||'',
+    sourceText:payload.sourceText||'',
+    setting:payload.setting||'',
+    primaryAudience:payload.primaryAudience||''
+  }));
+  const r=await fetch('/api/jobs',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Idempotency-Key':idempotencyKey},
+    body:JSON.stringify({kind:'adaptation',payload:jobPayload})
+  });
+  const body=await r.json();if(!r.ok)throw new Error(body.error||'Story Intelligence could not be queued');
+  return waitForJob(body.job.id,{
+    onProgress:(status)=>{
+      if(status==='queued')$('#formNote').textContent='Production queued safely. PARABLE is preparing Story Intelligence…';
+      if(status==='processing')$('#formNote').textContent='Story Intelligence is processing. You can stay on this screen; the work is durable.';
+    }
+  });
 }
 
 async function runDirectorCritic(){
