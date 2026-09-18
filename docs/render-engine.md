@@ -1,4 +1,4 @@
-# PARABLE Render Engine — Foundation V1
+# PARABLE Render Engine — Foundation V1.1
 
 PARABLE's Render Engine is the bridge between the production brain and external image/video models.
 
@@ -124,6 +124,113 @@ The plan includes:
 - acceptance checklist.
 
 This protects cost and continuity: a bad still/anchor concept should be corrected before spending more money generating motion.
+
+## 4.1 Persisted human approval gate
+
+Endpoints:
+
+- `POST /api/keyframe-approval`
+- `GET /api/keyframe-approval`
+
+The keyframe plan is no longer advisory.
+
+A final-motion attempt can be created only when PARABLE has an authoritative human approval record for:
+
+- the exact project/story/scene/shot;
+- the exact `ShotRenderSpec.spec_hash`;
+- the exact keyframe-plan hash;
+- one immutably bound image asset;
+- all first-frame canon checks.
+
+Approvals are immutable project artifacts referenced by the authoritative project revision head.
+
+Revoking the approval immediately locks final motion again.
+
+The dispatcher re-reads the approval immediately before the provider call. If the approval record, image URI or plan hash changed after the attempt was created, dispatch is refused and a new attempt must be created. This prevents a time-of-check/time-of-use race from spending money on a stale or swapped frame.
+
+## 4.2 Durable first-frame generation
+
+Endpoints:
+
+- `POST /api/jobs` with `kind=keyframe-generate`
+- internal worker target: `POST /api/keyframe-generate`
+- immutable asset delivery: `GET /api/keyframe-asset?id=<sha256>`
+
+First-frame generation is deliberately a durable billable job rather than a browser request.
+
+The generator:
+
+- requires an exact compiled ShotRenderSpec and KeyframePlan;
+- refuses unresolved production-rights/human-review blockers;
+- uses an idempotency key through PARABLE's durable queue;
+- limits first-frame generations per shot;
+- sends only rights-approved production references to the image model;
+- keeps inspiration-only movie frames out of model identity inputs;
+- stores the returned image as a content-addressed immutable asset;
+- records the provider-reported cost when available;
+- returns the SHA-256 and immutable asset URL;
+- never auto-approves the frame.
+
+The current image path uses OpenRouter's unified image API with a configurable model. The default development model is `google/gemini-3.1-flash-image`. Provider routing requests no-data-collection / ZDR-compatible handling; if the provider cannot satisfy the required policy, PARABLE fails closed instead of silently relaxing it.
+
+## 4.3 Protected Visual Inspector
+
+Endpoint:
+
+`POST /api/keyframe-inspect`
+
+The Visual Inspector checks a candidate before a human decides whether it becomes canon.
+
+It can evaluate, where evidence is actually available:
+
+- identity continuity;
+- wardrobe and visible injuries;
+- props;
+- spatial geography;
+- composition;
+- lighting;
+- cultural grounding;
+- technical defects;
+- image artifacts.
+
+The inspector explicitly supports `not_assessable` rather than inventing confidence.
+
+Its decisions are:
+
+- `CLEAR_FOR_HUMAN_REVIEW`;
+- `REPAIR_BEFORE_REVIEW`;
+- `INSPECTOR_UNAVAILABLE`.
+
+It never produces a human approval.
+
+If it returns `REPAIR_BEFORE_REVIEW`, PARABLE blocks approval unless a human explicitly overrides that exact report and writes a reviewer note. The override is stored in the approval provenance.
+
+## 4.4 Christian-film inspiration library and likeness boundary
+
+PARABLE can learn from Christian cinema — including frames supplied from official Mount Zion / other Christian-film sources — without treating an unlicensed actor face as production identity.
+
+Visual Canon references now distinguish:
+
+- `identity`;
+- `performance`;
+- `wardrobe`;
+- `location`;
+- `production-design`;
+- `visual-style`;
+- `inspiration-only`;
+- `benchmark-only`.
+
+An external/official-media actor image can be stored as `inspiration-only` even when exact likeness rights have not been granted. PARABLE may derive transferable notes about performance restraint, grooming/silhouette, costume language, composition, lighting, color, production design and observable cultural details.
+
+The original image is not sent to the final renderer as an identity reference.
+
+Endpoint:
+
+`POST /api/jobs` with `kind=reference-profile`
+
+The durable reference profiler creates a non-identifying cinematic-DNA profile and explicitly records what not to copy.
+
+If a production later obtains permission/license for an actor's likeness, the same reference can be deliberately promoted into the identity lane with `rights_status=approved`. Until then, PARABLE synthesizes a distinct actor identity.
 
 ## 5. Render Router
 
@@ -290,9 +397,9 @@ Foundation V1 is not the finished autonomous film studio.
 
 The highest-value next layers are:
 
-1. automated frame/video Visual Inspector;
-2. keyframe image generation + human approval UI;
-3. model benchmark suite using difficult PARABLE shots;
+1. automated full-video Visual Inspector with sampled-frame and motion evidence;
+2. image-model benchmark suite using difficult PARABLE first-frame shots;
+3. human-review gallery for multiple keyframe candidates;
 4. room topology / 180-degree camera axis memory;
 5. sequence-level QA between the previous shot's last frame and the next shot's first frame;
 6. dedicated dialogue / ambience / Foley / music stems;
