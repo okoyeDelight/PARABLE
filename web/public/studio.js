@@ -112,11 +112,14 @@ function selectShot(shot){
 function renderDirect(data){
   $('#projectBadge').textContent=currentProjectId?`PROJECT · ${currentProjectId.slice(-6).toUpperCase()}`:'LIVE PROJECT';
   const shots=data.shot_plan||[];
-  $('#shotBrowser').innerHTML=shots.map((shot,index)=>`<button type="button" class="shot-item${index===1?' is-active':''}" data-shot="${escapeHtml(shot.id)}"><small>${escapeHtml(shot.id.replace('_',' ').toUpperCase())}</small><b>${escapeHtml(shot.shot_size)}</b></button>`).join('');
-  $$('.shot-item').forEach(btn=>btn.addEventListener('click',()=>{
+  $('#shotBrowser').innerHTML=shots.map((shot,index)=>`<button type="button" class="shot-item${index===0?' is-active':''}" data-shot="${escapeHtml(shot.id)}"><small>${escapeHtml(shot.id.replace('_',' ').toUpperCase())}</small><b>${escapeHtml(shot.shot_size)}</b></button>`).join('');
+  $('.shot-item').forEach(btn=>btn.addEventListener('click',()=>{
     const shot=shots.find(s=>s.id===btn.dataset.shot);if(shot)selectShot(shot);
   }));
-  if(shots.length)selectShot(shots[1]||shots[0]);
+  // Production starts at Shot 1. Later shots may require an accepted previous-shot
+  // handoff, so preselecting Shot 2 created a false-looking "continuity failure"
+  // before the user had rendered anything.
+  if(shots.length)selectShot(shots[0]);
 }
 
 function resetCritic(){
@@ -915,10 +918,26 @@ async function prepareSelectedShotForRender(){
     if(err.status===409&&err.body?.code==='PROJECT_REVISION_CONFLICT'){
       await refreshProjectRevision();
       $('#renderState').textContent='The project changed during preparation. PARABLE protected the newer revision; run Prepare selected shot again.';
+    }else if(err.status===409&&err.body?.code==='CONTINUITY_GATE_BLOCKED'){
+      const blockers=Array.isArray(err.body?.blockers)?err.body.blockers:[];
+      const handoff=blockers.find(item=>['PREVIOUS_RENDER_HANDOFF_REQUIRED','PREVIOUS_HANDOFF_FRAME_REQUIRED'].includes(String(item?.code||'')));
+      const spatial=blockers.find(item=>['SPATIAL_PLAN_BLOCKED','SPATIAL_PLAN_APPROVAL_REQUIRED'].includes(String(item?.code||'')));
+      if(handoff){
+        $('#renderState').textContent=(handoff.message||'This shot depends on the previous shot.')+' Start with Shot 1, approve its first frame/final handoff, then continue forward in sequence.';
+      }else if(spatial){
+        $('#renderState').textContent=(spatial.message||'Spatial continuity needs review.')+' PARABLE is intentionally blocking final rendering until the camera-axis/spatial plan is approved.';
+      }else if(blockers.length){
+        $('#renderState').textContent='Continuity found a real blocker: '+(blockers[0]?.message||blockers[0]?.code||'Review the continuity state before rendering.');
+      }else{
+        const unchecked=Array.isArray(err.body?.unchecked_shots)?err.body.unchecked_shots.filter(Boolean):[];
+        $('#renderState').textContent=unchecked.length
+          ?'Continuity is still building for '+unchecked.join(', ')+'. Prepare the shots in order, starting from Shot 1.'
+          :(err.message||'This shot has not passed the continuity gate.');
+      }
     }else{
       $('#renderState').textContent=err.message||'Render preparation failed.';
     }
-    showToast(err.message||'Render preparation failed.');
+    showToast($('#renderState').textContent||err.message||'Render preparation failed.');
   }finally{
     if(button)button.disabled=false;
   }
