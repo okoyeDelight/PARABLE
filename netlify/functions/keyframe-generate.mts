@@ -3,10 +3,20 @@ import {
   listShotKeyframeGenerations,
   readKeyframeGeneration,
   saveKeyframeAsset,
+  signedKeyframeAssetUrl,
   saveKeyframeGeneration
 } from './_lib/keyframe-assets.mts';
 import { readKeyframePlan, readRenderSpec } from './_lib/render-store.mts';
 import { hydrateRenderSpecReferences } from './_lib/canon-assets.mts';
+import {
+  acknowledgeProviderSubmission,
+  beginProviderSubmission,
+  ensureProviderTransaction,
+  failProviderTransaction,
+  markProviderSubmissionAmbiguous,
+  settleProviderTransaction
+} from './_lib/provider-transactions.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -30,12 +40,6 @@ function classifyStatus(status: number) {
   if (status === 401 || status === 403) return 'auth';
   if (status >= 500) return 'upstream-5xx';
   return 'provider-rejected';
-}
-
-function assetUrl(request: Request, hash: string) {
-  const url = new URL('/api/keyframe-asset', request.url);
-  url.searchParams.set('id', hash);
-  return url.toString();
 }
 
 export default async (request: Request) => {
@@ -68,6 +72,20 @@ export default async (request: Request) => {
 
   if (![projectId, storyVersion, sceneId, shotId, specHash].every((value) => value && safeId(value))) {
     return json({ error: 'Valid projectId, storyVersion, sceneId, shotId and specHash are required.' }, 400);
+  }
+
+  try {
+    const access = await authorizeProject(request, projectId, 'render:spend');
+    if (!access.actor.internal) {
+      return json({
+        error: 'Billable keyframe generation can only be executed by a trusted PARABLE worker.',
+        code: 'INTERNAL_RENDER_WORKER_REQUIRED'
+      }, 403);
+    }
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
   }
 
   const [spec, keyframePlan] = await Promise.all([
@@ -181,17 +199,80 @@ export default async (request: Request) => {
       requestBody.input_references = generationPlan.input_references;
     }
 
-    const response = await fetch('https://openrouter.ai/api/v1/images', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        authorization: 'Bearer ' + apiKey,
-        'content-type': 'application/json',
-        'HTTP-Referer': Netlify.env.get('PARABLE_PUBLIC_URL') || 'https://parable-studio.netlify.app',
-        'X-OpenRouter-Title': 'PARABLE Keyframe Generator'
-      },
-      body: JSON.stringify(requestBody)
+    const transactionState = await ensureProviderTransaction({
+      projectId,
+      operationType: 'keyframe-image-generation',
+      operationId: jobId,
+      provider: 'openrouter',
+      model,
+      requestBody,
+      estimatedCostUsd: null
     });
+    const transaction = await beginProviderSubmission(transactionState.transaction.id);
+
+    if (['acknowledged','processing','settled'].includes(transaction.state)) {
+      return json({
+        error: 'This keyframe provider transaction already reached the provider. PARABLE will not submit it again.',
+        code: 'KEYFRAME_PROVIDER_ALREADY_SUBMITTED',
+        retryable: false,
+        provider_transaction: transaction
+      }, 409);
+    }
+
+    let response: Response;
+    try {
+      response = await fetch('https://openrouter.ai/api/v1/images', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          authorization: 'Bearer ' + apiKey,
+          'content-type': 'application/json',
+          'HTTP-Referer': Netlify.env.get('PARABLE_PUBLIC_URL') || 'https://parable-studio.netlify.app',
+          'X-OpenRouter-Title': 'PARABLE Keyframe Generator'
+        },
+        body: JSON.stringify(requestBody)
+      });
+    } catch (error) {
+      const reason = clean(error instanceof Error ? error.message : error, 1000) || 'Image provider connection failed.';
+      const ambiguous = await markProviderSubmissionAmbiguous({
+        id: transaction.id,
+        detail: reason
+      });
+      const failed = {
+        generation_version: 'parable-keyframe-generation-v1',
+        id: jobId,
+        project_id: projectId,
+        story_version: storyVersion,
+        scene_id: sceneId,
+        shot_id: shotId,
+        spec_hash: spec.spec_hash,
+        status: 'failed',
+        provider: 'openrouter',
+        model,
+        reference_ids: generationPlan.reference_ids,
+        inspiration_note_count: generationPlan.inspiration_notes.length,
+        asset_uri: null,
+        content_sha256: null,
+        media_type: null,
+        actual_cost_usd: null,
+        usage: null,
+        latency_ms: Date.now() - startedMs,
+        started_at: startedAt,
+        completed_at: new Date().toISOString(),
+        error_class: 'ambiguous-submission',
+        error: reason,
+        provider_transaction_id: transaction.id
+      };
+      await saveKeyframeGeneration(failed);
+
+      return json({
+        error: 'The image provider may already have received this paid request. PARABLE locked it instead of retrying automatically.',
+        code: 'PROVIDER_SUBMISSION_AMBIGUOUS',
+        retryable: false,
+        provider_transaction: ambiguous,
+        generation: failed
+      }, 409);
+    }
 
     const result = await response.json().catch(() => ({})) as Record<string, any>;
     if (!response.ok) {
@@ -199,6 +280,53 @@ export default async (request: Request) => {
         result?.error?.message || result?.message || result?.detail || ('HTTP ' + response.status),
         1000
       );
+
+      if (response.status >= 500) {
+        const ambiguous = await markProviderSubmissionAmbiguous({
+          id: transaction.id,
+          detail: reason || ('HTTP ' + response.status)
+        });
+        const failed = {
+          generation_version: 'parable-keyframe-generation-v1',
+          id: jobId,
+          project_id: projectId,
+          story_version: storyVersion,
+          scene_id: sceneId,
+          shot_id: shotId,
+          spec_hash: spec.spec_hash,
+          status: 'failed',
+          provider: 'openrouter',
+          model,
+          reference_ids: generationPlan.reference_ids,
+          inspiration_note_count: generationPlan.inspiration_notes.length,
+          asset_uri: null,
+          content_sha256: null,
+          media_type: null,
+          actual_cost_usd: money(result?.usage?.cost),
+          usage: result?.usage || null,
+          latency_ms: Date.now() - startedMs,
+          started_at: startedAt,
+          completed_at: new Date().toISOString(),
+          error_class: 'ambiguous-submission',
+          error: reason,
+          provider_transaction_id: transaction.id
+        };
+        await saveKeyframeGeneration(failed);
+        return json({
+          error: 'The image provider returned an uncertain server response after submission. PARABLE will not auto-retry.',
+          code: 'PROVIDER_SUBMISSION_AMBIGUOUS',
+          retryable: false,
+          provider_transaction: ambiguous,
+          generation: failed
+        }, 409);
+      }
+
+      await failProviderTransaction({
+        id: transaction.id,
+        failureClass: classifyStatus(response.status),
+        failureDetail: reason,
+        actualCostUsd: money(result?.usage?.cost)
+      }).catch(() => null);
       const failed = {
         generation_version: 'parable-keyframe-generation-v1',
         id: jobId,
@@ -232,14 +360,28 @@ export default async (request: Request) => {
           : response.status === 429
             ? 'KEYFRAME_PROVIDER_RATE_LIMITED'
             : 'KEYFRAME_PROVIDER_FAILED',
-        retryable: response.status === 429 || response.status >= 500,
+        retryable: false,
         generation: failed
-      }, response.status === 429 || response.status >= 500 ? 503 : 422);
+      }, response.status === 429 ? 429 : 422);
     }
+
+    const providerRequestId = clean(result?.id || result?.request_id, 400) || ('openrouter-sync:' + jobId);
+    const acknowledged = await acknowledgeProviderSubmission({
+      id: transaction.id,
+      providerRequestId
+    });
 
     const item = Array.isArray(result?.data) ? result.data[0] : null;
     const base64 = clean(item?.b64_json, 50_000_000);
-    if (!base64) throw new Error('Image provider returned no base64 image payload.');
+    if (!base64) {
+      await failProviderTransaction({
+        id: transaction.id,
+        failureClass: 'provider-malformed-success',
+        failureDetail: 'Image provider returned success without image bytes.',
+        actualCostUsd: money(result?.usage?.cost)
+      }).catch(() => null);
+      throw new Error('Image provider returned no base64 image payload.');
+    }
 
     const mediaType = clean(item?.media_type || 'image/png', 80);
     const actualCostUsd = money(result?.usage?.cost);
@@ -269,7 +411,12 @@ export default async (request: Request) => {
       model: String(result?.model || model),
       reference_ids: generationPlan.reference_ids,
       inspiration_note_count: generationPlan.inspiration_notes.length,
-      asset_uri: assetUrl(request, asset.sha256),
+      asset_uri: await signedKeyframeAssetUrl({
+        projectId,
+        hash: asset.sha256,
+        purpose: 'preview',
+        ttlSeconds: 900
+      }),
       content_sha256: asset.sha256,
       immutable_binding: true,
       media_type: asset.media_type,
@@ -280,9 +427,15 @@ export default async (request: Request) => {
       completed_at: new Date().toISOString(),
       error_class: null,
       error: null,
+      provider_transaction_id: transaction.id,
       human_approval_required: true,
       next_action: 'POST /api/keyframe-inspect, then human review via /api/keyframe-approval'
     };
+
+    await settleProviderTransaction({
+      id: transaction.id,
+      actualCostUsd
+    }).catch(() => null);
 
     await saveKeyframeGeneration(candidate);
     return json({
