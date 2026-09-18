@@ -121,7 +121,7 @@ async function hmacHex(secret: string, value: string) {
   return [...new Uint8Array(signature)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function providerErrorCode(body: any, status: number) {
+function providerErrorCode(action: string, body: any, status: number) {
   const text = [
     body?.message,
     body?.details,
@@ -139,6 +139,18 @@ function providerErrorCode(body: any, status: number) {
   if (/JOB_NOT_PROCESSING/i.test(text)) return 'JOB_NOT_PROCESSING';
   if (/RUNTIME_REPLAY_REJECTED/i.test(text)) return 'RUNTIME_REPLAY_REJECTED';
   if (/RUNTIME_SIGNATURE|RUNTIME_REQUEST_EXPIRED/i.test(text)) return 'RUNTIME_AUTH_REJECTED';
+
+  // PostgREST can normalize SQLSTATE 40001 into a generic serialization error
+  // and hide our custom message. Recover the semantic conflict from the signed
+  // RPC action so callers can still fail closed for the correct reason.
+  if (String(body?.code || '') === '40001') {
+    if (action === 'commit_project_mutation') return 'PROJECT_REVISION_CONFLICT';
+    if (action === 'ensure_provider_transaction') return 'PROVIDER_TRANSACTION_REQUEST_CONFLICT';
+    if (action === 'transition_provider_transaction') return 'PROVIDER_TRANSACTION_STATE_CONFLICT';
+    if (action === 'ensure_job') return 'JOB_IDEMPOTENCY_CONFLICT';
+    if (action === 'transition_job') return 'JOB_STATE_CONFLICT';
+  }
+
   if (/lock timeout|statement timeout|canceling statement/i.test(text)) return 'TRANSACTIONAL_STATE_CONTENTION_TIMEOUT';
   if (status === 429) return 'TRANSACTIONAL_STATE_RATE_LIMITED';
   if (status >= 500) return 'TRANSACTIONAL_STATE_UPSTREAM_FAILED';
@@ -188,7 +200,7 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
 
   const body = await response.json().catch(() => null) as any;
   if (!response.ok) {
-    const code = providerErrorCode(body, response.status);
+    const code = providerErrorCode(action, body, response.status);
     const message = clean(body?.message || body?.error || 'Transactional state request failed.', 1200);
     const conflictCodes = new Set([
       'PROJECT_REVISION_CONFLICT',
@@ -197,6 +209,7 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
       'JOB_IDEMPOTENCY_CONFLICT',
       'JOB_LEASE_MISMATCH',
       'JOB_NOT_PROCESSING',
+      'JOB_STATE_CONFLICT',
       'RIGHTS_ASSERTION_FAILED',
       'RIGHTS_RESTORE_REQUIRES_EXPLICIT_WORKFLOW'
     ]);
