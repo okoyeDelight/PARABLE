@@ -9,6 +9,7 @@ on:
       - 'netlify/functions/scene-state.mts'
       - 'netlify/functions/shot-state.mts'
       - 'netlify/functions/render-context.mts'
+      - 'netlify/functions/_lib/spatial-continuity.mts'
       - 'tools/continuity_v4_smoke.mts'
       - '.github/workflows/continuity-v4-smoke.yml'
   workflow_dispatch:
