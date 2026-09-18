@@ -8,6 +8,14 @@ import {
   type ContinuitySnapshot
 } from './_lib/continuity-core.mts';
 import { runContinuityExtraction } from './_lib/continuity-ai.mts';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  readProjectRevision,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -115,7 +123,25 @@ export default async (request: Request) => {
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
 
   const s = stores();
-  const project = await s.projects.get('project/' + projectId, { type: 'json' }) as Record<string, any> | null;
+  const startingRevision = await readProjectRevision(projectId);
+  const explicitExpectedRevision = Number.isFinite(Number(body.expectedProjectRevision))
+    ? Number(body.expectedProjectRevision)
+    : null;
+
+  if (explicitExpectedRevision !== null && explicitExpectedRevision !== startingRevision.revision) {
+    return json({
+      error: 'The project changed before scene continuity started.',
+      code: 'PROJECT_REVISION_CONFLICT',
+      expected_revision: explicitExpectedRevision,
+      current_revision: startingRevision.revision,
+      retryable: true
+    }, 409);
+  }
+
+  const project = await s.projects.get('project/' + projectId, {
+    type: 'json',
+    consistency: 'strong'
+  } as any) as Record<string, any> | null;
   const adaptation = await latestAdaptation(projectId);
 
   const storyVersion = oneLine(
@@ -139,6 +165,9 @@ export default async (request: Request) => {
     }, 400);
   }
 
+  const mode = oneLine(body.mode || 'apply', 20).toLowerCase();
+  if (!['apply', 'check'].includes(mode)) return json({ error: 'mode must be apply or check.' }, 400);
+
   const continuity = await loadOrBootstrap(projectId, storyVersion, body.productionBible);
   if (!continuity) {
     return json({
@@ -156,10 +185,36 @@ export default async (request: Request) => {
     continuity
   });
 
-  const mode = oneLine(body.mode || 'apply', 20).toLowerCase();
-  if (!['apply', 'check'].includes(mode)) return json({ error: 'mode must be apply or check.' }, 400);
+  let lease: ProjectMutationLease | null = null;
+  let continuityBefore = upgradeContinuitySnapshot(continuity);
 
-  const continuityBefore = upgradeContinuitySnapshot(continuity);
+  if (mode === 'apply') {
+    try {
+      lease = await acquireProjectMutation({
+        projectId,
+        mutationType: 'scene-continuity',
+        expectedRevision: explicitExpectedRevision ?? startingRevision.revision,
+        ttlMs: 30000
+      });
+
+      const latest = await s.continuity.get('project/' + projectId + '/latest', {
+        type: 'json',
+        consistency: 'strong'
+      } as any) as ContinuitySnapshot | null;
+      if (latest) continuityBefore = upgradeContinuitySnapshot(latest);
+    } catch (error) {
+      const handled = projectMutationErrorResponse(error);
+      if (handled) {
+        return json({
+          ...handled.body,
+          retryable: true,
+          scene_id: sceneId
+        }, handled.status);
+      }
+      throw error;
+    }
+  }
+
   const evaluated = evaluateAndApplyScene(continuityBefore, extraction.scene, { apply: mode === 'apply' });
   const snapshot = evaluated.snapshot;
   const renderContract = buildRenderContinuityContract(snapshot, sceneId);
@@ -188,24 +243,47 @@ export default async (request: Request) => {
   };
 
   if (mode === 'apply') {
-    await Promise.all([
-      saveContinuity(snapshot),
-      s.sceneStates.setJSON('project/' + projectId + '/' + storyVersion + '/' + sceneId, result),
-      s.sceneStates.setJSON('project/' + projectId + '/latest/' + sceneId, result)
-    ]);
+    try {
+      await Promise.all([
+        saveContinuity(snapshot),
+        s.sceneStates.setJSON('project/' + projectId + '/' + storyVersion + '/' + sceneId, result),
+        s.sceneStates.setJSON('project/' + projectId + '/latest/' + sceneId, result)
+      ]);
 
-    if (project) {
-      await s.projects.setJSON('project/' + projectId, {
-        ...project,
-        continuity_version: snapshot.schema_version,
-        continuity_scene_cursor: snapshot.scene_cursor,
-        continuity_last_scene_id: snapshot.last_scene_id,
-        continuity_last_shot_id: snapshot.last_shot_id,
-        continuity_warning_count: snapshot.warnings.length,
-        status: evaluated.can_render ? 'continuity_ready' : 'continuity_review',
-        progress: Math.max(Number(project.progress || 0), evaluated.can_render ? 54 : 50),
-        updated_at: new Date().toISOString()
+      const latestProject = await s.projects.get('project/' + projectId, {
+        type: 'json',
+        consistency: 'strong'
+      } as any) as Record<string, any> | null;
+
+      if (latestProject) {
+        await s.projects.setJSON('project/' + projectId, {
+          ...latestProject,
+          continuity_version: snapshot.schema_version,
+          continuity_scene_cursor: snapshot.scene_cursor,
+          continuity_last_scene_id: snapshot.last_scene_id,
+          continuity_last_shot_id: snapshot.last_shot_id,
+          continuity_warning_count: snapshot.warnings.length,
+          status: evaluated.can_render ? 'continuity_ready' : 'continuity_review',
+          progress: Math.max(Number(latestProject.progress || 0), evaluated.can_render ? 54 : 50),
+          updated_at: new Date().toISOString()
+        });
+      }
+
+      if (!lease) throw new Error('Scene continuity mutation lease was not acquired.');
+      const committed = await commitProjectMutation(lease, {
+        story_version: storyVersion,
+        scene_id: sceneId,
+        scene_index: sceneIndex,
+        can_render: evaluated.can_render,
+        warning_count: evaluated.warnings.length
       });
+      (result as any).project_revision = committed.revision;
+      (result as any).mutation_id = committed.mutation_id;
+    } catch (error) {
+      if (lease) await abortProjectMutation(lease).catch(() => false);
+      const handled = projectMutationErrorResponse(error);
+      if (handled) return json({ ...handled.body, retryable: true }, handled.status);
+      throw error;
     }
   }
 
