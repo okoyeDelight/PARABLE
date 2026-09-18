@@ -29,8 +29,9 @@ export default async (request: Request) => {
   });
 
   let busyProtected = false;
+  let overlapLease: Awaited<ReturnType<typeof acquireProjectMutation>> | null = null;
   try {
-    await acquireProjectMutation({
+    overlapLease = await acquireProjectMutation({
       projectId,
       mutationType: 'self-test-overlap',
       expectedRevision: initial.revision,
@@ -41,6 +42,15 @@ export default async (request: Request) => {
   }
 
   const firstCommit = await commitProjectMutation(first, { self_test: true, step: 1 });
+
+  let overlapCommitRejected = false;
+  if (overlapLease) {
+    try {
+      await commitProjectMutation(overlapLease, { self_test: true, step: 'overlap' });
+    } catch (error) {
+      overlapCommitRejected = error instanceof ProjectRevisionConflict;
+    }
+  }
 
   let staleRevisionRejected = false;
   try {
@@ -63,9 +73,14 @@ export default async (request: Request) => {
   const secondCommit = await commitProjectMutation(second, { self_test: true, step: 2 });
   const finalState = await readProjectRevision(projectId);
 
+  const postgresMode = initial.backend === 'postgres';
+  const overlapProtected = postgresMode
+    ? Boolean(overlapLease) && overlapCommitRejected
+    : busyProtected;
+
   const ok =
     initial.revision === 0 &&
-    busyProtected &&
+    overlapProtected &&
     staleRevisionRejected &&
     firstCommit.revision === 1 &&
     secondCommit.revision === 2 &&
@@ -74,9 +89,12 @@ export default async (request: Request) => {
 
   return json({
     ok,
-    probe_version: 'project-concurrency-v1',
+    probe_version: 'project-concurrency-v2',
     project_id: projectId,
+    backend: initial.backend || 'blobs',
     overlapping_mutation_blocked: busyProtected,
+    overlapping_mutation_cas_rejected: overlapCommitRejected,
+    overlapping_mutation_serialized: overlapProtected,
     stale_revision_rejected: staleRevisionRejected,
     revisions: {
       initial: initial.revision,
