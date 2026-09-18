@@ -23,7 +23,7 @@ PARABLE should not simply generate *for* a place or audience. It should understa
 
 ## Current checkpoint
 
-**Story Intelligence V8 + Continuity Brain V3 — September 18, 2026**
+**Story Intelligence V8 + Continuity Brain V3 + Scale Foundation V1 — September 18, 2026**
 
 The `immersive-v2` branch now includes:
 
@@ -46,11 +46,22 @@ The `immersive-v2` branch now includes:
 - human-approved actor/voice/location reference locks
 - human director overrides layered onto the shot plan without bypassing continuity
 - renderer hard constraints for identity, wardrobe, injury, prop ownership, screen geography and character knowledge
+- durable Async Workloads queue for Story Intelligence, Film Critic and continuity work
+- idempotent job submission so retries do not automatically duplicate expensive AI work
+- retry/backoff and execution leases for transient provider/network failures and duplicate queue delivery
+- refresh-safe Studio production jobs that can be restored after the browser reloads
+- append-only sharded AI telemetry instead of a shared hot write key
+- bounded/paginated project reads for safer high-concurrency traffic
+- Deploy Preview platform-health and isolated scale-probe endpoints
+- manual 1,000-virtual-user read-tier and durable-queue load gates
+- PostgreSQL transactional hot-state schema prepared for multi-editor optimistic revision control
 
 The production path is now:
 
 `Story -> Story Understanding -> Production Bible -> Scene State -> Shot State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
 
 The next Continuity milestone is camera-axis / 180-degree memory, room topology, entrances/exits, pose and eyeline continuity, continuity-aware renderer seeds, and advisory repair proposals.
+
+The current **scale target** is 1,000 simultaneous active users. The architecture is now designed around stateless horizontal request handling plus durable asynchronous AI work, but this target is not treated as a guarantee until the manual 1,000-user load gate passes on the intended production plan and third-party AI quotas are verified. For multiple people editing the exact same project concurrently, the prepared PostgreSQL transactional state tier must be activated before claiming ACID-safe collaboration.
 
 `main` remains unchanged until the `immersive-v2` checkpoint is deliberately approved and merged.
