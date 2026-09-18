@@ -35,7 +35,9 @@ export default async (request: Request) => {
           enabled: benchmarkEnabled,
           synthetic_only: true,
           policy: 'Only hardcoded PARABLE CI fixtures can enter the benchmark lane, and that endpoint is exposed only on Deploy Previews. Real manuscripts never use this lane.',
-          model_router: 'openrouter/free'
+          model_router: env('PARABLE_BENCHMARK_MODEL') || env('PARABLE_OPENROUTER_MODEL') || 'openrouter/free',
+          fallback_router: 'openrouter/free',
+          acceptance_requires_real_model: true
         }
       },
       fallback_available: true
