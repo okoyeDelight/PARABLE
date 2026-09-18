@@ -2,6 +2,11 @@ import { getDeployStore, getStore } from '@netlify/blobs';
 import { buildRenderContinuityContract, upgradeContinuitySnapshot, type ContinuitySnapshot } from './_lib/continuity-core.mts';
 import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
+import {
+  buildSceneSpatialPlan,
+  spatialContractForShot,
+  type SceneSpatialPlan
+} from './_lib/spatial-continuity.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -143,6 +148,19 @@ export default async (request: Request) => {
     ...(Array.isArray(sceneContract?.hard_blockers) ? sceneContract.hard_blockers : [])
   ].filter((warning: any) => warning?.severity === 'blocker');
 
+  const authoritativeSpatial = await readAuthoritativeProjectState<SceneSpatialPlan>(
+    projectId,
+    'spatial-plan:' + resolvedStoryVersion + ':' + resolvedSceneId
+  );
+  const spatialPlan = await buildSceneSpatialPlan({
+    projectId,
+    storyVersion: resolvedStoryVersion,
+    sceneId: resolvedSceneId,
+    shots: plan,
+    continuityContract: sceneContract,
+    existing: authoritativeSpatial?.value || null
+  });
+
   const packages = await Promise.all(filteredShots.map(async (shot: any) => {
     const id = String(shot?.id || '');
     const direction = directionByShot[id] || null;
@@ -153,9 +171,25 @@ export default async (request: Request) => {
         ) as Record<string, any> | null
       : null;
 
+    const spatial = spatialContractForShot(spatialPlan, id);
+    const spatialApprovalRequired = Boolean(spatial?.axis_critical && spatial?.approval_status !== 'approved');
+    const spatialWarnings = [
+      ...(spatial?.blockers || []).map((message: string) => ({
+        severity: 'blocker',
+        code: 'SPATIAL_PLAN_BLOCKED',
+        message
+      })),
+      ...(spatialApprovalRequired ? [{
+        severity: 'blocker',
+        code: 'SPATIAL_PLAN_APPROVAL_REQUIRED',
+        message: 'This multi-character scene has an established camera axis that has not been human-approved.'
+      }] : [])
+    ];
+
     const shotBlockers = [
       ...sceneBlockers,
-      ...(Array.isArray(shotState?.warnings) ? shotState.warnings : [])
+      ...(Array.isArray(shotState?.warnings) ? shotState.warnings : []),
+      ...spatialWarnings
     ].filter((warning: any) => warning?.severity === 'blocker');
 
     const checked = Boolean(shotState);
@@ -184,6 +218,7 @@ export default async (request: Request) => {
       shot_transitions: shotState?.extracted_shot_state || null,
       scene_render_notes: sceneState?.render_notes || {},
       shot_render_notes: shotState?.render_notes || {},
+      spatial_continuity: spatial,
       hard_constraints: {
         preserve_identity: true,
         preserve_wardrobe: true,
@@ -191,12 +226,19 @@ export default async (request: Request) => {
         preserve_prop_ownership: true,
         preserve_prop_location: true,
         preserve_screen_geography: true,
+        preserve_camera_axis: true,
+        preserve_room_topology: true,
         preserve_character_knowledge: true,
         no_unmarked_state_changes: true
       },
       can_render: checked && Boolean(sceneState?.can_render) && Boolean(shotState?.can_render) && shotBlockers.length === 0,
       blockers: shotBlockers,
-      human_review_recommended: Boolean(sceneState?.requires_human_review || shotState?.requires_human_review)
+      human_review_recommended: Boolean(
+        sceneState?.requires_human_review ||
+        shotState?.requires_human_review ||
+        spatialApprovalRequired ||
+        (spatial?.overridden_blockers || []).length
+      )
     };
   }));
 
@@ -213,6 +255,13 @@ export default async (request: Request) => {
     blockers: sceneBlockers,
     unchecked_shots: uncheckedShots,
     package_count: packages.length,
+    spatial_plan: {
+      spatial_plan_hash: spatialPlan.spatial_plan_hash,
+      axis_critical: spatialPlan.axis_critical,
+      approval_status: spatialPlan.approval.status,
+      authoritative_ref: authoritativeSpatial?.ref || null,
+      blocker_count: spatialPlan.blockers.length
+    },
     packages,
     note: noShotPlan
       ? 'Continuity is ready, but no shot plan exists.'
