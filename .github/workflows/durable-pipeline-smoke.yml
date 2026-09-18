@@ -100,14 +100,14 @@ jobs:
               if (
                 r.ok &&
                 body?.ok === true &&
-                body?.runtime === 'parable-scale-foundation-v4' &&
-                architecture?.state_adapter_version === 'transactional-state-v3' &&
+                body?.runtime === 'parable-scale-foundation-v5' &&
+                architecture?.state_adapter_version === 'transactional-state-v4' &&
                 architecture?.queue_backend_abstraction === true &&
                 architecture?.single_queue_dependency === false &&
                 architecture?.transactional_hot_state === 'postgres-authoritative-cas' &&
                 architecture?.split_brain_write_fallback === false &&
                 body?.checks?.transactional_state?.ok === true &&
-                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v3'
+                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v4'
               ) process.exit(0);
             } catch (error) {
               console.log(`attempt ${attempt}: ${error.message}`);
@@ -135,12 +135,13 @@ jobs:
 
           const upstream = body?.upstream || {};
           if (
-            upstream?.engine !== 'parable-postgres-hot-state-v3' ||
+            upstream?.engine !== 'parable-postgres-hot-state-v4' ||
             upstream?.vault_backed_signing !== true ||
             upstream?.replay_protection !== true ||
             upstream?.job_leases !== 'postgres' ||
             upstream?.rights_authority !== 'postgres' ||
-            upstream?.admission_control !== 'postgres'
+            upstream?.admission_control !== 'postgres' ||
+            upstream?.job_recovery !== 'postgres'
           ) {
             throw new Error('Transactional state capabilities are incomplete: ' + JSON.stringify(upstream));
           }
@@ -184,6 +185,31 @@ jobs:
             body?.admission_control?.deferred_worker_claimed_after_release !== true
           ) {
             throw new Error('Worker admission control did not defer and resume saturated project work.');
+          }
+          NODE
+
+      - name: Verify stranded durable jobs self-heal
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/job-recovery-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('job recovery self-test:', r.status, JSON.stringify(body).slice(0, 4000));
+
+          if (!r.ok || body?.ok !== true || body?.probe_version !== 'job-recovery-self-test-v1') {
+            throw new Error('Durable job recovery self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.same_job_id !== true || body?.recovered_batch_claimed !== true) {
+            throw new Error('Recovery did not preserve and reclaim the original durable job.');
+          }
+          if (body?.recovery_failures !== 0) {
+            throw new Error('Recovery dispatcher reported failures.');
+          }
+          if (body?.job?.status !== 'succeeded') {
+            throw new Error('Recovered job did not complete successfully.');
           }
           NODE
 
