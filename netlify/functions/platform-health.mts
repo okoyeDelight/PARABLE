@@ -35,6 +35,7 @@ export default async (request: Request) => {
   const deployContext = Netlify.context?.deploy?.context || 'unknown';
   const openrouter = Boolean(Netlify.env.get('OPENROUTER_API_KEY'));
   const asyncKey = Boolean(Netlify.env.get('AWL_API_KEY'));
+  const queueMode = Netlify.env.get('PARABLE_QUEUE_MODE') || 'auto';
   const jobHealth = await readJobHealth();
 
   const healthy = storageOk;
@@ -50,6 +51,10 @@ export default async (request: Request) => {
       durable_workloads: {
         extension_installed: true,
         api_key_visible_to_runtime: asyncKey,
+        queue_mode: queueMode,
+        primary_backend: 'async-workloads',
+        fallback_backend: 'netlify-background',
+        fallback_enabled: queueMode !== 'async',
         endpoint: '/api/jobs'
       },
       protected_ai: {
@@ -60,7 +65,9 @@ export default async (request: Request) => {
     },
     architecture: {
       target_concurrent_active_users: 1000,
-      heavy_ai_request_path: 'durable-async',
+      heavy_ai_request_path: 'redundant-durable-async',
+      queue_backend_abstraction: true,
+      single_queue_dependency: false,
       job_idempotency: true,
       workload_retries: true,
       workload_execution_leases: true,
