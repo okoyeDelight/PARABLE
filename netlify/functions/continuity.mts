@@ -14,6 +14,7 @@ import {
   readProjectRevision,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -86,6 +87,14 @@ export default async (request: Request) => {
     const compact = url.searchParams.get('compact') === '1';
     if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const snapshot = await loadLatest(projectId);
     if (!snapshot) return json({ error: 'No continuity state exists for this project yet.' }, 404);
 
@@ -98,6 +107,14 @@ export default async (request: Request) => {
   const projectId = clean(body.projectId);
   const action = clean(body.action || 'apply_scene');
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'project:edit');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   const startingRevision = await readProjectRevision(projectId);
   const explicitExpectedRevision = Number.isFinite(Number(body.expectedProjectRevision))
