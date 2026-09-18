@@ -184,3 +184,25 @@ export async function readProviderGuardStatus(args: {
   const status = await readTransactionalProviderGuardStatus(key);
   return { ...status, provider_key: key };
 }
+
+
+export function providerGuardErrorResponse(error: unknown) {
+  if (!(error instanceof ProviderGuardError)) return null;
+
+  return {
+    status: 503,
+    body: {
+      error:
+        error.code === 'PROVIDER_CAPACITY'
+          ? 'The selected provider is temporarily at PARABLE concurrency capacity. The work remains safe to retry.'
+          : error.code === 'PROVIDER_CIRCUIT_OPEN'
+            ? 'PARABLE temporarily isolated this provider after recent failures instead of continuing to hammer it.'
+            : 'The provider admission guard is temporarily busy. Retry shortly.',
+      code: error.code,
+      reason: error.reason,
+      retryable: true,
+      retry_after_ms: Math.max(200, error.retry_after_ms),
+      provider_key: error.provider_key
+    }
+  };
+}
