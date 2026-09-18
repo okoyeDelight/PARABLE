@@ -426,7 +426,12 @@ export async function markJobProcessing(
   return next;
 }
 
-export async function markJobRetrying(jobId: string, error: unknown, attempts: number) {
+export async function markJobRetrying(
+  jobId: string,
+  error: unknown,
+  attempts: number,
+  leaseToken?: string | null
+) {
   if (transactionalStateMode() === 'postgres') {
     const current = await readDurableJob(jobId);
     if (!current) return null;
@@ -435,7 +440,7 @@ export async function markJobRetrying(jobId: string, error: unknown, attempts: n
     const next = normalizeTransactionalJob(await transitionTransactionalJob({
       id: jobId,
       toStatus: 'retrying',
-      leaseToken: current.lease_token,
+      leaseToken: leaseToken || current.lease_token,
       attempt: Math.max(current.attempts, Math.floor(Number(attempts) || 0)),
       lastError: clean(error instanceof Error ? error.message : error, 1200)
     }));
@@ -460,7 +465,7 @@ export async function markJobRetrying(jobId: string, error: unknown, attempts: n
   return next;
 }
 
-export async function completeJob(jobId: string, result: unknown) {
+export async function completeJob(jobId: string, result: unknown, leaseToken?: string | null) {
   const { jobs, results } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
@@ -473,7 +478,7 @@ export async function completeJob(jobId: string, result: unknown) {
     const next = normalizeTransactionalJob(await transitionTransactionalJob({
       id: jobId,
       toStatus: 'succeeded',
-      leaseToken: current.lease_token,
+      leaseToken: leaseToken || current.lease_token,
       attempt: current.attempts,
       resultRef
     }));
@@ -496,7 +501,7 @@ export async function completeJob(jobId: string, result: unknown) {
   return next;
 }
 
-export async function failJob(jobId: string, error: unknown) {
+export async function failJob(jobId: string, error: unknown, leaseToken?: string | null) {
   const { jobs } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
@@ -506,7 +511,7 @@ export async function failJob(jobId: string, error: unknown) {
     const next = normalizeTransactionalJob(await transitionTransactionalJob({
       id: jobId,
       toStatus: 'failed',
-      leaseToken: current.lease_token,
+      leaseToken: leaseToken || current.lease_token,
       attempt: current.attempts,
       lastError: clean(error instanceof Error ? error.message : error, 1200)
     }));
