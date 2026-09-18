@@ -535,7 +535,8 @@ export default async (request: Request) => {
         },
         {
           [acceptedStateKey]: acceptedRef,
-          [handoffStateKey]: handoffRef
+          [handoffStateKey]: handoffRef,
+          ['sequence:timeline:' + attempt.story_version + ':' + attempt.scene_id]: null
         }
       );
 
@@ -544,6 +545,7 @@ export default async (request: Request) => {
         project_revision: committed.revision,
         authoritative_ref: acceptedRef,
         handoff_ref: handoffRef,
+        timeline_invalidated: true,
         human_override: humanOverride && !finalAutoEligible,
         full_motion_review_confirmed: finalManualReviewOverride ? true : null,
         known_motion_defects_acknowledged: finalManualReviewOverride && knownMotionDefects ? true : null,
@@ -559,6 +561,7 @@ export default async (request: Request) => {
         mutation_id: committed.mutation_id,
         authoritative_ref: acceptedRef,
         handoff_ref: handoffRef,
+        timeline_invalidated: true,
         handoff
       });
     } catch (error) {
