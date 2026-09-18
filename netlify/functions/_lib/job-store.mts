@@ -150,11 +150,17 @@ export async function createDurableJob(args: {
 }
 
 export async function readDurableJob(jobId: string) {
-  return stores().jobs.get('job/' + jobId, { type: 'json' }) as Promise<DurableJob | null>;
+  return stores().jobs.get('job/' + jobId, {
+    type: 'json',
+    consistency: 'strong'
+  } as any) as Promise<DurableJob | null>;
 }
 
 export async function readJobPayload(jobId: string) {
-  return stores().payloads.get('payload/' + jobId, { type: 'json' }) as Promise<Record<string, any> | null>;
+  return stores().payloads.get('payload/' + jobId, {
+    type: 'json',
+    consistency: 'strong'
+  } as any) as Promise<Record<string, any> | null>;
 }
 
 export async function markJobQueued(jobId: string, eventId?: string | null) {
