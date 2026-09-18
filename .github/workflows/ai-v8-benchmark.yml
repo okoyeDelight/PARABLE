@@ -3,20 +3,6 @@ name: PARABLE AI V8 Benchmark
 on:
   push:
     branches: [immersive-v2]
-    paths:
-      - 'netlify/functions/_lib/ai-health-store.mts'
-      - 'netlify/functions/_lib/benchmarks.mts'
-      - 'netlify/functions/_lib/understand-ai.mts'
-      - 'netlify/functions/_lib/critic-ai.mts'
-      - 'netlify/functions/_lib/benchmark-free-router.mts'
-      - 'netlify/functions/_lib/story-router.mts'
-      - 'netlify/functions/adapt.mts'
-      - 'netlify/functions/ai-benchmark.mts'
-      - 'netlify/functions/ai-health.mts'
-      - 'netlify/functions/ai-status.mts'
-      - 'netlify/functions/platform-health.mts'
-      - 'netlify/functions/director-critic.mts'
-      - '.github/workflows/ai-v8-benchmark.yml'
   workflow_dispatch:
 
 permissions:
@@ -128,7 +114,10 @@ jobs:
 
           async function post(body) {
             const r = await fetch(`${base}/api/ai-benchmark`, {
-              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+              signal: AbortSignal.timeout(25000)
             });
             const text = await r.text();
             let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
