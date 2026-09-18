@@ -120,6 +120,7 @@ export default async (request: Request) => {
       provider,
       model,
       status: 'planned',
+      mode: body.draft === true ? 'draft' : 'final',
       provider_request_id: null,
       asset_uri: null,
       poster_uri: null,
