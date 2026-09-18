@@ -7,6 +7,7 @@ import {
   spatialContractForShot,
   type SceneSpatialPlan
 } from './_lib/spatial-continuity.mts';
+import { transactionalStateMode } from './_lib/transactional-state.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -117,14 +118,28 @@ export default async (request: Request) => {
   const resolvedSceneId = sceneId || continuity.last_scene_id || '';
   if (!resolvedSceneId) return json({ error: 'No scene has passed through Continuity Brain.' }, 409);
 
-  const sceneState = await s.sceneStates.get(
-    'project/' + projectId + '/' + resolvedStoryVersion + '/' + resolvedSceneId,
-    { type: 'json' }
-  ) as Record<string, any> | null;
+  const [authoritativeSceneState, cachedSceneState] = await Promise.all([
+    readAuthoritativeProjectState<Record<string, any>>(
+      projectId,
+      'scene-state:' + resolvedStoryVersion + ':' + resolvedSceneId
+    ),
+    s.sceneStates.get(
+      'project/' + projectId + '/' + resolvedStoryVersion + '/' + resolvedSceneId,
+      { type: 'json' }
+    ) as Promise<Record<string, any> | null>
+  ]);
+  const sceneState = authoritativeSceneState?.value || (
+    transactionalStateMode() === 'postgres' ? null : cachedSceneState
+  );
 
   if (!sceneState) {
     return json({
-      error: 'This scene has not been checked by PARABLE Continuity Brain.',
+      error: transactionalStateMode() === 'postgres'
+        ? 'Authoritative scene continuity is missing; cached Blob state cannot authorize rendering.'
+        : 'This scene has not been checked by PARABLE Continuity Brain.',
+      code: transactionalStateMode() === 'postgres'
+        ? 'AUTHORITATIVE_SCENE_STATE_REQUIRED'
+        : 'SCENE_CONTINUITY_REQUIRED',
       can_render: false
     }, 409);
   }
@@ -162,6 +177,28 @@ export default async (request: Request) => {
     ...(Array.isArray(sceneContract?.hard_blockers) ? sceneContract.hard_blockers : [])
   ].filter((warning: any) => warning?.severity === 'blocker');
 
+  const shotStateById: Record<string, Record<string, any> | null> = {};
+  await Promise.all(plan.map(async (shot: any) => {
+    const id = clean(shot?.id, 96);
+    if (!id || !safeId(id)) return;
+    const authoritative = await readAuthoritativeProjectState<Record<string, any>>(
+      projectId,
+      'shot-state:' + resolvedStoryVersion + ':' + resolvedSceneId + ':' + id
+    );
+    if (authoritative?.value) {
+      shotStateById[id] = authoritative.value;
+      return;
+    }
+    if (transactionalStateMode() !== 'postgres') {
+      shotStateById[id] = await s.shotStates.get(
+        'project/' + projectId + '/' + resolvedStoryVersion + '/' + resolvedSceneId + '/' + id,
+        { type: 'json' }
+      ) as Record<string, any> | null;
+    } else {
+      shotStateById[id] = null;
+    }
+  }));
+
   const authoritativeSpatial = await readAuthoritativeProjectState<SceneSpatialPlan>(
     projectId,
     'spatial-plan:' + resolvedStoryVersion + ':' + resolvedSceneId
@@ -172,6 +209,7 @@ export default async (request: Request) => {
     sceneId: resolvedSceneId,
     shots: plan,
     continuityContract: sceneContract,
+    shotStates: shotStateById,
     existing: authoritativeSpatial?.value || null
   });
 
@@ -189,12 +227,7 @@ export default async (request: Request) => {
         )
       : null;
     const previousHandoff = previousHandoffState?.value || null;
-    const shotState = id
-      ? await s.shotStates.get(
-          'project/' + projectId + '/' + resolvedStoryVersion + '/' + resolvedSceneId + '/' + id,
-          { type: 'json' }
-        ) as Record<string, any> | null
-      : null;
+    const shotState = id ? (shotStateById[id] || null) : null;
 
     const spatial = spatialContractForShot(spatialPlan, id);
     const spatialApprovalRequired = Boolean(spatial?.axis_critical && spatial?.approval_status !== 'approved');
