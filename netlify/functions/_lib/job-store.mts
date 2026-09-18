@@ -380,7 +380,7 @@ export async function markJobQueued(jobId: string, eventId?: string | null) {
   return next;
 }
 
-export async function markJobProcessing(
+export async function claimJobProcessing(
   jobId: string,
   attempts: number,
   leaseToken?: string,
@@ -389,26 +389,53 @@ export async function markJobProcessing(
   if (transactionalStateMode() === 'postgres') {
     if (!leaseToken) throw new Error('A PostgreSQL durable-job claim requires a lease token.');
 
+    const maxGlobalActive = Math.max(
+      1,
+      Math.min(2000, Math.floor(Number(Netlify.env.get('PARABLE_JOB_MAX_ACTIVE')) || 250))
+    );
+    const maxProjectActive = Math.max(
+      1,
+      Math.min(100, Math.floor(Number(Netlify.env.get('PARABLE_JOB_MAX_PROJECT_ACTIVE')) || 8))
+    );
+
     const claimed = await claimTransactionalJob({
       id: jobId,
       leaseToken,
       attempt: Math.max(1, Math.floor(Number(attempts) || 1)),
-      leaseMs
+      leaseMs,
+      maxGlobalActive,
+      maxProjectActive
     });
 
-    if (!claimed?.claimed) {
-      const existing = normalizeTransactionalJob(claimed?.job || null);
-      await mirrorJob(existing);
-      return null;
-    }
+    const job = normalizeTransactionalJob(claimed?.job || null);
+    await mirrorJob(job);
+    if (claimed?.claimed && job) await recordJobEvent(job);
 
-    const job = normalizeTransactionalJob(claimed.job);
-    return mirrorAndRecord(job);
+    return {
+      claimed: claimed?.claimed === true,
+      job,
+      reason: clean(claimed?.reason, 80) || null,
+      retry_after_ms: Math.max(0, Math.floor(Number(claimed?.retry_after_ms) || 0)),
+      active: Math.max(0, Math.floor(Number(claimed?.active) || 0)),
+      limit: Math.max(0, Math.floor(Number(claimed?.limit) || 0)),
+      backend: 'postgres' as const
+    };
   }
 
   const { jobs } = stores();
   const current = await readDurableJob(jobId);
-  if (!current) return null;
+  if (!current) {
+    return {
+      claimed: false,
+      job: null,
+      reason: 'missing',
+      retry_after_ms: 0,
+      active: 0,
+      limit: 0,
+      backend: 'blobs' as const
+    };
+  }
+
   const now = new Date();
   const next: DurableJob = {
     ...current,
@@ -423,7 +450,26 @@ export async function markJobProcessing(
   };
   await jobs.setJSON(jobKey(jobId), next);
   await recordJobEvent(next);
-  return next;
+
+  return {
+    claimed: true,
+    job: next,
+    reason: 'claimed',
+    retry_after_ms: 0,
+    active: 0,
+    limit: 0,
+    backend: 'blobs' as const
+  };
+}
+
+export async function markJobProcessing(
+  jobId: string,
+  attempts: number,
+  leaseToken?: string,
+  leaseMs = 120000
+) {
+  const result = await claimJobProcessing(jobId, attempts, leaseToken, leaseMs);
+  return result.claimed ? result.job : null;
 }
 
 export async function markJobRetrying(
