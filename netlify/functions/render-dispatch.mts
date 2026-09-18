@@ -11,6 +11,7 @@ import {
 } from './_lib/provider-transactions.mts';
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 import { hydrateRenderSpecReferences } from './_lib/canon-assets.mts';
+import { hydrateKeyframeApprovalAsset } from './_lib/keyframe-assets.mts';
 import {
   appendRenderAttemptEvent,
   readRenderAttempt,
@@ -272,10 +273,14 @@ export default async (request: Request) => {
     }, 409);
   }
 
+  const hydratedKeyframeApproval = keyframeGate?.approval
+    ? await hydrateKeyframeApprovalAsset(attempt.project_id, keyframeGate.approval)
+    : null;
+
   let dispatched: any;
   try {
     if (attempt.provider === 'fal') {
-      dispatched = await dispatchFal(attempt, spec, keyframeGate?.approval || null);
+      dispatched = await dispatchFal(attempt, spec, hydratedKeyframeApproval);
     } else {
       dispatched = {
         ok: false,
