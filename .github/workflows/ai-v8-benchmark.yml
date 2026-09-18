@@ -331,10 +331,10 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
-          ollama pull qwen3:1.7b
+          ollama pull qwen3:4b-instruct-2507-q4_K_M
 
       - name: Run local real-model Story + Critic acceptance
         if: env.PARABLE_EXTERNAL_BENCHMARK_BLOCKED == '1'
         env:
-          OLLAMA_MODEL: qwen3:1.7b
-        run: node tools/v8_local_model_benchmark.mts
+          PARABLE_LOCAL_BENCHMARK_MODEL: qwen3:4b-instruct-2507-q4_K_M
+        run: node tools/v8_local_model_acceptance.mts
