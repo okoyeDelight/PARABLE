@@ -100,14 +100,14 @@ jobs:
               if (
                 r.ok &&
                 body?.ok === true &&
-                body?.runtime === 'parable-scale-foundation-v3' &&
-                architecture?.state_adapter_version === 'transactional-state-v2' &&
+                body?.runtime === 'parable-scale-foundation-v4' &&
+                architecture?.state_adapter_version === 'transactional-state-v3' &&
                 architecture?.queue_backend_abstraction === true &&
                 architecture?.single_queue_dependency === false &&
                 architecture?.transactional_hot_state === 'postgres-authoritative-cas' &&
                 architecture?.split_brain_write_fallback === false &&
                 body?.checks?.transactional_state?.ok === true &&
-                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v2'
+                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v3'
               ) process.exit(0);
             } catch (error) {
               console.log(`attempt ${attempt}: ${error.message}`);
@@ -135,11 +135,12 @@ jobs:
 
           const upstream = body?.upstream || {};
           if (
-            upstream?.engine !== 'parable-postgres-hot-state-v2' ||
+            upstream?.engine !== 'parable-postgres-hot-state-v3' ||
             upstream?.vault_backed_signing !== true ||
             upstream?.replay_protection !== true ||
             upstream?.job_leases !== 'postgres' ||
-            upstream?.rights_authority !== 'postgres'
+            upstream?.rights_authority !== 'postgres' ||
+            upstream?.admission_control !== 'postgres'
           ) {
             throw new Error('Transactional state capabilities are incomplete: ' + JSON.stringify(upstream));
           }
@@ -156,7 +157,7 @@ jobs:
 
           console.log('state self-test:', r.status, JSON.stringify(body).slice(0, 4500));
 
-          if (!r.ok || body?.ok !== true || body?.probe_version !== 'transactional-state-self-test-v3') {
+          if (!r.ok || body?.ok !== true || body?.probe_version !== 'transactional-state-self-test-v4') {
             throw new Error('Transactional state self-test failed: ' + JSON.stringify(body));
           }
           if (body?.provider_spend_guard?.duplicate_submission_blocked !== true) {
@@ -175,6 +176,14 @@ jobs:
             body?.durable_job_guard?.final_status !== 'succeeded'
           ) {
             throw new Error('Durable job lease safety failed.');
+          }
+          if (
+            body?.admission_control?.first_project_worker_claimed !== true ||
+            body?.admission_control?.excess_project_worker_deferred !== true ||
+            body?.admission_control?.saturation_reason !== 'capacity-project' ||
+            body?.admission_control?.deferred_worker_claimed_after_release !== true
+          ) {
+            throw new Error('Worker admission control did not defer and resume saturated project work.');
           }
           NODE
 
