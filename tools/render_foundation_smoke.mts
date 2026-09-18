@@ -15,6 +15,10 @@ import {
   spatialContractForShot
 } from '../netlify/functions/_lib/spatial-continuity.mts';
 import {
+  buildSequenceTimeline,
+  sequenceContinuityBreak
+} from '../netlify/functions/_lib/sequence-timeline.mts';
+import {
   defaultRenderBudgetPolicy,
   evaluateRenderBudget,
   normalizeRenderBudgetPolicy,
@@ -527,6 +531,107 @@ const spatialChanged = await buildSceneSpatialPlan({
 assert.notEqual(spatialChanged.spatial_plan_hash, approvedSpatial.spatial_plan_hash);
 assert.equal(spatialChanged.approval.status, 'pending');
 
+const timelineShots = [
+  { id: 'shot_1', beat: 'Daniel turns toward Ada.' },
+  { id: 'shot_2', beat: 'Ada answers without moving from her chair.' },
+  { id: 'shot_3', beat: 'Later that evening Daniel walks outside.', continuity_break: true }
+];
+
+const acceptedFor = (shotId:string) => ({
+  ref: 'artifact://accepted/' + shotId,
+  value: {
+    attempt: {
+      id: 'attempt_' + shotId,
+      project_id: 'project_smoke',
+      story_version: 'story_smoke',
+      scene_id: 'scene_sequence',
+      shot_id: shotId,
+      status: 'accepted',
+      mode: 'final',
+      asset_uri: 'https://example.com/' + shotId + '.mp4',
+      spec_hash: 'spec_' + shotId,
+      provider: 'fal',
+      model: 'seedance'
+    },
+    qa: { decision: 'PASS' },
+    motion_inspection: {
+      id: 'motion_' + shotId,
+      attempt_id: 'attempt_' + shotId,
+      asset_uri: 'https://example.com/' + shotId + '.mp4',
+      spec_hash: 'spec_' + shotId,
+      decision: 'CLEAR_FOR_QA',
+      sample_set_hash: 'samples_' + shotId
+    },
+    accepted_by_human_override: false,
+    full_motion_review_confirmed: false,
+    known_motion_defects_acknowledged: false
+  }
+});
+
+const handoffFor = (shotId:string) => ({
+  ref: 'artifact://handoff/' + shotId,
+  value: {
+    attempt_id: 'attempt_' + shotId,
+    spec_hash: 'spec_' + shotId,
+    handoff_frame: {
+      sha256: 'a'.repeat(64)
+    }
+  }
+});
+
+const timelineReady = await buildSequenceTimeline({
+  projectId: 'project_smoke',
+  storyVersion: 'story_smoke',
+  sceneId: 'scene_sequence',
+  shots: timelineShots,
+  adaptationRef: 'artifact://adaptation/current',
+  spatialPlan: {
+    hash: 'spatial_hash',
+    axisCritical: true,
+    approvalStatus: 'approved'
+  },
+  accepted: {
+    shot_1: acceptedFor('shot_1'),
+    shot_2: acceptedFor('shot_2'),
+    shot_3: acceptedFor('shot_3')
+  },
+  handoffs: {
+    shot_1: handoffFor('shot_1'),
+    shot_2: handoffFor('shot_2'),
+    shot_3: handoffFor('shot_3')
+  }
+});
+assert.equal(timelineReady.readiness.ready_to_lock, true);
+assert.equal(timelineReady.entries.length, 3);
+assert.equal(sequenceContinuityBreak(timelineShots[2]), true);
+
+const timelineMissingHandoff = await buildSequenceTimeline({
+  projectId: 'project_smoke',
+  storyVersion: 'story_smoke',
+  sceneId: 'scene_sequence',
+  shots: timelineShots,
+  adaptationRef: 'artifact://adaptation/current',
+  spatialPlan: {
+    hash: 'spatial_hash',
+    axisCritical: true,
+    approvalStatus: 'approved'
+  },
+  accepted: {
+    shot_1: acceptedFor('shot_1'),
+    shot_2: acceptedFor('shot_2'),
+    shot_3: acceptedFor('shot_3')
+  },
+  handoffs: {
+    shot_1: null,
+    shot_2: handoffFor('shot_2'),
+    shot_3: null
+  }
+});
+assert.equal(timelineMissingHandoff.readiness.ready_to_lock, false);
+assert.ok(timelineMissingHandoff.readiness.blockers.some((item) =>
+  /shot_1 needs a trusted handoff frame/i.test(item)
+));
+
 const pass = evaluateRenderQA('render_pass', {
   identity: 0.96,
   wardrobe: 0.97,
@@ -574,6 +679,8 @@ console.log(JSON.stringify({
   spatial_axis_critical: spatialPending.axis_critical,
   spatial_crossing_blocked: !spatialContractForShot(approvedSpatial, 'shot_3')?.can_render,
   spatial_approval_invalidated_on_state_change: spatialChanged.approval.status === 'pending',
+  sequence_ready_to_lock: timelineReady.readiness.ready_to_lock,
+  sequence_missing_handoff_blocked: !timelineMissingHandoff.readiness.ready_to_lock,
   budget_attempts_observed: budgetSummary.attempts_observed,
   budget_guard: missingEstimate.code,
   qa_pass: pass.decision,
