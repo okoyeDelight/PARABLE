@@ -274,72 +274,108 @@ async function callGeminiBenchmark(
     stage,
     operationId: 'benchmark:' + stage + ':gemini:' + schemaName,
     run: async (signal) => {
-      // For CI acceptance PARABLE validates the model result itself with both
-      // structural sanitizers and a fixture-specific semantic quality gate.
-      // Therefore we do not depend on Gemini's evolving structured-output wire
-      // format here. GenerateContent gives us a stable real-model path; the
-      // schema is supplied in the prompt and PARABLE remains the authority.
-      const prompt = user + jsonInstruction(schema);
-      const response = await fetch(
+      const endpoint =
         'https://generativelanguage.googleapis.com/v1beta/models/' +
         encodeURIComponent(model) +
-        ':generateContent',
+        ':generateContent';
+
+      const basePayload = {
+        systemInstruction: {
+          parts: [{ text: system }]
+        },
+        contents: [{
+          role: 'user',
+          parts: [{ text: user }]
+        }]
+      };
+
+      const attempts: Array<{
+        label: string;
+        generationConfig: Record<string, any>;
+        userSuffix?: string;
+      }> = [
         {
+          label: 'json-schema',
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: stage === 'story-understanding' ? 1200 : 1000,
+            responseMimeType: 'application/json',
+            responseJsonSchema: compactSchema(schema)
+          }
+        },
+        {
+          // Some Gemini revisions reject a complex schema even though JSON mode
+          // itself is available. This remains real model inference: PARABLE
+          // supplies the schema as an instruction, parses the JSON, sanitizes it,
+          // then subjects it to the same fixture-specific acceptance gate.
+          label: 'json-mode',
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: stage === 'story-understanding' ? 1200 : 1000,
+            responseMimeType: 'application/json'
+          },
+          userSuffix: jsonInstruction(schema)
+        }
+      ];
+
+      const errors: string[] = [];
+      for (const attempt of attempts) {
+        const payload: any = JSON.parse(JSON.stringify(basePayload));
+        if (attempt.userSuffix) {
+          payload.contents[0].parts[0].text += attempt.userSuffix;
+        }
+        payload.generationConfig = attempt.generationConfig;
+
+        const response = await fetch(endpoint, {
           method: 'POST',
           signal,
           headers: {
             'x-goog-api-key': apiKey,
             'content-type': 'application/json'
           },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: system + '\nReturn only the requested JSON object.' }]
-            },
-            contents: [{
-              role: 'user',
-              parts: [{ text: prompt }]
-            }],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: stage === 'story-understanding' ? 1200 : 1000
-            }
-          })
+          body: JSON.stringify(payload)
+        });
+
+        const responseText = await response.text();
+        let body: any = {};
+        try { body = JSON.parse(responseText); }
+        catch { body = { raw: responseText.slice(0, 1200) }; }
+
+        if (!response.ok) {
+          const detail = clean(
+            body?.error?.message ||
+            body?.error?.status ||
+            body?.message ||
+            body?.raw ||
+            ('HTTP ' + response.status),
+            900
+          );
+          errors.push(attempt.label + ': ' + detail);
+          continue;
         }
-      );
 
-      const responseText = await response.text();
-      let body: any = {};
-      try { body = JSON.parse(responseText); }
-      catch { body = { raw: responseText.slice(0, 1200) }; }
+        const text = (body?.candidates?.[0]?.content?.parts || [])
+          .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+          .join('\n');
 
-      if (!response.ok) {
-        throw new Error(
-          body?.error?.message ||
-          body?.error?.status ||
-          body?.message ||
-          body?.raw ||
-          ('HTTP ' + response.status + ' ' + JSON.stringify(body).slice(0, 700))
-        );
+        if (!text.trim()) {
+          errors.push(
+            attempt.label + ': Gemini returned no text candidate. finish=' +
+            String(body?.candidates?.[0]?.finishReason || 'unknown')
+          );
+          continue;
+        }
+
+        return {
+          parsed: parseJson(text),
+          provider: 'gemini' as const,
+          model: String(body?.modelVersion || model),
+          requested_model: model,
+          finish_reason: body?.candidates?.[0]?.finishReason || null
+        };
       }
 
-      const text = (body?.candidates?.[0]?.content?.parts || [])
-        .map((part: any) => typeof part?.text === 'string' ? part.text : '')
-        .join('\n');
-
-      if (!text) {
-        throw new Error(
-          'Gemini GenerateContent returned no text. finish=' +
-          String(body?.candidates?.[0]?.finishReason || 'unknown')
-        );
-      }
-
-      return {
-        parsed: parseJson(text),
-        provider: 'gemini' as const,
-        model: String(body?.modelVersion || model),
-        requested_model: model,
-        finish_reason: body?.candidates?.[0]?.finishReason || null
-      };
+      throw new Error(errors.join(' | ').slice(0, 1800));
     }
   });
 }
