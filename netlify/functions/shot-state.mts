@@ -7,6 +7,14 @@ import {
   type ContinuitySnapshot
 } from './_lib/continuity-core.mts';
 import { runContinuityExtraction } from './_lib/continuity-ai.mts';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  readProjectRevision,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -96,6 +104,21 @@ export default async (request: Request) => {
     return json({ error: 'Valid projectId, storyVersion, sceneId and shotId are required.' }, 400);
   }
 
+  const startingRevision = await readProjectRevision(projectId);
+  const explicitExpectedRevision = Number.isFinite(Number(body.expectedProjectRevision))
+    ? Number(body.expectedProjectRevision)
+    : null;
+
+  if (explicitExpectedRevision !== null && explicitExpectedRevision !== startingRevision.revision) {
+    return json({
+      error: 'The project changed before shot continuity started.',
+      code: 'PROJECT_REVISION_CONFLICT',
+      expected_revision: explicitExpectedRevision,
+      current_revision: startingRevision.revision,
+      retryable: true
+    }, 409);
+  }
+
   const [sceneState, adaptation, direction] = await Promise.all([
     s.sceneStates.get('project/' + projectId + '/' + storyVersion + '/' + sceneId, { type: 'json' }) as Promise<Record<string, any> | null>,
     s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>,
@@ -156,6 +179,27 @@ export default async (request: Request) => {
     continuity: continuityBefore
   });
 
+  let lease: ProjectMutationLease | null = null;
+  try {
+    lease = await acquireProjectMutation({
+      projectId,
+      mutationType: 'shot-continuity',
+      expectedRevision: explicitExpectedRevision ?? startingRevision.revision,
+      ttlMs: 30000
+    });
+  } catch (error) {
+    const handled = projectMutationErrorResponse(error);
+    if (handled) {
+      return json({
+        ...handled.body,
+        retryable: true,
+        scene_id: sceneId,
+        shot_id: shotId
+      }, handled.status);
+    }
+    throw error;
+  }
+
   const beforeContract = buildRenderContinuityContract(continuityBefore, sceneId, shotId);
   const evaluated = evaluateAndApplyScene(continuityBefore, extraction.scene, { apply: true });
   const continuityAfter = evaluated.snapshot;
@@ -188,12 +232,31 @@ export default async (request: Request) => {
     created_at: new Date().toISOString()
   };
 
-  await s.shotStates.setJSON(
-    'project/' + projectId + '/' + storyVersion + '/' + sceneId + '/' + shotId,
-    result
-  );
+  try {
+    await s.shotStates.setJSON(
+      'project/' + projectId + '/' + storyVersion + '/' + sceneId + '/' + shotId,
+      result
+    );
 
-  return json(result, 201);
+    if (!lease) throw new Error('Shot continuity mutation lease was not acquired.');
+    const committed = await commitProjectMutation(lease, {
+      story_version: storyVersion,
+      scene_id: sceneId,
+      shot_id: shotId,
+      shot_index: shotIndex + 1,
+      can_render: evaluated.can_render,
+      warning_count: evaluated.warnings.length
+    });
+
+    (result as any).project_revision = committed.revision;
+    (result as any).mutation_id = committed.mutation_id;
+    return json(result, 201);
+  } catch (error) {
+    if (lease) await abortProjectMutation(lease).catch(() => false);
+    const handled = projectMutationErrorResponse(error);
+    if (handled) return json({ ...handled.body, retryable: true }, handled.status);
+    throw error;
+  }
 };
 
 export const config = {
