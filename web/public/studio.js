@@ -179,7 +179,7 @@ async function waitForJob(jobId,{timeoutMs=180000,onProgress}={}){
   const started=Date.now();
   let delay=700;
   while(Date.now()-started<timeoutMs){
-    const r=await fetch('/api/jobs?id='+encodeURIComponent(jobId),{cache:'no-store'});
+    const r=await fetch('/api/job-status?id='+encodeURIComponent(jobId),{cache:'no-store'});
     const body=await r.json();if(!r.ok)throw new Error(body.error||'Could not read production job');
     const status=body.job?.status||'queued';
     onProgress?.(status,body.job);
@@ -188,8 +188,9 @@ async function waitForJob(jobId,{timeoutMs=180000,onProgress}={}){
       return body.result;
     }
     if(status==='failed')throw new Error(body.job?.last_error||'Production job failed.');
-    await new Promise(resolve=>setTimeout(resolve,delay));
-    delay=Math.min(2500,Math.round(delay*1.25));
+    const serverDelay=Math.max(500,Math.min(10000,Number(body.poll_after_ms)||delay));
+    await new Promise(resolve=>setTimeout(resolve,serverDelay));
+    delay=Math.min(5000,Math.round(delay*1.25));
   }
   throw new Error('Production is still processing. You can safely retry; PARABLE will reuse the same job.');
 }
