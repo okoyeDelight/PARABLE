@@ -79,12 +79,7 @@ export async function processDurableJob(args: {
   }
 
   const leaseToken = 'lease_' + crypto.randomUUID().replaceAll('-', '');
-  await markJobProcessing(jobId, attempt, leaseToken);
-
-  // Netlify Blobs is last-write-wins. Let competing claims settle, then keep
-  // only the execution whose lease token survived the strong-consistency read.
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  const claimed = await readDurableJob(jobId);
+  const claimed = await markJobProcessing(jobId, attempt, leaseToken);
   if (!claimed || claimed.lease_token !== leaseToken) return { status: 'busy' };
 
   if (kind === 'scale-noop') {
@@ -95,34 +90,34 @@ export async function processDurableJob(args: {
       attempt,
       completed_at: new Date().toISOString()
     };
-    await completeJob(jobId, result);
+    await completeJob(jobId, result, leaseToken);
     return { status: 'completed', result };
   }
 
   const path = routeFor(kind);
   if (!path) {
     const message = 'Unsupported durable job kind.';
-    await failJob(jobId, message);
+    await failJob(jobId, message, leaseToken);
     return { status: 'terminal', message };
   }
 
   const base = origin();
   if (!base) {
     const message = 'No deployment origin is available for internal pipeline execution.';
-    await failJob(jobId, message);
+    await failJob(jobId, message, leaseToken);
     return { status: 'terminal', message };
   }
 
-  if (!existing.authorization) {
+  if (!claimed.authorization) {
     const message = 'Durable job has no trusted authorization context.';
     await failJob(jobId, message);
     return { status: 'terminal', message };
   }
 
   const actor: SecurityActor = {
-    actor_id: existing.authorization.actor_id,
-    provider: existing.authorization.provider,
-    subject: existing.authorization.subject,
+    actor_id: claimed.authorization.actor_id,
+    provider: claimed.authorization.provider,
+    subject: claimed.authorization.subject,
     email: null,
     display_name: null,
     auth_mode: 'internal',
@@ -133,8 +128,8 @@ export async function processDurableJob(args: {
   try {
     internalAuth = await signInternalAuthorization({
       actor,
-      projectId: existing.project_id,
-      action: existing.authorization.action as ProjectAction,
+      projectId: claimed.project_id,
+      action: claimed.authorization.action as ProjectAction,
       ttlSeconds: 300
     });
   } catch (error) {
@@ -157,7 +152,7 @@ export async function processDurableJob(args: {
     });
   } catch (error) {
     const message = clean(error instanceof Error ? error.message : error, 1000) || 'Internal pipeline request failed.';
-    await markJobRetrying(jobId, message, attempt);
+    await markJobRetrying(jobId, message, attempt, leaseToken);
     return {
       status: 'retry',
       message,
@@ -170,7 +165,7 @@ export async function processDurableJob(args: {
   try { body = JSON.parse(text); } catch {}
 
   if (response.ok) {
-    await completeJob(jobId, body);
+    await completeJob(jobId, body, leaseToken);
     return { status: 'completed', result: body };
   }
 
@@ -180,7 +175,7 @@ export async function processDurableJob(args: {
   ) || ('HTTP ' + response.status);
 
   if (response.status === 429 || response.status >= 500) {
-    await markJobRetrying(jobId, message, attempt);
+    await markJobRetrying(jobId, message, attempt, leaseToken);
     return {
       status: 'retry',
       message,
@@ -204,7 +199,7 @@ export async function processDurableJob(args: {
       ? Math.min(60000, Math.max(500, hintedDelay))
       : Math.min(60000, 2500 * Math.pow(2, Math.max(0, attempt - 1)));
 
-    await markJobRetrying(jobId, message, attempt);
+    await markJobRetrying(jobId, message, attempt, leaseToken);
     return {
       status: 'retry',
       message,
