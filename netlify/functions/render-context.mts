@@ -1,6 +1,7 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import { buildRenderContinuityContract, upgradeContinuitySnapshot, type ContinuitySnapshot } from './_lib/continuity-core.mts';
 import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -51,6 +52,14 @@ export default async (request: Request) => {
   if (storyVersion && !safeId(storyVersion)) return json({ error: 'Invalid storyVersion.' }, 400);
   if (sceneId && !safeId(sceneId)) return json({ error: 'Invalid sceneId.' }, 400);
   if (shotId && !safeId(shotId)) return json({ error: 'Invalid shotId.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'project:read');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   const s = stores();
   const authoritativeAdaptation = await readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest');
