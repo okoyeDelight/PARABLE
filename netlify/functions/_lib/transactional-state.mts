@@ -174,7 +174,7 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
         authorization: 'Bearer ' + key,
         'content-type': 'application/json',
         accept: 'application/json',
-        'x-parable-state-engine': 'postgres-v3'
+        'x-parable-state-engine': 'postgres-v4'
       },
       body: JSON.stringify({
         p_action: action,
