@@ -6,6 +6,7 @@ import {
   projectMutationErrorResponse,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -39,6 +40,14 @@ export default async (request: Request) => {
       return json({ error: 'A valid projectId and storyVersion are required.' }, 400);
     }
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const prefix = `project/${projectId}/${storyVersion}/`;
     const { blobs } = await directions.list({ prefix });
     const items = (await Promise.all(blobs.slice(0, 100).map(({ key }) => directions.get(key, { type: 'json' })))).filter(Boolean);
@@ -58,6 +67,15 @@ export default async (request: Request) => {
   if (!projectId || !storyVersion || !shotId || !safeId(projectId) || !safeId(storyVersion) || !safeId(shotId)) {
     return json({ error: 'Valid projectId, storyVersion and shotId are required.' }, 400);
   }
+
+  try {
+    await authorizeProject(request, projectId, 'project:edit');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   if (!allowedLens.has(lens)) return json({ error: 'Unsupported lens value.' }, 400);
   if (motion.length > 120 || lighting.length > 160 || performance.length > 240 || blocking.length > 320) {
     return json({ error: 'Director control value is too long.' }, 400);
