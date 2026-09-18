@@ -346,6 +346,39 @@ export function buildVisualCanon(args: {
     });
   }
 
+  const existingEntities = new Map(
+    [...(args.existing?.characters || []), ...(args.existing?.locations || []), ...(args.existing?.props || [])]
+      .map((entity) => [entity.id, entity])
+  );
+
+  for (const entity of [...characters, ...locations, ...props]) {
+    const previous = existingEntities.get(entity.id);
+    if (!previous) continue;
+
+    const previousRefs = new Map((previous.references || []).map((ref) => [ref.id, ref]));
+    entity.references = entity.references.map((ref) => {
+      const prior = previousRefs.get(ref.id);
+      if (!prior) return ref;
+      return {
+        ...ref,
+        rights_status: prior.rights_status,
+        approved_by_human: prior.approved_by_human || ref.approved_by_human,
+        source: prior.source || ref.source,
+        notes: prior.notes || ref.notes
+      };
+    });
+
+    const currentIds = new Set(entity.references.map((ref) => ref.id));
+    for (const prior of previous.references || []) {
+      if (!currentIds.has(prior.id)) entity.references.push(prior);
+    }
+
+    entity.continuity_notes = [...new Set([
+      ...(previous.continuity_notes || []),
+      ...(entity.continuity_notes || [])
+    ])];
+  }
+
   const unresolved_rights = [...characters, ...locations, ...props].flatMap((entity) =>
     entity.references
       .filter((ref) => ref.rights_status !== 'approved')
