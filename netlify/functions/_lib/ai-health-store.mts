@@ -1,7 +1,12 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 
 export type AILane = 'protected' | 'benchmark';
-export type AIStage = 'story-understanding' | 'film-critic';
+export type AIStage =
+  | 'story-understanding'
+  | 'story-adaptation'
+  | 'film-critic'
+  | 'continuity-extraction'
+  | 'shot-continuity-extraction';
 
 type HealthEvent = {
   stage: AIStage;
@@ -11,6 +16,12 @@ type HealthEvent = {
   ok: boolean;
   latency_ms: number;
   error?: string;
+};
+
+type StoredEvent = HealthEvent & {
+  id: string;
+  at: string;
+  error_class: string;
 };
 
 type Aggregate = {
@@ -26,13 +37,6 @@ type Aggregate = {
   last_ok: boolean;
   last_error: string;
   last_seen_at: string;
-};
-
-type Snapshot = {
-  version: 'ai-health-v1';
-  updated_at: string;
-  aggregates: Record<string, Aggregate>;
-  recent: Array<HealthEvent & { at: string; error_class: string }>;
 };
 
 function healthStore() {
@@ -57,65 +61,104 @@ export function classifyAIError(error: unknown) {
   return 'other';
 }
 
+function hourPrefix(date: Date) {
+  return [
+    'events',
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0'),
+    String(date.getUTCHours()).padStart(2, '0')
+  ].join('/') + '/';
+}
+
 export async function recordAIHealth(event: HealthEvent) {
   try {
     const store = healthStore();
-    const current = await store.get('router-health-v1', { type: 'json' }) as Snapshot | null;
-    const now = new Date().toISOString();
-    const snapshot: Snapshot = current?.version === 'ai-health-v1'
-      ? current
-      : { version: 'ai-health-v1', updated_at: now, aggregates: {}, recent: [] };
-
+    const now = new Date();
+    const at = now.toISOString();
     const provider = clean(event.provider, 80) || 'unknown';
     const model = clean(event.model, 180) || 'unknown';
-    const key = `${event.stage}:${event.lane}:${provider}:${model}`;
-    const previous = snapshot.aggregates[key];
-    const requests = (previous?.requests || 0) + 1;
-    const latency = Math.max(0, Math.round(Number(event.latency_ms) || 0));
-    const previousTotal = (previous?.avg_latency_ms || 0) * (previous?.requests || 0);
     const error = event.ok ? '' : clean(event.error, 500);
-
-    snapshot.aggregates[key] = {
+    const stored: StoredEvent = {
+      id: 'health_' + crypto.randomUUID().replaceAll('-', ''),
       stage: event.stage,
       lane: event.lane,
       provider,
       model,
+      ok: Boolean(event.ok),
+      latency_ms: Math.max(0, Math.round(Number(event.latency_ms) || 0)),
+      error,
+      error_class: classifyAIError(error),
+      at
+    };
+
+    const key = hourPrefix(now) + at.replace(/[:.]/g, '-') + '-' + stored.id.slice(-12);
+    await store.setJSON(key, stored);
+  } catch {
+    // Telemetry is intentionally append-only and must never break creative work.
+  }
+}
+
+function aggregate(events: StoredEvent[]) {
+  const aggregates: Record<string, Aggregate> = {};
+  for (const event of events) {
+    const key = [event.stage, event.lane, event.provider, event.model].join(':');
+    const previous = aggregates[key];
+    const requests = (previous?.requests || 0) + 1;
+    const totalLatency = (previous?.avg_latency_ms || 0) * (previous?.requests || 0) + event.latency_ms;
+    aggregates[key] = {
+      stage: event.stage,
+      lane: event.lane,
+      provider: event.provider,
+      model: event.model,
       requests,
       successes: (previous?.successes || 0) + (event.ok ? 1 : 0),
       failures: (previous?.failures || 0) + (event.ok ? 0 : 1),
-      avg_latency_ms: Math.round((previousTotal + latency) / requests),
-      last_latency_ms: latency,
+      avg_latency_ms: Math.round(totalLatency / requests),
+      last_latency_ms: event.latency_ms,
       last_ok: event.ok,
-      last_error: error,
-      last_seen_at: now
+      last_error: event.error || '',
+      last_seen_at: event.at
     };
-
-    snapshot.recent = [
-      {
-        stage: event.stage,
-        lane: event.lane,
-        provider,
-        model,
-        ok: event.ok,
-        latency_ms: latency,
-        error,
-        error_class: classifyAIError(error),
-        at: now
-      },
-      ...(snapshot.recent || [])
-    ].slice(0, 40);
-    snapshot.updated_at = now;
-    await store.setJSON('router-health-v1', snapshot);
-  } catch {
-    // Health telemetry must never break the creative workflow.
   }
+  return aggregates;
 }
 
 export async function readAIHealth() {
   try {
-    const value = await healthStore().get('router-health-v1', { type: 'json' }) as Snapshot | null;
-    return value || { version: 'ai-health-v1', updated_at: null, aggregates: {}, recent: [] };
+    const store = healthStore();
+    const now = new Date();
+    const previousHour = new Date(now.getTime() - 60 * 60 * 1000);
+    const prefixes = [...new Set([hourPrefix(now), hourPrefix(previousHour)])];
+    const rows: StoredEvent[] = [];
+
+    for (const prefix of prefixes) {
+      const { blobs } = await store.list({ prefix });
+      const newest = blobs.slice(-300);
+      const values = await Promise.all(
+        newest.map(({ key }) => store.get(key, { type: 'json' }) as Promise<StoredEvent | null>)
+      );
+      rows.push(...values.filter(Boolean) as StoredEvent[]);
+    }
+
+    const recent = rows
+      .sort((a, b) => b.at.localeCompare(a.at))
+      .slice(0, 200);
+
+    return {
+      version: 'ai-health-v2',
+      updated_at: recent[0]?.at || null,
+      window: 'approximately last 2 UTC hours',
+      aggregates: aggregate([...recent].reverse()),
+      recent: recent.slice(0, 60)
+    };
   } catch {
-    return { version: 'ai-health-v1', updated_at: null, aggregates: {}, recent: [] };
+    return {
+      version: 'ai-health-v2',
+      updated_at: null,
+      window: 'approximately last 2 UTC hours',
+      aggregates: {},
+      recent: []
+    };
   }
 }
