@@ -91,6 +91,9 @@ export async function appendRenderAttemptEvent(attempt: RenderAttempt, eventType
     provider: attempt.provider,
     model: attempt.model,
     spec_hash: attempt.spec_hash,
+    mode: attempt.mode,
+    estimated_cost_usd: attempt.estimated_cost_usd,
+    actual_cost_usd: attempt.actual_cost_usd,
     metadata,
     at
   });
@@ -160,4 +163,22 @@ export async function readKeyframePlan(args: {
     ? ['project', safe(args.projectId), safe(args.storyVersion), safe(args.sceneId), safe(args.shotId), safe(args.specHash)].join('/')
     : ['latest', safe(args.projectId), safe(args.storyVersion), safe(args.sceneId), safe(args.shotId)].join('/');
   return stores().keyframes.get(key, { type: 'json' }) as Promise<Record<string, any> | null>;
+}
+
+
+export async function listProjectAttemptEvents(args: {
+  projectId: string;
+  storyVersion?: string | null;
+  limit?: number;
+}) {
+  const prefix = args.storyVersion
+    ? ['event', safe(args.projectId), safe(args.storyVersion)].join('/') + '/'
+    : ['event', safe(args.projectId)].join('/') + '/';
+
+  const { blobs } = await stores().attemptEvents.list({ prefix });
+  const latest = blobs.slice(-Math.max(1, Math.min(2000, args.limit || 1000)));
+  const events = await Promise.all(
+    latest.map(({ key }) => stores().attemptEvents.get(key, { type: 'json' }))
+  );
+  return events.filter(Boolean) as Record<string, any>[];
 }
