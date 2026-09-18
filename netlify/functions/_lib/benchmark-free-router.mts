@@ -274,8 +274,20 @@ async function callGeminiBenchmark(
     stage,
     operationId: 'benchmark:' + stage + ':gemini:' + schemaName,
     run: async (signal) => {
+      const prompt = [
+        'SYSTEM INSTRUCTIONS:',
+        system,
+        '',
+        'USER INPUT:',
+        user
+      ].join('\n');
+
+      // Gemini's current Interactions API owns the 2026 structured-output
+      // contract. Keep response_format at the interaction top level; the old
+      // generateContent nesting interprets mime_type as an enum and rejects
+      // application/json for this model family.
       const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+        'https://generativelanguage.googleapis.com/v1beta2/interactions',
         {
           method: 'POST',
           signal,
@@ -284,17 +296,12 @@ async function callGeminiBenchmark(
             'content-type': 'application/json'
           },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: system }] },
-            contents: [{ role: 'user', parts: [{ text: user }] }],
-            generationConfig: {
-              temperature: 0.1,
-              maxOutputTokens: stage === 'story-understanding' ? 1200 : 1000,
-              responseFormat: {
-                text: {
-                  mimeType: 'application/json',
-                  schema: compactSchema(schema)
-                }
-              }
+            model,
+            input: prompt,
+            response_format: {
+              type: 'text',
+              mime_type: 'application/json',
+              schema: compactSchema(schema)
             }
           })
         }
@@ -307,15 +314,26 @@ async function callGeminiBenchmark(
           `HTTP ${response.status}`
         );
       }
-      const text = (body?.candidates?.[0]?.content?.parts || [])
-        .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+
+      const modelSteps = Array.isArray(body?.steps)
+        ? body.steps.filter((step: any) => step?.type === 'model_output')
+        : [];
+      const text = modelSteps
+        .flatMap((step: any) => Array.isArray(step?.content) ? step.content : [])
+        .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
+        .map((part: any) => part.text)
         .join('\n');
+
+      if (!text) {
+        throw new Error('Gemini Interactions returned no model_output text.');
+      }
+
       return {
         parsed: parseJson(text),
         provider: 'gemini' as const,
         model,
         requested_model: model,
-        finish_reason: body?.candidates?.[0]?.finishReason || null
+        finish_reason: String(body?.status || 'completed')
       };
     }
   });
