@@ -1,6 +1,6 @@
 import { getContext } from '@netlify/functions';
 import { AsyncWorkloadsClient } from '@netlify/async-workloads';
-import { readDurableJob, type JobKind } from './job-store.mts';
+import { readDurableJob, type DurableJob, type JobKind } from './job-store.mts';
 import {
   signInternalAuthorization,
   type ProjectAction,
@@ -32,11 +32,16 @@ function origin() {
   return value.replace(/\/$/, '');
 }
 
-async function dispatchBackground(jobId: string, kind: JobKind, primaryError: string | null): Promise<DispatchResult> {
+async function dispatchBackground(
+  jobId: string,
+  kind: JobKind,
+  primaryError: string | null,
+  knownJob?: DurableJob | null
+): Promise<DispatchResult> {
   const base = origin();
   if (!base) throw new Error('No deployment origin is available for the background queue fallback.');
 
-  const job = await readDurableJob(jobId);
+  const job = knownJob || await readDurableJob(jobId);
   if (!job?.authorization) throw new Error('Durable job has no trusted authorization context.');
 
   const actor: SecurityActor = {
@@ -78,13 +83,22 @@ async function dispatchBackground(jobId: string, kind: JobKind, primaryError: st
   };
 }
 
-export async function dispatchDurableJob(jobId: string, kind: JobKind): Promise<DispatchResult> {
+export async function dispatchDurableJob(
+  jobId: string,
+  kind: JobKind,
+  knownJob?: DurableJob | null
+): Promise<DispatchResult> {
   let primaryError: string | null = null;
   const defaultMode = Netlify.context?.deploy?.context === 'deploy-preview' ? 'background' : 'auto';
   const mode = clean(Netlify.env.get('PARABLE_QUEUE_MODE') || defaultMode, 40).toLowerCase();
 
   if (mode === 'background') {
-    return dispatchBackground(jobId, kind, 'Async Workloads is bypassed by PARABLE_QUEUE_MODE=background.');
+    return dispatchBackground(
+      jobId,
+      kind,
+      'Async Workloads is bypassed by PARABLE_QUEUE_MODE=background.',
+      knownJob
+    );
   }
 
   try {
@@ -107,5 +121,5 @@ export async function dispatchDurableJob(jobId: string, kind: JobKind): Promise<
     if (mode === 'async') throw error;
   }
 
-  return dispatchBackground(jobId, kind, primaryError);
+  return dispatchBackground(jobId, kind, primaryError, knownJob);
 }
