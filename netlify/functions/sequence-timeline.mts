@@ -4,6 +4,7 @@ import {
   abortProjectMutation,
   commitProjectMutation,
   projectMutationErrorResponse,
+  readProjectRevision,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
 import {
@@ -219,18 +220,15 @@ export default async (request: Request) => {
     return json({ error: 'action must be preview or lock.' }, 400);
   }
 
-  let access;
   try {
-    access = await authorizeProject(
-      request,
-      projectId,
-      action === 'lock' ? 'review:approve' : 'render:plan'
-    );
+    await authorizeProject(request, projectId, action === 'lock' ? 'project:read' : 'render:plan');
   } catch (error) {
     const handled = securityErrorResponse(error);
     if (handled) return json(handled.body, handled.status);
     throw error;
   }
+
+  const initialHead = await readProjectRevision(projectId);
 
   const existing = await readAuthoritativeProjectState<SequenceTimeline>(
     projectId,
@@ -299,6 +297,19 @@ export default async (request: Request) => {
     }, 400);
   }
 
+  let access;
+  try {
+    access = await authorizeProject(
+      request,
+      projectId,
+      hasManualExceptions ? 'review:override' : 'review:approve'
+    );
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   let lease: ProjectMutationLease | null = null;
   try {
     lease = await acquireProjectMutation({
@@ -306,7 +317,7 @@ export default async (request: Request) => {
       mutationType: 'lock-sequence-timeline',
       expectedRevision: Number.isFinite(Number(body.expectedProjectRevision))
         ? Number(body.expectedProjectRevision)
-        : null,
+        : initialHead.revision,
       ttlMs: 30000
     });
 
