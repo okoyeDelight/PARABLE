@@ -1,4 +1,5 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
+import { readProjectRevision } from './_lib/project-concurrency.mts';
 
 const starterProjects = [
   {
@@ -155,7 +156,11 @@ export default async (request: Request) => {
       contexts.setJSON(`project/${id}`, projectContexts)
     ]);
 
-    return json(project, 201);
+    const revision = await readProjectRevision(id);
+    return json({
+      ...project,
+      project_revision: revision.revision
+    }, 201);
   }
 
   return json({ error: 'Method not allowed' }, 405);
