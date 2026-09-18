@@ -69,7 +69,7 @@ export default async (request: Request) => {
   const healthy = storageOk && transactionalStateOk;
   return json({
     ok: healthy,
-    runtime: 'parable-scale-foundation-v1',
+    runtime: 'parable-scale-foundation-v2',
     deploy_context: deployContext,
     checks: {
       blob_state_layer: {
@@ -117,7 +117,8 @@ export default async (request: Request) => {
         ? 'postgres-authoritative-cas'
         : 'blob-cas-compatibility-mode',
       immutable_state_archive: 'netlify-blobs',
-      split_brain_write_fallback: false
+      split_brain_write_fallback: false,
+      state_adapter_version: 'transactional-state-v1'
     },
     deployment: {
       commit_ref: Netlify.env.get('COMMIT_REF') || null,
