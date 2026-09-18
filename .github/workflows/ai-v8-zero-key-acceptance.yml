@@ -1,0 +1,66 @@
+name: PARABLE V8 Zero-Key Real Model Acceptance
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/benchmarks.mts'
+      - 'netlify/functions/_lib/benchmark-quality.mts'
+      - 'tools/v8_local_model_acceptance.mts'
+      - '.github/workflows/ai-v8-zero-key-acceptance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-v8-zero-key-real-model
+  cancel-in-progress: true
+
+jobs:
+  qwen-real-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    env:
+      PARABLE_LOCAL_BENCHMARK_MODEL: qwen3:4b-instruct-2507-q4_K_M
+      OLLAMA_HOST: http://127.0.0.1:11434
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install local model runtime
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:11434/api/version >/dev/null; then
+              ollama --version
+              exit 0
+            fi
+            sleep 2
+          done
+          cat /tmp/ollama.log || true
+          exit 1
+
+      - name: Pull zero-key acceptance model
+        run: |
+          set -euo pipefail
+          ollama pull "$PARABLE_LOCAL_BENCHMARK_MODEL"
+          ollama list
+
+      - name: Prove all three Story + Critic fixtures with real inference
+        run: |
+          set -euo pipefail
+          node tools/v8_local_model_acceptance.mts | tee /tmp/parable-v8-local.log
+          grep -q PARABLE_V8_ZERO_KEY_ACCEPTANCE_PASS /tmp/parable-v8-local.log
+
+      - name: Preserve diagnostics on failure
+        if: failure()
+        run: |
+          echo "## Ollama diagnostics" >> "$GITHUB_STEP_SUMMARY"
+          echo '~~~' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 120 /tmp/ollama.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo '~~~' >> "$GITHUB_STEP_SUMMARY"
