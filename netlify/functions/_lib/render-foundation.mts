@@ -180,6 +180,7 @@ export type RenderAttempt = {
   provider: string;
   model: string;
   status: RenderAttemptStatus;
+  mode: 'draft' | 'final';
   provider_request_id: string | null;
   asset_uri: string | null;
   poster_uri: string | null;
