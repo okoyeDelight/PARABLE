@@ -1,4 +1,9 @@
-import { inspectMotion, type MotionFrameEvidence } from './_lib/motion-inspector-ai.mts';
+import { inspectMotion } from './_lib/motion-inspector-ai.mts';
+import { extractMotionFrames } from './_lib/motion-frame-extractor.mts';
+import {
+  providerTransactionErrorResponse,
+  ProviderTransactionError
+} from './_lib/provider-transactions.mts';
 import { evaluateRenderQA, type RenderQAInput } from './_lib/render-foundation.mts';
 import {
   appendRenderAttemptEvent,
@@ -58,6 +63,16 @@ function qaEvidence(report:Record<string,any>):RenderQAInput {
 export default async(request:Request)=>{
   if(request.method!=='POST')return json({error:'Method not allowed'},405);
 
+  const jobId=clean(request.headers.get('x-parable-job-id'),180);
+  const workload=clean(request.headers.get('x-parable-workload'),80);
+  if(!jobId||!safeId(jobId)||workload!=='durable-pipeline'){
+    return json({
+      error:'Full-motion inspection includes billable frame extraction and must run through PARABLE durable jobs.',
+      code:'DURABLE_JOB_REQUIRED',
+      next_action:'POST /api/jobs with kind=motion-inspect and an Idempotency-Key.'
+    },409);
+  }
+
   const body=await request.json().catch(()=>({})) as Record<string,any>;
   const attemptId=clean(body.attemptId,180);
   if(!attemptId||!safeId(attemptId))return json({error:'A valid attemptId is required.'},400);
@@ -104,20 +119,32 @@ export default async(request:Request)=>{
   });
   if(!spec)return json({error:'The exact ShotRenderSpec for this attempt was not found.'},404);
 
-  const frames=(Array.isArray(body.frames)?body.frames:[]).slice(0,10).flatMap((row:any)=>{
-    const uri=clean(row?.uri,1800);
-    const timestamp=Number(row?.timestampSeconds ?? row?.timestamp_seconds);
-    const sha256=clean(row?.sha256,64).toLowerCase();
-    const role=['first','sample','handoff'].includes(row?.role)?row.role:'sample';
-    if(!uri||!safeHttpUrl(uri)||!Number.isFinite(timestamp))return[];
-    return [{
-      uri,
-      timestamp_seconds:timestamp,
-      sha256:/^[a-f0-9]{64}$/.test(sha256)?sha256:null,
-      role
-    } satisfies MotionFrameEvidence];
-  });
+  let extracted;
+  try{
+    extracted=await extractMotionFrames({attempt,spec});
+  }catch(error){
+    const handled=providerTransactionErrorResponse(error);
+    if(handled){
+      return json({
+        ...handled.body,
+        stage:'motion-frame-extraction',
+        automatic_retry_disabled:
+          error instanceof ProviderTransactionError &&
+          error.code==='PROVIDER_SUBMISSION_AMBIGUOUS'
+      },handled.status);
+    }
 
+    const message=clean(error instanceof Error?error.message:error,1200)||'Motion-frame extraction failed.';
+    return json({
+      error:message,
+      code:/timeout|deadline|temporar|429|5\d\d/i.test(message)
+        ?'MOTION_FRAME_EXTRACTION_RETRYABLE'
+        :'MOTION_FRAME_EXTRACTION_FAILED',
+      retryable:/timeout|deadline|temporar|429|5\d\d/i.test(message)
+    },/timeout|deadline|temporar|429|5\d\d/i.test(message)?503:422);
+  }
+
+  const frames=extracted.frameSet.frames;
   const report=await inspectMotion({
     attempt,
     spec,
@@ -167,12 +194,24 @@ export default async(request:Request)=>{
     motion_decision:report.decision,
     qa_decision:qa.decision,
     sample_set_hash:report.sample_set_hash,
-    frame_count:report.frame_count
+    frame_count:report.frame_count,
+    frame_set_provider_transaction_id:extracted.frameSet.provider_transaction_id,
+    frame_set_provider_request_id:extracted.frameSet.provider_request_id,
+    frame_extraction_deduplicated:extracted.deduplicated
   });
 
   return json({
     report,
     qa,
+    frame_set:{
+      frame_set_version:extracted.frameSet.frame_set_version,
+      provider:'fal',
+      endpoint:extracted.frameSet.endpoint,
+      provider_transaction_id:extracted.frameSet.provider_transaction_id,
+      provider_request_id:extracted.frameSet.provider_request_id,
+      frame_count:extracted.frameSet.frames.length,
+      deduplicated:extracted.deduplicated
+    },
     storage_ref:inspectionRef,
     qa_ref:qaRef,
     automatic_timeline_acceptance_eligible:
