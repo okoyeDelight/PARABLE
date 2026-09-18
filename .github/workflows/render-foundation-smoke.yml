@@ -28,6 +28,8 @@ on:
       - 'netlify/functions/_lib/keyframe-generation-core.mts'
       - 'netlify/functions/_lib/keyframe-assets.mts'
       - 'netlify/functions/_lib/visual-inspector-ai.mts'
+      - 'netlify/functions/render-motion-inspect.mts'
+      - 'netlify/functions/_lib/motion-inspector-ai.mts'
       - 'netlify/functions/keyframe-generate.mts'
       - 'netlify/functions/keyframe-asset.mts'
       - 'netlify/functions/keyframe-inspect.mts'
