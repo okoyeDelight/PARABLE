@@ -21,7 +21,7 @@ async function loadAiStatus(){
     const response=await fetch('/api/ai-status',{cache:'no-store'});
     if(!response.ok)return;
     const body=await response.json();
-    const status=body.story_intelligence||{};
+    const status=body.story_understanding||body.story_intelligence||{};
     const configured=status.configured_providers||{};
     const provider=configured.openrouter?'OpenRouter':configured.groq?'Groq':configured.gemini?'Gemini':null;
     $('#engineDot')?.classList.toggle('is-fallback',!status.ready);
