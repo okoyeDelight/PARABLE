@@ -1,6 +1,6 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
-import {
 import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
+import {
   bootstrapContinuity,
   buildRenderContinuityContract,
   compactContinuityContext,
