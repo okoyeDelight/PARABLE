@@ -21,6 +21,7 @@ on:
 
 permissions:
   contents: read
+  statuses: read
 
 concurrency:
   group: parable-ai-v8-benchmark
@@ -31,9 +32,62 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: Wait for AI V8 Deploy Preview
+      - name: Resolve exact Netlify deploy for this commit
         env:
-          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const repo = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const token = process.env.GH_TOKEN;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          for (let attempt = 1; attempt <= 90; attempt++) {
+            const response = await fetch(
+              `https://api.github.com/repos/${repo}/commits/${sha}/status`,
+              {
+                headers: {
+                  authorization: `Bearer ${token}`,
+                  accept: 'application/vnd.github+json',
+                  'x-github-api-version': '2022-11-28'
+                },
+                cache: 'no-store'
+              }
+            );
+
+            if (response.ok) {
+              const body = await response.json();
+              const status = (body.statuses || []).find(
+                item => item.context === 'netlify/parable-studio/deploy-preview'
+              );
+
+              console.log(
+                `attempt ${attempt}: netlify=${status?.state || 'missing'} target=${status?.target_url || 'none'}`
+              );
+
+              if (status?.state === 'failure' || status?.state === 'error') {
+                throw new Error('Netlify marked this exact commit deploy as failed.');
+              }
+
+              if (status?.state === 'success') {
+                const match = String(status.target_url || '').match(/\/deploys\/([a-zA-Z0-9_-]+)/);
+                if (!match) throw new Error('Could not resolve exact Netlify deploy id.');
+                const base = `https://${match[1]}--parable-studio.netlify.app`;
+                fs.appendFileSync(process.env.GITHUB_ENV, `PREVIEW_BASE=${base}\n`);
+                console.log('Exact preview:', base);
+                process.exit(0);
+              }
+            }
+
+            await sleep(4000);
+          }
+
+          throw new Error('Timed out waiting for the exact Netlify deploy.');
+          NODE
+
+      - name: Wait for AI V8 Deploy Preview
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -58,8 +112,6 @@ jobs:
           NODE
 
       - name: Run isolated synthetic Story + Critic benchmark
-        env:
-          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
         run: |
           set -euo pipefail
           node <<'NODE'
