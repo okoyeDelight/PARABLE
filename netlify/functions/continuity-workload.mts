@@ -9,6 +9,7 @@ import {
   completeJob,
   failJob,
   markJobProcessing,
+  markJobRetrying,
   readDurableJob,
   readJobPayload
 } from './_lib/job-store.mts';
@@ -80,9 +81,9 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
     });
   } catch (error) {
     const message = clean(error instanceof Error ? error.message : error, 1000);
-    await failJob(jobId, message);
+    await markJobRetrying(jobId, message, Number(event.attempt || 0) + 1);
     throw new ErrorRetryAfterDelay({
-      message: 'Internal continuity call failed: ' + message,
+      message: 'Internal pipeline call failed: ' + message,
       retryDelay: Math.min(120000, 3000 * Math.pow(2, Number(event.attempt || 0)))
     });
   }
@@ -102,7 +103,7 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
   ) || ('HTTP ' + response.status);
 
   if (response.status === 429 || response.status >= 500) {
-    await failJob(jobId, message);
+    await markJobRetrying(jobId, message, Number(event.attempt || 0) + 1);
     throw new ErrorRetryAfterDelay({
       message,
       retryDelay: Math.min(180000, 5000 * Math.pow(2, Number(event.attempt || 0)))
@@ -114,7 +115,7 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
     kind === 'shot-state' &&
     /previous|processed in order|scene must pass|pre-scene/i.test(message)
   ) {
-    await failJob(jobId, message);
+    await markJobRetrying(jobId, message, Number(event.attempt || 0) + 1);
     throw new ErrorRetryAfterDelay({
       message,
       retryDelay: Math.min(60000, 2500 * Math.pow(2, Number(event.attempt || 0)))
