@@ -241,8 +241,8 @@ jobs:
                 '**This is not recorded as a model-quality pass.** The quality benchmark must run again when provider capacity is available.'
               ].join('\n');
               appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
-              console.log('::warning::External AI quota blocked model-quality benchmarking. Resilience behavior passed; model quality remains unverified for this commit.');
-              process.exit(0);
+              console.log('::error::External AI capacity blocked model-quality verification. Infrastructure resilience passed, but V8 quality is NOT accepted for this commit.');
+              throw new Error('V8_MODEL_QUALITY_UNVERIFIED: external model capacity/quota prevented the required real-model Story Understanding benchmark.');
             }
 
             const run = outcome.body;
@@ -267,8 +267,8 @@ jobs:
                 process.env.GITHUB_STEP_SUMMARY,
                 '\nCritic model-quality checks were also deferred because the external provider quota became unavailable.\n'
               );
-              console.log('::warning::External AI quota blocked Film Critic model-quality benchmarking. Resilience behavior passed; critic model quality remains unverified for this commit.');
-              process.exit(0);
+              console.log('::error::External AI capacity blocked Film Critic model-quality verification. V8 quality is NOT accepted for this commit.');
+              throw new Error('V8_CRITIC_QUALITY_UNVERIFIED: external model capacity/quota prevented the required real-model Film Critic benchmark.');
             }
 
             const run = outcome.body;

@@ -138,53 +138,90 @@ async function openRouterFree(
 ) {
   const apiKey = Netlify.env.get('OPENROUTER_API_KEY') || '';
   if (!apiKey) throw new Error('OpenRouter credential is not configured on this Deploy Preview.');
+
+  const configuredModel = clean(
+    Netlify.env.get('PARABLE_BENCHMARK_MODEL') ||
+    Netlify.env.get('PARABLE_OPENROUTER_MODEL') ||
+    '',
+    180
+  );
+  const candidates = [...new Set([
+    configuredModel,
+    'openrouter/free'
+  ].filter(Boolean))].slice(0, 2);
+
   const errors: string[] = [];
 
-  // The free router's concrete backing model changes over time. Do not pin a free
-  // slug here. Instead require native structured-output support and let OpenRouter
-  // choose among the currently healthy free endpoints on every attempt.
-  // Keep every serverless benchmark invocation below the platform deadline.
-  // Provider retries happen at the workflow level too, so two bounded model
-  // attempts are safer than letting one Lambda sit idle until the edge returns
-  // a 502/504 without a usable diagnostic.
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Prefer the explicitly configured Deploy Preview model so benchmark quality
+  // is reproducible when a suitable model is available. Fall back to OpenRouter's
+  // dynamic free router only if the configured model fails. The explicit-model
+  // path requests JSON mode because some high-quality free models support JSON
+  // output without strict JSON-schema enforcement.
+  for (const candidate of candidates) {
+    const strictSchema = candidate === 'openrouter/free';
     const started = Date.now();
-    const timeout = timeoutSignal(8500);
+    const timeout = timeoutSignal(12000);
     let providerLease: ProviderGuardLease | null = null;
     try {
       providerLease = await acquireProviderGuard({
         service: 'ai',
         provider: 'openrouter',
-        model: 'openrouter/free',
-        operationId: 'benchmark:' + stage + ':' + schemaName + ':' + attempt,
-        leaseMs: 20000
+        model: candidate,
+        operationId: 'benchmark:' + stage + ':' + schemaName + ':' + candidate,
+        leaseMs: 25000
       });
 
+      const payload: Record<string, any> = {
+        model: candidate,
+        temperature: 0.1,
+        max_tokens: stage === 'story-understanding' ? 1200 : 1000,
+        messages,
+        response_format: strictSchema
+          ? { type: 'json_schema', json_schema: { name: schemaName, strict: true, schema } }
+          : { type: 'json_object' }
+      };
+
+      if (strictSchema) {
+        payload.provider = {
+          require_parameters: true,
+          allow_fallbacks: true,
+          sort: { by: 'throughput', partition: 'none' }
+        };
+      }
+
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST', signal: timeout.signal,
+        method: 'POST',
+        signal: timeout.signal,
         headers: {
           authorization: `Bearer ${apiKey}`,
           'content-type': 'application/json',
           'HTTP-Referer': Netlify.env.get('PARABLE_PUBLIC_URL') || 'https://parable-studio.netlify.app',
           'X-OpenRouter-Title': 'PARABLE Synthetic Benchmark'
         },
-        body: JSON.stringify({
-          model: 'openrouter/free',
-          temperature: 0.1,
-          max_tokens: stage === 'story-understanding' ? 1200 : 1000,
-          messages,
-          response_format: { type: 'json_schema', json_schema: { name: schemaName, strict: true, schema } },
-          provider: { require_parameters: true, allow_fallbacks: true, sort: { by: 'throughput', partition: 'none' } }
-        })
+        body: JSON.stringify(payload)
       });
+
       const body = await response.json().catch(() => ({})) as any;
       if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
+
       const parsed = parseJson(body?.choices?.[0]?.message?.content);
-      const model = String(body?.model || 'openrouter/free');
+      const model = String(body?.model || candidate);
       await releaseProviderGuard(providerLease, { outcome: 'success' }).catch(() => null);
       providerLease = null;
-      await recordAIHealth({ stage, lane: 'benchmark', provider: 'openrouter', model, ok: true, latency_ms: Date.now() - started });
-      return { parsed, model, finish_reason: body?.choices?.[0]?.finish_reason || null };
+      await recordAIHealth({
+        stage,
+        lane: 'benchmark',
+        provider: 'openrouter',
+        model,
+        ok: true,
+        latency_ms: Date.now() - started
+      });
+      return {
+        parsed,
+        model,
+        requested_model: candidate,
+        finish_reason: body?.choices?.[0]?.finish_reason || null
+      };
     } catch (error) {
       if (providerLease) {
         await releaseProviderGuard(providerLease, {
@@ -194,13 +231,22 @@ async function openRouterFree(
         providerLease = null;
       }
       const reason = error instanceof Error ? error.message : String(error);
-      errors.push(`attempt ${attempt}: ${reason}`);
-      await recordAIHealth({ stage, lane: 'benchmark', provider: 'openrouter', model: 'openrouter/free', ok: false, latency_ms: Date.now() - started, error: reason });
+      errors.push(candidate + ': ' + reason);
+      await recordAIHealth({
+        stage,
+        lane: 'benchmark',
+        provider: 'openrouter',
+        model: candidate,
+        ok: false,
+        latency_ms: Date.now() - started,
+        error: reason
+      });
     } finally {
       timeout.cancel();
     }
   }
-  throw new Error(errors.join(' | ').slice(0, 1600));
+
+  throw new Error(errors.join(' | ').slice(0, 1800));
 }
 
 export async function runFreeStoryBenchmark(fixture: BenchmarkFixture) {
@@ -209,7 +255,7 @@ export async function runFreeStoryBenchmark(fixture: BenchmarkFixture) {
   const response = await openRouterFree([{ role: 'system', content: system }, { role: 'user', content: user }], 'story-understanding', STORY_SCHEMA, 'parable_benchmark_story');
   return {
     data: sanitizeStory(response.parsed, fixture),
-    engine: { provider: 'openrouter', model: response.model, mode: 'model', version: 'free-benchmark-router-v3', privacy_mode: 'benchmark-free-routing-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
+    engine: { provider: 'openrouter', model: response.model, requested_model: response.requested_model || null, mode: 'model', version: 'benchmark-router-v4', privacy_mode: 'benchmark-free-routing-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
   };
 }
 
@@ -219,6 +265,6 @@ export async function runFreeCriticBenchmark(fixture: BenchmarkFixture, adaptati
   const response = await openRouterFree([{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }], 'film-critic', CRITIC_SCHEMA, 'parable_benchmark_critic');
   return {
     data: sanitizeCritic(response.parsed, adaptation),
-    engine: { provider: 'openrouter', model: response.model, mode: 'model', version: 'free-benchmark-critic-v3', privacy_mode: 'benchmark-free-routing-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
+    engine: { provider: 'openrouter', model: response.model, requested_model: response.requested_model || null, mode: 'model', version: 'benchmark-critic-v4', privacy_mode: 'benchmark-free-routing-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
   };
 }
