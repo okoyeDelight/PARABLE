@@ -3,8 +3,8 @@
 -- Durable queues accept bursts while PostgreSQL limits concurrently executing
 -- workers globally per deploy/production namespace and fairly per project.
 --
--- The active worker pool is bounded; excess work stays durable and retries
--- instead of stampeding AI/render providers or exhausting serverless capacity.
+-- Admission locks use pg_try_advisory_xact_lock so contention fails fast into
+-- durable retry/backpressure instead of consuming serverless time waiting.
 
 create index if not exists durable_jobs_active_lease_idx
   on public.durable_jobs(status, lease_expires_at)
@@ -215,8 +215,23 @@ begin
       else split_part(v_job.project_id,':',1)
     end;
 
-    perform pg_advisory_xact_lock(hashtextextended('parable:jobs:global:'||v_capacity_scope,0));
-    perform pg_advisory_xact_lock(hashtextextended('parable:jobs:project:'||v_job.project_id,0));
+    if not pg_try_advisory_xact_lock(hashtextextended('parable:jobs:global:'||v_capacity_scope,0)) then
+      return jsonb_build_object(
+        'claimed',false,
+        'job',to_jsonb(v_job),
+        'reason','admission-busy',
+        'retry_after_ms',250
+      );
+    end if;
+
+    if not pg_try_advisory_xact_lock(hashtextextended('parable:jobs:project:'||v_job.project_id,0)) then
+      return jsonb_build_object(
+        'claimed',false,
+        'job',to_jsonb(v_job),
+        'reason','admission-busy',
+        'retry_after_ms',250
+      );
+    end if;
 
     update public.durable_jobs
     set status='retrying',
