@@ -32,6 +32,10 @@ on:
       - 'netlify/functions/canon-assets.mts'
       - 'netlify/functions/canon-asset.mts'
       - 'netlify/functions/keyframe-assets.mts'
+      - 'netlify/functions/_lib/transactional-state.mts'
+      - 'netlify/functions/state-health.mts'
+      - 'netlify/functions/state-self-test.mts'
+      - 'database/transactional-hot-state-v1.sql'
       - '.github/workflows/durable-pipeline-smoke.yml'
   workflow_dispatch:
 
@@ -61,14 +65,18 @@ jobs:
               const r = await fetch(base + '/api/platform-health', { cache: 'no-store' });
               const body = await r.json().catch(() => ({}));
               const architecture = body?.architecture || {};
+              const deployedSha = body?.deployment?.commit_ref || 'unknown';
               console.log(
-                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'}`
+                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'} commit=${deployedSha}`
               );
               if (
                 r.ok &&
                 body?.ok === true &&
+                deployedSha === process.env.GITHUB_SHA &&
                 architecture?.queue_backend_abstraction === true &&
-                architecture?.single_queue_dependency === false
+                architecture?.single_queue_dependency === false &&
+                architecture?.transactional_hot_state === 'postgres-authoritative-cas' &&
+                body?.checks?.transactional_state?.ok === true
               ) process.exit(0);
             } catch (error) {
               console.log(`attempt ${attempt}: ${error.message}`);
@@ -77,6 +85,54 @@ jobs:
           }
 
           throw new Error('Scale foundation preview did not become healthy in time.');
+          NODE
+
+
+      - name: Verify transactional state bridge
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/state-health', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('state health:', r.status, JSON.stringify(body).slice(0, 2500));
+
+          if (!r.ok || body?.ok !== true || body?.mode !== 'postgres' || body?.transactional !== true) {
+            throw new Error('Transactional state health failed: ' + JSON.stringify(body));
+          }
+          if (body?.upstream?.engine !== 'parable-postgres-hot-state-v1') {
+            throw new Error('Unexpected transactional state engine.');
+          }
+          NODE
+
+      - name: Verify PostgreSQL collision and anti-double-spend guards
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/state-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('state self-test:', r.status, JSON.stringify(body).slice(0, 3000));
+
+          if (!r.ok || body?.ok !== true) {
+            throw new Error('Transactional state self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.project_revision_race?.one_writer_committed !== true) {
+            throw new Error('Exactly one competing project writer did not commit.');
+          }
+          if (body?.project_revision_race?.stale_writer_rejected !== true) {
+            throw new Error('The stale competing project writer was not rejected.');
+          }
+          if (body?.provider_double_spend_race?.one_submission_claimed !== true) {
+            throw new Error('Provider submission ownership was not serialized.');
+          }
+          if (body?.provider_double_spend_race?.automatic_retry_blocked !== true) {
+            throw new Error('Ambiguous provider submission did not fail closed.');
+          }
           NODE
 
       - name: Verify end-to-end durable queue fallback and idempotency
@@ -125,8 +181,8 @@ jobs:
           if (!r.ok || body?.ok !== true) {
             throw new Error('Project concurrency self-test failed: ' + JSON.stringify(body));
           }
-          if (body?.overlapping_mutation_blocked !== true) {
-            throw new Error('Overlapping project mutation was not blocked.');
+          if (body?.overlapping_mutation_serialized !== true) {
+            throw new Error('Overlapping project mutation was not serialized safely.');
           }
           if (body?.stale_revision_rejected !== true) {
             throw new Error('Stale project revision was not rejected.');
@@ -135,5 +191,8 @@ jobs:
             throw new Error('Unexpected final project revision.');
           }
 
-          console.log('PARABLE project concurrency guard passed.');
+          if (body?.probe_version !== 'project-concurrency-v2') {
+            throw new Error('Unexpected project concurrency self-test version.');
+          }
+          console.log('PARABLE project concurrency guard passed via backend:', body.backend);
           NODE
