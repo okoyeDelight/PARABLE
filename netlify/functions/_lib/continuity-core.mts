@@ -27,7 +27,12 @@ export type EntityState = {
 };
 
 export type ContinuityWarning = {
-  code: 'LOCKED_FACT_CONFLICT' | 'UNEXPLAINED_CHANGE' | 'KNOWLEDGE_LEAK' | 'TIMELINE_REGRESSION' | 'MISSING_ENTITY';
+  code:
+    | 'LOCKED_FACT_CONFLICT'
+    | 'UNEXPLAINED_CHANGE'
+    | 'KNOWLEDGE_LEAK'
+    | 'TIMELINE_REGRESSION'
+    | 'MISSING_ENTITY';
   severity: 'info' | 'warning' | 'blocker';
   scene_id: string;
   entity_id?: string;
@@ -38,7 +43,7 @@ export type ContinuityWarning = {
 };
 
 export type ContinuitySnapshot = {
-  schema_version: 'continuity-v1';
+  schema_version: 'continuity-v2';
   project_id: string;
   story_version: string;
   scene_cursor: number;
@@ -74,12 +79,19 @@ export type SceneKnowledgeInput = {
   forgets?: string[];
 };
 
+export type SceneKnowledgeRequirement = {
+  character: string;
+  fact: string;
+  evidence?: string;
+};
+
 export type SceneContinuityInput = {
   id?: string;
   index?: number;
   time_label?: string;
   facts?: SceneFactInput[];
   knowledge?: SceneKnowledgeInput[];
+  knowledge_requirements?: SceneKnowledgeRequirement[];
   open_threads_add?: string[];
   open_threads_resolve?: string[];
   theology_flags?: string[];
@@ -92,6 +104,13 @@ const slug = (value: string) => value
   .toLowerCase()
   .slice(0, 72) || 'entity';
 
+const normalizeFact = (value: unknown) => String(value ?? '')
+  .toLocaleLowerCase()
+  .replace(/[“”‘’]/g, '"')
+  .replace(/[^a-z0-9"']+/g, ' ')
+  .replace(/s+/g, ' ')
+  .trim();
+
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 const clampConfidence = (value: unknown, fallback = 0.8) => {
@@ -101,6 +120,8 @@ const clampConfidence = (value: unknown, fallback = 0.8) => {
 
 const statefulFields = new Set([
   'appearance',
+  'face',
+  'hair',
   'clothing',
   'wardrobe',
   'emotional_state',
@@ -112,7 +133,23 @@ const statefulFields = new Set([
   'prop_state',
   'relationship_state',
   'time',
-  'time_of_day'
+  'time_of_day',
+  'weather',
+  'lighting_state'
+]);
+
+const identityFields = new Set([
+  'identity',
+  'appearance',
+  'face',
+  'skin_tone',
+  'hair',
+  'age',
+  'body',
+  'height',
+  'voice',
+  'accent',
+  'actor_identity'
 ]);
 
 function entityId(kind: EntityState['kind'], name: string, explicit?: string) {
@@ -121,13 +158,22 @@ function entityId(kind: EntityState['kind'], name: string, explicit?: string) {
     : `${kind}_${slug(name)}`;
 }
 
+export function resolveEntityId(snapshot: ContinuitySnapshot, kind: EntityState['kind'], name: string) {
+  const wanted = normalizeFact(name);
+  const existing = Object.values(snapshot.entities).find((entity) =>
+    entity.kind === kind && normalizeFact(entity.name) === wanted
+  );
+  return existing?.id || entityId(kind, name);
+}
+
 function ensureEntity(
   snapshot: ContinuitySnapshot,
   kind: EntityState['kind'],
   name: string,
   explicit?: string
 ) {
-  const id = entityId(kind, name, explicit);
+  const resolved = explicit || resolveEntityId(snapshot, kind, name);
+  const id = entityId(kind, name, resolved);
   if (!snapshot.entities[id]) {
     snapshot.entities[id] = { id, name, kind, facts: {}, history: [] };
   }
@@ -135,7 +181,11 @@ function ensureEntity(
 }
 
 function primitiveFactsFromCharacter(character: Record<string, any>): SceneFactInput[] {
-  const fields = ['role', 'desire', 'fear', 'wound', 'belief', 'arc', 'knowledge_state', 'appearance', 'clothing', 'wardrobe'];
+  const fields = [
+    'role', 'desire', 'fear', 'wound', 'belief', 'arc', 'knowledge_state',
+    'identity', 'appearance', 'face', 'skin_tone', 'hair', 'age', 'body',
+    'height', 'voice', 'accent', 'actor_identity', 'clothing', 'wardrobe'
+  ];
   return fields
     .filter((field) => character[field] !== undefined && character[field] !== null && character[field] !== '')
     .map((field) => ({
@@ -145,7 +195,7 @@ function primitiveFactsFromCharacter(character: Record<string, any>): SceneFactI
       value: character[field],
       basis: (character.source_basis?.basis || 'inferred') as Basis,
       confidence: clampConfidence(character.source_basis?.confidence, 0.65),
-      locked: ['role'].includes(field)
+      locked: field === 'role' || (identityFields.has(field) && character.source_basis?.basis === 'explicit')
     }));
 }
 
@@ -156,7 +206,7 @@ export function bootstrapContinuity(args: {
 }): ContinuitySnapshot {
   const now = new Date().toISOString();
   const snapshot: ContinuitySnapshot = {
-    schema_version: 'continuity-v1',
+    schema_version: 'continuity-v2',
     project_id: args.projectId,
     story_version: args.storyVersion || 'story_unknown',
     scene_cursor: 0,
@@ -230,6 +280,15 @@ export function bootstrapContinuity(args: {
   return snapshot;
 }
 
+function knowledgeContains(known: string[], required: string) {
+  const wanted = normalizeFact(required);
+  if (!wanted) return true;
+  return known.some((item) => {
+    const have = normalizeFact(item);
+    return have === wanted || have.includes(wanted) || wanted.includes(have);
+  });
+}
+
 export function evaluateAndApplyScene(
   current: ContinuitySnapshot,
   scene: SceneContinuityInput,
@@ -247,6 +306,26 @@ export function evaluateAndApplyScene(
       scene_id: sceneId,
       message: `Scene index ${requestedIndex} is behind the current continuity cursor ${snapshot.scene_cursor}.`
     });
+  }
+
+  for (const requirement of Array.isArray(scene.knowledge_requirements) ? scene.knowledge_requirements : []) {
+    const name = String(requirement?.character || '').trim();
+    const fact = String(requirement?.fact || '').trim();
+    if (!name || !fact) continue;
+    const characterId = resolveEntityId(snapshot, 'character', name);
+    const known = snapshot.character_knowledge[characterId] || [];
+    if (!knowledgeContains(known, fact)) {
+      warnings.push({
+        code: 'KNOWLEDGE_LEAK',
+        severity: 'blocker',
+        scene_id: sceneId,
+        entity_id: characterId,
+        field: 'knowledge',
+        message: `${name} acts as if they know "${fact}" before continuity records them learning it.`,
+        previous: known,
+        incoming: fact
+      });
+    }
   }
 
   for (const input of Array.isArray(scene.facts) ? scene.facts : []) {
@@ -267,6 +346,13 @@ export function evaluateAndApplyScene(
     const entity = ensureEntity(snapshot, kind, fallbackName, input.entity_id);
     const previous = entity.facts[field];
     const transition = Boolean(input.transition);
+    const basis = input.basis || 'explicit';
+    const confidence = clampConfidence(input.confidence);
+    const autoLockIdentity = !previous
+      && kind === 'character'
+      && identityFields.has(field)
+      && ['explicit', 'human'].includes(basis)
+      && confidence >= 0.75;
 
     if (previous && !same(previous.value, input.value)) {
       if (previous.locked && !transition) {
@@ -300,17 +386,17 @@ export function evaluateAndApplyScene(
         field,
         previous: previous?.value,
         next: input.value,
-        basis: input.basis || 'explicit',
-        confidence: clampConfidence(input.confidence),
+        basis,
+        confidence,
         transition,
         at: new Date().toISOString()
       });
       entity.facts[field] = {
         value: input.value,
         scene_id: sceneId,
-        basis: input.basis || 'explicit',
-        confidence: clampConfidence(input.confidence),
-        locked: Boolean(input.locked ?? previous?.locked),
+        basis,
+        confidence,
+        locked: Boolean(input.locked ?? previous?.locked ?? autoLockIdentity),
         note: input.note
       };
     }
@@ -377,5 +463,74 @@ export function compactContinuityContext(snapshot: ContinuitySnapshot) {
     character_knowledge: snapshot.character_knowledge,
     open_threads: snapshot.open_threads,
     theology_flags: snapshot.theology_flags
+  };
+}
+
+export function buildRenderContinuityContract(snapshot: ContinuitySnapshot, sceneId?: string | null) {
+  const characterStates = Object.values(snapshot.entities)
+    .filter((entity) => entity.kind === 'character')
+    .map((entity) => {
+      const facts = Object.fromEntries(Object.entries(entity.facts).map(([field, fact]) => [field, fact.value]));
+      const locked = Object.fromEntries(Object.entries(entity.facts)
+        .filter(([, fact]) => fact.locked)
+        .map(([field, fact]) => [field, fact.value]));
+      return {
+        id: entity.id,
+        name: entity.name,
+        locked_identity: locked,
+        current_state: facts,
+        knowledge: snapshot.character_knowledge[entity.id] || []
+      };
+    });
+
+  const props = Object.values(snapshot.entities)
+    .filter((entity) => entity.kind === 'prop')
+    .map((entity) => ({
+      id: entity.id,
+      name: entity.name,
+      state: Object.fromEntries(Object.entries(entity.facts).map(([field, fact]) => [field, fact.value]))
+    }));
+
+  const locations = Object.values(snapshot.entities)
+    .filter((entity) => entity.kind === 'location')
+    .map((entity) => ({
+      id: entity.id,
+      name: entity.name,
+      state: Object.fromEntries(Object.entries(entity.facts).map(([field, fact]) => [field, fact.value]))
+    }));
+
+  const relationships = Object.values(snapshot.entities)
+    .filter((entity) => entity.kind === 'relationship')
+    .map((entity) => ({
+      id: entity.id,
+      name: entity.name,
+      state: Object.fromEntries(Object.entries(entity.facts).map(([field, fact]) => [field, fact.value]))
+    }));
+
+  const relevantWarnings = snapshot.warnings.filter((warning) => !sceneId || warning.scene_id === sceneId);
+  const blockers = relevantWarnings.filter((warning) => warning.severity === 'blocker');
+
+  return {
+    contract_version: 'render-continuity-v1',
+    project_id: snapshot.project_id,
+    story_version: snapshot.story_version,
+    scene_id: sceneId || snapshot.last_scene_id,
+    scene_cursor: snapshot.scene_cursor,
+    timeline: snapshot.timeline,
+    characters: characterStates,
+    props,
+    locations,
+    relationships,
+    open_threads: snapshot.open_threads,
+    theology_flags: snapshot.theology_flags,
+    continuity_warnings: relevantWarnings,
+    hard_blockers: blockers,
+    hard_rules: [
+      'Do not alter locked character identity facts.',
+      'Do not change wardrobe, injuries, props, location or emotional state unless the scene contains an explicit transition.',
+      'Do not let a character react to information they have not learned.',
+      'Preserve established screen geography and object ownership unless the scene changes them.'
+    ],
+    can_render: blockers.length === 0
   };
 }
