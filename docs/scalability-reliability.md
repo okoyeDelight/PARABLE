@@ -28,14 +28,17 @@ The public endpoint stores the full request using a claim-check pattern and send
 This prevents large story payloads from being copied through the queue and gives PARABLE:
 
 - durable execution;
+- execution leases to collapse duplicate queue deliveries before an expensive AI call;
 - retry with exponential backoff;
 - dead-letter handling through Netlify Async Workloads;
 - fast 202 responses to clients;
 - load decoupling between user traffic and AI-provider latency.
 
-Job status is read with:
+Job status is read through the dedicated high-volume polling path:
 
-`GET /api/jobs?id=job_xxx`
+`GET /api/job-status?id=job_xxx`
+
+The status endpoint returns an adaptive `poll_after_ms` hint. Submission and polling use separate rate-limit envelopes so a large population waiting for jobs does not consume the mutation budget.
 
 The endpoint supports idempotency through the standard `Idempotency-Key` request header. Repeated submissions with the same key and same payload resolve to the same durable job instead of paying for duplicate AI work.
 
@@ -50,6 +53,12 @@ This is not an artificial limitation. Shot N+1 needs the physical state left by 
 Different projects and different users can still execute concurrently.
 
 ### 4. Append-only high-volume telemetry
+
+Both AI-provider health and durable-job lifecycle telemetry use time-sharded append-only event keys. No manuscript, prompt, or job payload text is copied into operational telemetry.
+
+Queue health can therefore be derived without many workers contending on one shared counter blob.
+
+
 
 AI health telemetry no longer updates one shared aggregate blob on every request.
 
@@ -137,6 +146,8 @@ The repository includes a k6 test and a manual GitHub Actions workflow.
 It ramps through progressively higher traffic and reaches 1,000 virtual users against read-only / low-cost endpoints. Expensive AI generation is intentionally excluded from the default 1,000-user test to avoid accidental provider cost.
 
 A separate controlled workload test should be used for AI throughput after provider quotas are known.
+
+The repository also has an automated **Durable Pipeline Smoke** gate. It resolves the immutable Netlify Deploy Preview for the exact Git commit, submits a zero-cost queue probe, waits for the worker to execute it, verifies idempotent replay returns the same job, and verifies an idempotency-key payload conflict is rejected. Pinning CI to the immutable deploy prevents later branch pushes from moving the preview alias underneath a long-running test.
 
 ## Infrastructure rule going forward
 
