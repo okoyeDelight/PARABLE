@@ -225,25 +225,31 @@ async function callGroqBenchmark(
     stage,
     operationId: 'benchmark:' + stage + ':groq:' + schemaName,
     run: async (signal) => {
-      const attempts = [
-        {
-          label: 'strict-json-schema',
-          requestMessages: messages,
-          responseFormat: {
-            type: 'json_schema',
-            json_schema: { name: schemaName, strict: true, schema }
-          }
-        },
-        {
-          label: 'json-object',
-          requestMessages: messages.map((item, index) =>
-            index === messages.length - 1
-              ? { ...item, content: item.content + jsonInstruction(schema) }
-              : item
-          ),
-          responseFormat: { type: 'json_object' }
+      const strictAttempt = {
+        label: 'strict-json-schema',
+        requestMessages: messages,
+        responseFormat: {
+          type: 'json_schema',
+          json_schema: { name: schemaName, strict: true, schema }
         }
-      ];
+      };
+      const jsonObjectAttempt = {
+        label: 'json-object',
+        requestMessages: messages.map((item, index) =>
+          index === messages.length - 1
+            ? { ...item, content: item.content + jsonInstruction(schema) }
+            : item
+        ),
+        responseFormat: { type: 'json_object' }
+      };
+
+      // Story Understanding has been stable under Groq's strict schema mode.
+      // Film Critic is more verbose and has intermittently tripped provider-side
+      // schema validation, so prefer JSON Object Mode there and let PARABLE's
+      // own sanitizer + fixture-specific quality gate enforce correctness.
+      const attempts = stage === 'film-critic'
+        ? [jsonObjectAttempt, strictAttempt]
+        : [strictAttempt, jsonObjectAttempt];
 
       const errors: string[] = [];
       for (const attempt of attempts) {
@@ -257,7 +263,7 @@ async function callGroqBenchmark(
           body: JSON.stringify({
             model,
             temperature: 0.1,
-            max_tokens: stage === 'story-understanding' ? 1200 : 1000,
+            max_tokens: stage === 'story-understanding' ? 1200 : 760,
             messages: attempt.requestMessages,
             response_format: attempt.responseFormat
           })
