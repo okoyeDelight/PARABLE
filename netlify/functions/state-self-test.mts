@@ -1,8 +1,15 @@
 import {
   bootstrapTransactionalProjectState,
+  claimTransactionalJob,
   commitTransactionalProjectMutation,
+  ensureTransactionalJob,
   readTransactionalProjectState,
-  transactionalStateMode
+  revokeTransactionalRights,
+  transactionalRequestFingerprint,
+  transactionalStateMode,
+  transitionTransactionalJob,
+  upsertTransactionalRights,
+  TransactionalStateError
 } from './_lib/transactional-state.mts';
 import {
   beginProviderSubmission,
@@ -36,27 +43,31 @@ export default async (request: Request) => {
       stateRefs: {}
     });
 
-    const mutations = await Promise.allSettled([
-      commitTransactionalProjectMutation({
-        projectId,
-        expectedRevision: 0,
-        eventId: 'evt_a_' + token,
-        mutationType: 'chaos-probe',
-        metadata: { writer: 'a' },
-        statePatch: { winner: 'artifact-a' }
-      }),
-      commitTransactionalProjectMutation({
-        projectId,
-        expectedRevision: 0,
-        eventId: 'evt_b_' + token,
-        mutationType: 'chaos-probe',
-        metadata: { writer: 'b' },
-        statePatch: { winner: 'artifact-b' }
-      })
-    ]);
+    const first = await commitTransactionalProjectMutation({
+      projectId,
+      expectedRevision: 0,
+      eventId: 'evt_first_' + token,
+      mutationType: 'self-test',
+      metadata: { writer: 'first' },
+      statePatch: { winner: 'artifact-first' }
+    });
 
-    const fulfilled = mutations.filter((item) => item.status === 'fulfilled').length;
-    const rejected = mutations.filter((item) => item.status === 'rejected').length;
+    let staleWriterRejected = false;
+    try {
+      await commitTransactionalProjectMutation({
+        projectId,
+        expectedRevision: 0,
+        eventId: 'evt_stale_' + token,
+        mutationType: 'self-test',
+        metadata: { writer: 'stale' },
+        statePatch: { winner: 'artifact-stale' }
+      });
+    } catch (error) {
+      staleWriterRejected =
+        error instanceof TransactionalStateError &&
+        error.code === 'PROJECT_REVISION_CONFLICT';
+    }
+
     const head = await readTransactionalProjectState(projectId);
 
     const ensured = await ensureProviderTransaction({
@@ -69,13 +80,16 @@ export default async (request: Request) => {
       estimatedCostUsd: 0.01
     });
 
-    const providerRace = await Promise.allSettled([
-      beginProviderSubmission(ensured.transaction.id, projectId),
-      beginProviderSubmission(ensured.transaction.id, projectId)
-    ]);
+    const submitting = await beginProviderSubmission(ensured.transaction.id, projectId);
 
-    const providerFulfilled = providerRace.filter((item) => item.status === 'fulfilled').length;
-    const providerRejected = providerRace.filter((item) => item.status === 'rejected').length;
+    let duplicateSubmissionBlocked = false;
+    try {
+      await beginProviderSubmission(ensured.transaction.id, projectId);
+    } catch (error) {
+      duplicateSubmissionBlocked =
+        error instanceof ProviderTransactionError &&
+        error.code === 'PROVIDER_SUBMISSION_AMBIGUOUS';
+    }
 
     const ambiguous = await markProviderSubmissionAmbiguous({
       id: ensured.transaction.id,
@@ -92,35 +106,169 @@ export default async (request: Request) => {
         error.code === 'PROVIDER_SUBMISSION_AMBIGUOUS';
     }
 
+    // Rights are versioned in PostgreSQL and revalidated when a paid provider
+    // submission is claimed.
+    const assetHash = await transactionalRequestFingerprint('rights:' + token);
+    const rights = await upsertTransactionalRights({
+      projectId,
+      assetSha256: assetHash,
+      rights: {
+        status: 'approved',
+        basis: 'generated',
+        rights_holder: 'PARABLE synthetic self-test',
+        likeness_permission: true,
+        voice_permission: true,
+        ai_generation_permission: true,
+        commercial_use: false,
+        territories: ['self-test'],
+        expires_at: null,
+        evidence_sha256: null,
+        evidence_note: 'Synthetic deploy-preview rights probe.',
+        declared_by_actor_id: 'usr_preview_owner',
+        declared_at: new Date().toISOString()
+      }
+    });
+
+    const rightsAttempt = await ensureProviderTransaction({
+      projectId,
+      operationType: 'rights-probe-render',
+      operationId: 'rights_attempt_' + token,
+      provider: 'probe-provider',
+      model: 'probe-model',
+      requestBody: { prompt: 'rights-probe', token },
+      estimatedCostUsd: 0.01
+    });
+
+    await revokeTransactionalRights({
+      projectId,
+      assetSha256: assetHash,
+      actorId: 'usr_preview_owner',
+      reason: 'Synthetic revocation before submission.'
+    });
+
+    let revokedRightsBlockedSpend = false;
+    try {
+      await beginProviderSubmission(
+        rightsAttempt.transaction.id,
+        projectId,
+        [{
+          asset_sha256: assetHash,
+          rights_revision: Number(rights.rights_revision || 1),
+          require_likeness: true,
+          require_voice: false,
+          require_commercial: false
+        }]
+      );
+    } catch (error) {
+      revokedRightsBlockedSpend =
+        error instanceof TransactionalStateError &&
+        error.code === 'RIGHTS_ASSERTION_FAILED';
+    }
+
+    // Durable worker ownership is atomic in PostgreSQL.
+    const jobId = 'job_probe_' + token;
+    const payloadHash = await transactionalRequestFingerprint({ token, kind: 'scale-noop' });
+    const job = await ensureTransactionalJob({
+      id: jobId,
+      kind: 'scale-noop',
+      projectId,
+      workspaceId: 'ws_probe',
+      actorUserId: 'usr_preview_owner',
+      authContext: {
+        actor_id: 'usr_preview_owner',
+        provider: 'parable-preview',
+        subject: 'preview-owner',
+        workspace_id: 'ws_probe',
+        role: 'owner',
+        action: 'project:edit'
+      },
+      payloadHash,
+      idempotencyKey: 'probe-' + token
+    });
+
+    const leaseA = 'lease_a_' + token;
+    const leaseB = 'lease_b_' + token;
+    const claimA = await claimTransactionalJob({
+      id: jobId,
+      leaseToken: leaseA,
+      attempt: 1,
+      leaseMs: 30000
+    });
+    const claimB = await claimTransactionalJob({
+      id: jobId,
+      leaseToken: leaseB,
+      attempt: 1,
+      leaseMs: 30000
+    });
+
+    let staleLeaseRejected = false;
+    try {
+      await transitionTransactionalJob({
+        id: jobId,
+        toStatus: 'succeeded',
+        leaseToken: leaseB,
+        resultRef: 'synthetic://wrong-worker'
+      });
+    } catch (error) {
+      staleLeaseRejected =
+        error instanceof TransactionalStateError &&
+        error.code === 'JOB_LEASE_MISMATCH';
+    }
+
+    const completed = await transitionTransactionalJob({
+      id: jobId,
+      toStatus: 'succeeded',
+      leaseToken: leaseA,
+      resultRef: 'synthetic://self-test'
+    });
+
     const ok =
-      fulfilled === 1 &&
-      rejected === 1 &&
+      first.revision === 1 &&
+      staleWriterRejected &&
       Number(head.revision) === 1 &&
-      providerFulfilled === 1 &&
-      providerRejected === 1 &&
+      submitting.state === 'submitting' &&
+      duplicateSubmissionBlocked &&
       ambiguous?.state === 'ambiguous' &&
-      ambiguousRetryBlocked;
+      ambiguousRetryBlocked &&
+      revokedRightsBlockedSpend &&
+      job.created === true &&
+      claimA.claimed === true &&
+      claimB.claimed === false &&
+      staleLeaseRejected &&
+      completed?.status === 'succeeded';
 
     return json({
       ok,
-      probe_version: 'transactional-state-self-test-v1',
-      project_revision_race: {
-        one_writer_committed: fulfilled === 1,
-        stale_writer_rejected: rejected === 1,
+      probe_version: 'transactional-state-self-test-v2',
+      project_revision: {
+        first_commit: first.revision,
+        stale_writer_rejected: staleWriterRejected,
         final_revision: head.revision
       },
-      provider_double_spend_race: {
-        one_submission_claimed: providerFulfilled === 1,
-        duplicate_claim_rejected: providerRejected === 1,
+      provider_spend_guard: {
+        first_submission_claimed: submitting.state === 'submitting',
+        duplicate_submission_blocked: duplicateSubmissionBlocked,
         ambiguous_state_persisted: ambiguous?.state === 'ambiguous',
         automatic_retry_blocked: ambiguousRetryBlocked
+      },
+      rights_guard: {
+        rights_revision: rights.rights_revision,
+        revoked_rights_blocked_paid_submission: revokedRightsBlockedSpend
+      },
+      durable_job_guard: {
+        created: job.created,
+        first_worker_claimed: claimA.claimed,
+        second_worker_blocked: claimB.claimed === false,
+        stale_worker_completion_rejected: staleLeaseRejected,
+        final_status: completed?.status || null
       }
     }, ok ? 200 : 500);
   } catch (error) {
     return json({
       ok: false,
-      probe_version: 'transactional-state-self-test-v1',
-      error: error instanceof Error ? error.message : String(error)
+      probe_version: 'transactional-state-self-test-v2',
+      error: error instanceof Error ? error.message : String(error),
+      code: error instanceof TransactionalStateError ? error.code : null
     }, 500);
   }
 };
