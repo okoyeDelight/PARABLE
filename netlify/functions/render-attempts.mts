@@ -6,6 +6,7 @@ import {
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
 import { stageProjectArtifact } from './_lib/project-artifacts.mts';
+import { evaluateProposedRenderAttempt } from './_lib/render-budget.mts';
 import type { RenderAttempt, RenderAttemptStatus } from './_lib/render-foundation.mts';
 import {
   appendRenderAttemptEvent,
@@ -30,6 +31,11 @@ const money = (value: unknown) => {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 1000000) / 1000000 : null;
 };
+
+async function sha256Text(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 function transitionAllowed(current: RenderAttemptStatus, next: RenderAttemptStatus) {
   const map: Record<RenderAttemptStatus, RenderAttemptStatus[]> = {
@@ -84,6 +90,9 @@ export default async (request: Request) => {
     const specHash = clean(body.specHash, 96);
     const provider = clean(body.provider, 80);
     const model = clean(body.model, 180);
+    const mode: 'draft' | 'final' = body.draft === true ? 'draft' : 'final';
+    const estimatedCostUsd = money(body.estimatedCostUsd);
+    const idempotencyKey = clean(request.headers.get('idempotency-key') || body.idempotencyKey, 240);
 
     if (![projectId, storyVersion, sceneId, shotId].every((value) => value && safeId(value))) {
       return json({ error: 'Valid projectId, storyVersion, sceneId and shotId are required.' }, 400);
@@ -99,7 +108,7 @@ export default async (request: Request) => {
     });
     if (!spec) return json({ error: 'A compiled ShotRenderSpec is required before creating a render attempt.' }, 409);
 
-    if (spec.human_review.required_before_final_render && body.draft !== true) {
+    if (spec.human_review.required_before_final_render && mode === 'final') {
       return json({
         error: 'This render specification requires human review before a final render attempt.',
         code: 'HUMAN_REVIEW_REQUIRED',
@@ -108,36 +117,135 @@ export default async (request: Request) => {
       }, 409);
     }
 
-    const now = new Date().toISOString();
-    const attempt: RenderAttempt = {
-      attempt_version: 'parable-render-attempt-v1',
-      id: 'render_' + crypto.randomUUID().replaceAll('-', ''),
-      project_id: projectId,
-      story_version: storyVersion,
-      scene_id: sceneId,
-      shot_id: shotId,
-      spec_hash: spec.spec_hash,
-      provider,
-      model,
-      status: 'planned',
-      mode: body.draft === true ? 'draft' : 'final',
-      provider_request_id: null,
-      asset_uri: null,
-      poster_uri: null,
-      estimated_cost_usd: money(body.estimatedCostUsd),
-      actual_cost_usd: null,
-      latency_ms: null,
-      failure_class: null,
-      failure_detail: null,
-      created_at: now,
-      updated_at: now
-    };
+    let attemptId = 'render_' + crypto.randomUUID().replaceAll('-', '');
+    if (idempotencyKey) {
+      const deterministic = await sha256Text([
+        projectId,
+        storyVersion,
+        sceneId,
+        shotId,
+        spec.spec_hash,
+        mode,
+        provider,
+        model,
+        idempotencyKey
+      ].join('|'));
+      attemptId = 'render_' + deterministic.slice(0, 40);
 
-    await saveRenderAttempt(attempt);
-    await appendRenderAttemptEvent(attempt, 'created', { draft: body.draft === true });
-    return json(attempt, 201);
+      const existing = await readRenderAttempt(attemptId);
+      if (existing) {
+        const sameRequest =
+          existing.project_id === projectId &&
+          existing.story_version === storyVersion &&
+          existing.scene_id === sceneId &&
+          existing.shot_id === shotId &&
+          existing.spec_hash === spec.spec_hash &&
+          existing.mode === mode &&
+          existing.provider === provider &&
+          existing.model === model;
+
+        if (!sameRequest) {
+          return json({
+            error: 'The same render idempotency key was reused for a different attempt.',
+            code: 'RENDER_IDEMPOTENCY_CONFLICT'
+          }, 409);
+        }
+
+        return json({
+          ...existing,
+          deduplicated: true
+        }, 200);
+      }
+    }
+
+    let lease: ProjectMutationLease | null = null;
+    try {
+      lease = await acquireProjectMutation({
+        projectId,
+        mutationType: 'create-render-attempt',
+        expectedRevision: Number.isFinite(Number(body.expectedProjectRevision))
+          ? Number(body.expectedProjectRevision)
+          : null,
+        ttlMs: 30000
+      });
+
+      const budget = await evaluateProposedRenderAttempt({
+        projectId,
+        storyVersion,
+        shotId,
+        mode,
+        estimatedCostUsd,
+        humanApproved: body.costApprovedByHuman === true
+      });
+
+      if (!budget.allowed) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({
+          error: budget.message,
+          code: budget.code,
+          requires_human_approval: budget.requires_human_approval,
+          budget
+        }, 409);
+      }
+
+      const now = new Date().toISOString();
+      const attempt: RenderAttempt = {
+        attempt_version: 'parable-render-attempt-v1',
+        id: attemptId,
+        project_id: projectId,
+        story_version: storyVersion,
+        scene_id: sceneId,
+        shot_id: shotId,
+        spec_hash: spec.spec_hash,
+        provider,
+        model,
+        status: 'planned',
+        mode,
+        provider_request_id: null,
+        asset_uri: null,
+        poster_uri: null,
+        estimated_cost_usd: estimatedCostUsd,
+        actual_cost_usd: null,
+        latency_ms: null,
+        failure_class: null,
+        failure_detail: null,
+        created_at: now,
+        updated_at: now
+      };
+
+      await saveRenderAttempt(attempt);
+      await appendRenderAttemptEvent(attempt, 'created', {
+        draft: mode === 'draft',
+        idempotency_key_present: Boolean(idempotencyKey),
+        budget_projected: budget.projected
+      });
+
+      const committed = await commitProjectMutation(lease, {
+        scene_id: sceneId,
+        shot_id: shotId,
+        attempt_id: attempt.id,
+        render_mode: mode,
+        provider,
+        model,
+        estimated_cost_usd: estimatedCostUsd,
+        projected_shot_attempts: budget.projected.shot_attempts,
+        projected_project_cost_usd: budget.projected.project_cost_usd
+      });
+
+      return json({
+        ...attempt,
+        project_revision: committed.revision,
+        mutation_id: committed.mutation_id,
+        budget,
+        deduplicated: false
+      }, 201);
+    } catch (error) {
+      if (lease) await abortProjectMutation(lease).catch(() => false);
+      const handled = projectMutationErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
   }
-
   const attemptId = clean(body.attemptId, 160);
   if (!attemptId || !safeId(attemptId)) return json({ error: 'A valid attemptId is required.' }, 400);
 
