@@ -2,11 +2,18 @@ import { getStore } from '@netlify/blobs';
 import { getContext } from '@netlify/functions';
 import type { CanonReference, ShotRenderSpec } from './render-foundation.mts';
 import { createSignedMediaUrl } from './media-signing.mts';
+import {
+  readTransactionalRights,
+  revokeTransactionalRights,
+  transactionalStateMode,
+  upsertTransactionalRights
+} from './transactional-state.mts';
 
 export type RightsBasis = 'owned' | 'licensed' | 'consent' | 'generated' | 'public-domain' | 'unknown';
 
 export type CanonRightsProvenance = {
   rights_version: 'parable-rights-provenance-v1';
+  rights_revision?: number;
   status: 'approved' | 'unverified' | 'restricted' | 'revoked';
   basis: RightsBasis;
   rights_holder: string | null;
@@ -90,6 +97,83 @@ function metadataKey(projectId: string, hash: string) {
   return scope.prefix + 'project/' + projectId + '/meta/' + hash;
 }
 
+function rightsFromRow(row: Record<string, any>, fallback?: CanonRightsProvenance): CanonRightsProvenance {
+  return {
+    rights_version: 'parable-rights-provenance-v1',
+    rights_revision: Math.max(1, Math.floor(Number(row.rights_revision) || Number(fallback?.rights_revision) || 1)),
+    status: clean(row.status || fallback?.status || 'unverified', 40) as CanonRightsProvenance['status'],
+    basis: clean(row.basis || fallback?.basis || 'unknown', 40) as RightsBasis,
+    rights_holder: clean(row.rights_holder ?? fallback?.rights_holder, 260) || null,
+    likeness_permission: row.likeness_permission === true,
+    voice_permission: row.voice_permission === true,
+    ai_generation_permission: row.ai_generation_permission === true,
+    commercial_use: row.commercial_use === true,
+    territories: Array.isArray(row.territories)
+      ? row.territories.map((value: unknown)=>clean(value,120)).filter(Boolean)
+      : fallback?.territories || [],
+    expires_at: clean(row.expires_at ?? fallback?.expires_at, 80) || null,
+    evidence_note: clean(row.evidence_note ?? fallback?.evidence_note, 1200) || null,
+    evidence_sha256: /^[a-f0-9]{64}$/i.test(clean(row.evidence_sha256 ?? fallback?.evidence_sha256,64))
+      ? clean(row.evidence_sha256 ?? fallback?.evidence_sha256,64).toLowerCase()
+      : null,
+    declared_by_actor_id: clean(row.declared_by_actor_id || fallback?.declared_by_actor_id,180) || 'system',
+    declared_at: clean(row.declared_at || fallback?.declared_at,80) || new Date().toISOString(),
+    revoked_at: clean(row.revoked_at ?? fallback?.revoked_at,80) || null,
+    revoke_reason: clean(row.revoke_reason ?? fallback?.revoke_reason,800) || null
+  };
+}
+
+async function writeAuthoritativeRights(
+  projectId: string,
+  hash: string,
+  rights: CanonRightsProvenance
+) {
+  if (transactionalStateMode() !== 'postgres') return rights;
+
+  const row = await upsertTransactionalRights({
+    projectId,
+    assetSha256: hash,
+    rights: {
+      status: rights.status,
+      basis: rights.basis,
+      rights_holder: rights.rights_holder,
+      likeness_permission: rights.likeness_permission,
+      voice_permission: rights.voice_permission,
+      ai_generation_permission: rights.ai_generation_permission,
+      commercial_use: rights.commercial_use,
+      territories: rights.territories,
+      expires_at: rights.expires_at,
+      evidence_sha256: rights.evidence_sha256,
+      evidence_note: rights.evidence_note,
+      declared_by_actor_id: rights.declared_by_actor_id,
+      declared_at: rights.declared_at,
+      revoked_at: rights.revoked_at,
+      revoke_reason: rights.revoke_reason
+    }
+  });
+
+  return rightsFromRow(row, rights);
+}
+
+async function readAuthoritativeRights(
+  projectId: string,
+  hash: string,
+  fallback?: CanonRightsProvenance
+) {
+  if (transactionalStateMode() !== 'postgres') return fallback || null;
+
+  let row = await readTransactionalRights({ projectId, assetSha256: hash });
+  if (!row && fallback) {
+    // One-time migration bridge for pre-PostgreSQL canon assets. The exact
+    // existing rights state (including revocation) is copied into PostgreSQL
+    // before it can authorize another render.
+    await writeAuthoritativeRights(projectId, hash, fallback);
+    row = await readTransactionalRights({ projectId, assetSha256: hash });
+  }
+
+  return row ? rightsFromRow(row, fallback) : null;
+}
+
 export function validateRightsForReference(args: {
   referenceKind: string;
   renderUsage: string;
@@ -152,6 +236,11 @@ export async function saveCanonAsset(args: {
     await stores().bytes.set(key, buffer, { onlyIfNew: true } as any);
   }
 
+  // Rights are committed to PostgreSQL before the metadata mirror is made
+  // authoritative to the rendering path. If this fails, the bytes are merely
+  // an orphan and cannot authorize spending.
+  const rights = await writeAuthoritativeRights(args.projectId, hash, args.rights);
+
   const metadata: CanonVaultAsset = {
     asset_version: 'parable-canon-asset-v1',
     sha256: hash,
@@ -164,7 +253,7 @@ export async function saveCanonAsset(args: {
     source_creator: clean(args.sourceCreator, 260) || null,
     reference_kind: clean(args.referenceKind, 80),
     render_usage: clean(args.renderUsage, 80),
-    rights: args.rights,
+    rights,
     created_at: new Date().toISOString()
   };
 
@@ -177,7 +266,8 @@ export async function saveCanonAsset(args: {
       rights_event_version: 'parable-rights-event-v1',
       asset_sha256: hash,
       project_id: args.projectId,
-      rights: args.rights,
+      rights,
+      authority: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
       at: now
     }
   );
@@ -189,7 +279,7 @@ export async function readCanonAsset(projectId: string, hash: string) {
   if (!/^[a-f0-9]{64}$/i.test(hash)) return null;
   const [bytes, metadata] = await Promise.all([
     stores().bytes.get(assetKey(projectId, hash), { type:'arrayBuffer' }) as Promise<ArrayBuffer|null>,
-    stores().metadata.get(metadataKey(projectId, hash), { type:'json' }) as Promise<CanonVaultAsset|null>
+    readCanonAssetMetadata(projectId, hash)
   ]);
   if (!bytes || !metadata) return null;
   return { bytes, metadata };
@@ -197,7 +287,29 @@ export async function readCanonAsset(projectId: string, hash: string) {
 
 export async function readCanonAssetMetadata(projectId: string, hash: string) {
   if (!/^[a-f0-9]{64}$/i.test(hash)) return null;
-  return stores().metadata.get(metadataKey(projectId, hash), { type:'json' }) as Promise<CanonVaultAsset|null>;
+  const metadata = await stores().metadata.get(
+    metadataKey(projectId, hash),
+    { type:'json' }
+  ) as CanonVaultAsset|null;
+
+  if (!metadata) return null;
+  const authoritative = await readAuthoritativeRights(projectId, hash, metadata.rights);
+
+  if (transactionalStateMode() === 'postgres' && !authoritative) {
+    return {
+      ...metadata,
+      rights: {
+        ...metadata.rights,
+        status: 'restricted',
+        ai_generation_permission: false,
+        likeness_permission: false,
+        voice_permission: false,
+        evidence_note: 'Authoritative PostgreSQL rights record is missing; rendering is blocked.'
+      }
+    } as CanonVaultAsset;
+  }
+
+  return authoritative ? { ...metadata, rights: authoritative } : metadata;
 }
 
 export async function revokeCanonAssetRights(args: {
@@ -209,29 +321,47 @@ export async function revokeCanonAssetRights(args: {
   const current = await readCanonAssetMetadata(args.projectId, args.hash);
   if (!current) return null;
 
+  const reason = clean(args.reason, 800) || 'Rights revoked by PARABLE project administrator.';
   const now = new Date().toISOString();
-  const rights: CanonRightsProvenance = {
-    ...current.rights,
-    status: 'revoked',
-    revoked_at: now,
-    revoke_reason: clean(args.reason, 800) || 'Rights revoked by PARABLE project administrator.'
-  };
+
+  let rights: CanonRightsProvenance;
+  if (transactionalStateMode() === 'postgres') {
+    const row = await revokeTransactionalRights({
+      projectId: args.projectId,
+      assetSha256: args.hash,
+      actorId: args.actorId,
+      reason
+    });
+    if (!row) return null;
+    rights = rightsFromRow(row, current.rights);
+  } else {
+    rights = {
+      ...current.rights,
+      status: 'revoked',
+      revoked_at: now,
+      revoke_reason: reason
+    };
+  }
+
   const next: CanonVaultAsset = { ...current, rights };
 
-  await stores().metadata.setJSON(metadataKey(args.projectId,args.hash), next);
-  await stores().rightsEvents.setJSON(
-    stores().scope.prefix + 'project/' + args.projectId + '/rights/' + args.hash + '/' + now.replace(/[:.]/g,'-'),
-    {
-      rights_event_version: 'parable-rights-event-v1',
-      asset_sha256: args.hash,
-      project_id: args.projectId,
-      action: 'revoke',
-      actor_id: args.actorId,
-      reason: rights.revoke_reason,
-      rights,
-      at: now
-    }
-  );
+  await Promise.allSettled([
+    stores().metadata.setJSON(metadataKey(args.projectId,args.hash), next),
+    stores().rightsEvents.setJSON(
+      stores().scope.prefix + 'project/' + args.projectId + '/rights/' + args.hash + '/' + now.replace(/[:.]/g,'-'),
+      {
+        rights_event_version: 'parable-rights-event-v1',
+        asset_sha256: args.hash,
+        project_id: args.projectId,
+        action: 'revoke',
+        actor_id: args.actorId,
+        reason,
+        rights,
+        authority: transactionalStateMode() === 'postgres' ? 'postgres' : 'blobs',
+        at: now
+      }
+    )
+  ]);
 
   return next;
 }
@@ -251,27 +381,27 @@ export async function signedCanonAssetUrl(args: {
   });
 }
 
-export async function hydrateRenderSpecReferences(spec: ShotRenderSpec) {
-  const hydrate = async (ref: CanonReference): Promise<CanonReference> => {
-    const hash = String((ref as any).asset_sha256 || '').toLowerCase();
-    if (!hash) return ref;
+async function hydrateReference(spec: ShotRenderSpec, ref: CanonReference) {
+  const hash = String((ref as any).asset_sha256 || '').toLowerCase();
+  if (!hash) return { ref, assertion: null };
 
-    const meta = await readCanonAssetMetadata(spec.project_id, hash);
-    if (!meta) throw new Error('Canon asset ' + hash.slice(0,12) + ' is missing from the immutable vault.');
+  const meta = await readCanonAssetMetadata(spec.project_id, hash);
+  if (!meta) throw new Error('Canon asset ' + hash.slice(0,12) + ' is missing from the immutable vault.');
 
-    const rights = validateRightsForReference({
-      referenceKind: ref.kind,
-      renderUsage: String(ref.render_usage || ''),
-      rights: meta.rights
-    });
+  const rights = validateRightsForReference({
+    referenceKind: ref.kind,
+    renderUsage: String(ref.render_usage || ''),
+    rights: meta.rights
+  });
 
-    if (!rights.allowed) {
-      throw new Error(
-        'Canon asset ' + hash.slice(0,12) + ' is not authorized for rendering: ' + rights.blockers.join(' ')
-      );
-    }
+  if (!rights.allowed) {
+    throw new Error(
+      'Canon asset ' + hash.slice(0,12) + ' is not authorized for rendering: ' + rights.blockers.join(' ')
+    );
+  }
 
-    return {
+  return {
+    ref: {
       ...ref,
       uri: await signedCanonAssetUrl({
         projectId: spec.project_id,
@@ -279,11 +409,48 @@ export async function hydrateRenderSpecReferences(spec: ShotRenderSpec) {
         purpose: 'renderer',
         ttlSeconds: 1200
       })
-    };
+    } as CanonReference,
+    assertion: {
+      asset_sha256: hash,
+      rights_revision: Math.max(1, Math.floor(Number(meta.rights.rights_revision) || 1)),
+      require_likeness:
+        String(ref.render_usage || '') === 'identity' ||
+        ref.kind === 'actor-face' ||
+        ref.kind === 'actor-visual',
+      require_voice: ref.kind === 'voice',
+      require_commercial: false
+    }
   };
+}
+
+export async function hydrateRenderSpecReferencesWithRights(spec: ShotRenderSpec) {
+  const hydrated = await Promise.all((spec.references || []).map((ref) => hydrateReference(spec, ref)));
+  const assertionMap = new Map<string, Record<string, unknown>>();
+
+  for (const item of hydrated) {
+    const assertion = item.assertion as Record<string, any> | null;
+    if (!assertion) continue;
+    const hash = String(assertion.asset_sha256);
+    const previous = assertionMap.get(hash) as Record<string, any> | undefined;
+    assertionMap.set(hash, {
+      ...previous,
+      ...assertion,
+      require_likeness: Boolean(previous?.require_likeness || assertion.require_likeness),
+      require_voice: Boolean(previous?.require_voice || assertion.require_voice),
+      require_commercial: Boolean(previous?.require_commercial || assertion.require_commercial)
+    });
+  }
 
   return {
-    ...spec,
-    references: await Promise.all((spec.references || []).map(hydrate))
-  } as ShotRenderSpec;
+    spec: {
+      ...spec,
+      references: hydrated.map((item) => item.ref)
+    } as ShotRenderSpec,
+    rights_assertions: [...assertionMap.values()]
+  };
+}
+
+export async function hydrateRenderSpecReferences(spec: ShotRenderSpec) {
+  const hydrated = await hydrateRenderSpecReferencesWithRights(spec);
+  return hydrated.spec;
 }
