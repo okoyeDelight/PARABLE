@@ -45,7 +45,8 @@ async function dispatchBackground(jobId: string, kind: JobKind, primaryError: st
 
 export async function dispatchDurableJob(jobId: string, kind: JobKind): Promise<DispatchResult> {
   let primaryError: string | null = null;
-  const mode = clean(Netlify.env.get('PARABLE_QUEUE_MODE') || 'auto', 40).toLowerCase();
+  const defaultMode = Netlify.context?.deploy?.context === 'deploy-preview' ? 'background' : 'auto';
+  const mode = clean(Netlify.env.get('PARABLE_QUEUE_MODE') || defaultMode, 40).toLowerCase();
 
   if (mode === 'background') {
     return dispatchBackground(jobId, kind, 'Async Workloads is bypassed by PARABLE_QUEUE_MODE=background.');
