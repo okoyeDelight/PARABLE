@@ -2,6 +2,15 @@ import { prepareRendererRequest } from './_lib/render-adapters.mts';
 import { routeRenderSpec } from './_lib/render-router.mts';
 import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
 import {
+  acknowledgeProviderSubmission,
+  beginProviderSubmission,
+  ensureProviderTransaction,
+  failProviderTransaction,
+  markProviderSubmissionAmbiguous,
+  providerTransactionErrorResponse
+} from './_lib/provider-transactions.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
+import {
   appendRenderAttemptEvent,
   readRenderAttempt,
   readRenderSpec,
@@ -38,48 +47,130 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
     approvedKeyframe
   });
 
-  const started = Date.now();
-  const response = await fetch(String(prepared.request_url), {
-    method: 'POST',
-    headers: {
-      authorization: 'Key ' + key,
-      'content-type': 'application/json'
-    },
-    body: JSON.stringify(prepared.body)
+  const transactionState = await ensureProviderTransaction({
+    projectId: attempt.project_id,
+    operationType: 'video-render',
+    operationId: attempt.id,
+    provider: attempt.provider,
+    model: attempt.model,
+    requestBody: prepared.body,
+    estimatedCostUsd: attempt.estimated_cost_usd
   });
 
-  const body = await response.json().catch(() => ({})) as Record<string, any>;
+  const transaction = await beginProviderSubmission(transactionState.transaction.id);
 
-  if (!response.ok) {
+  if (
+    ['acknowledged','processing','settled'].includes(transaction.state) &&
+    transaction.provider_request_id
+  ) {
+    return {
+      ok: true,
+      request_id: transaction.provider_request_id,
+      status_url: transaction.provider_status_url,
+      response_url: transaction.provider_response_url,
+      queue_position: null,
+      latency_ms: 0,
+      prepared,
+      transaction,
+      deduplicated_provider_submission: true
+    };
+  }
+
+  const started = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(String(prepared.request_url), {
+      method: 'POST',
+      headers: {
+        authorization: 'Key ' + key,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify(prepared.body)
+    });
+  } catch (error) {
+    const detail = clean(error instanceof Error ? error.message : error, 1000) || 'Provider submission connection failed.';
+    const ambiguous = await markProviderSubmissionAmbiguous({
+      id: transaction.id,
+      detail
+    });
     return {
       ok: false,
-      status: response.status >= 500 || response.status === 429 ? 503 : 422,
-      error: clean(body?.detail || body?.error?.message || body?.message || 'Renderer submission failed.', 1000),
+      status: 409,
+      error: 'The renderer may already have received this paid request. PARABLE locked the transaction instead of retrying automatically.',
+      code: 'PROVIDER_SUBMISSION_AMBIGUOUS',
+      latency_ms: Date.now() - started,
+      transaction: ambiguous
+    };
+  }
+
+  const body = await response.json().catch(() => ({})) as Record<string, any>;
+  const detail = clean(body?.detail || body?.error?.message || body?.message || '', 1000);
+
+  if (!response.ok) {
+    if (response.status >= 500) {
+      const ambiguous = await markProviderSubmissionAmbiguous({
+        id: transaction.id,
+        detail: detail || ('Provider returned HTTP ' + response.status + ' after submission.')
+      });
+      return {
+        ok: false,
+        status: 409,
+        error: 'The provider returned an uncertain server response after a paid submission. PARABLE will not auto-retry.',
+        code: 'PROVIDER_SUBMISSION_AMBIGUOUS',
+        latency_ms: Date.now() - started,
+        transaction: ambiguous
+      };
+    }
+
+    const failed = await failProviderTransaction({
+      id: transaction.id,
+      failureClass: response.status === 429 ? 'rate-limit' : 'provider-rejected',
+      failureDetail: detail || ('HTTP ' + response.status)
+    });
+
+    return {
+      ok: false,
+      status: response.status === 429 ? 503 : 422,
+      error: detail || 'Renderer submission failed.',
       code: response.status === 429 ? 'RENDERER_RATE_LIMITED' : 'RENDERER_SUBMISSION_FAILED',
       latency_ms: Date.now() - started,
-      provider_detail: body
+      transaction: failed
     };
   }
 
   const requestId = clean(body?.request_id, 300);
   if (!requestId) {
+    const ambiguous = await markProviderSubmissionAmbiguous({
+      id: transaction.id,
+      detail: 'Provider returned success without a durable request id.'
+    });
     return {
       ok: false,
-      status: 502,
-      error: 'Renderer accepted the request but did not return a request id.',
-      code: 'RENDERER_BAD_RESPONSE',
-      latency_ms: Date.now() - started
+      status: 409,
+      error: 'Renderer accepted the request without a durable request id. PARABLE locked the transaction to prevent duplicate spending.',
+      code: 'PROVIDER_SUBMISSION_AMBIGUOUS',
+      latency_ms: Date.now() - started,
+      transaction: ambiguous
     };
   }
+
+  const acknowledged = await acknowledgeProviderSubmission({
+    id: transaction.id,
+    providerRequestId: requestId,
+    statusUrl: clean(body?.status_url, 1800) || null,
+    responseUrl: clean(body?.response_url, 1800) || null
+  });
 
   return {
     ok: true,
     request_id: requestId,
-    status_url: clean(body?.status_url, 1800) || null,
-    response_url: clean(body?.response_url, 1800) || null,
+    status_url: acknowledged.provider_status_url,
+    response_url: acknowledged.provider_response_url,
     queue_position: Number.isFinite(Number(body?.queue_position)) ? Number(body.queue_position) : null,
     latency_ms: Date.now() - started,
-    prepared
+    prepared,
+    transaction: acknowledged,
+    deduplicated_provider_submission: false
   };
 }
 
@@ -92,6 +183,15 @@ export default async (request: Request) => {
 
   const attempt = await readRenderAttempt(attemptId);
   if (!attempt) return json({ error: 'Render attempt was not found.' }, 404);
+
+  try {
+    await authorizeProject(request, attempt.project_id, 'render:spend');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   if (attempt.status !== 'planned') {
     return json({
       error: 'Only planned attempts can be dispatched.',
@@ -170,15 +270,21 @@ export default async (request: Request) => {
   }
 
   let dispatched: any;
-  if (attempt.provider === 'fal') {
-    dispatched = await dispatchFal(attempt, spec, keyframeGate?.approval || null);
-  } else {
-    dispatched = {
-      ok: false,
-      status: 501,
-      error: 'The deployed runtime adapter for this renderer is not implemented yet.',
-      code: 'RENDERER_ADAPTER_NOT_IMPLEMENTED'
-    };
+  try {
+    if (attempt.provider === 'fal') {
+      dispatched = await dispatchFal(attempt, spec, keyframeGate?.approval || null);
+    } else {
+      dispatched = {
+        ok: false,
+        status: 501,
+        error: 'The deployed runtime adapter for this renderer is not implemented yet.',
+        code: 'RENDERER_ADAPTER_NOT_IMPLEMENTED'
+      };
+    }
+  } catch (error) {
+    const handled = providerTransactionErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
   }
 
   if (!dispatched.ok) {
@@ -191,14 +297,16 @@ export default async (request: Request) => {
     return json({
       error: dispatched.error,
       code: dispatched.code,
-      retryable: dispatched.status === 503,
-      route
+      retryable: dispatched.status === 503 && dispatched.code !== 'PROVIDER_SUBMISSION_AMBIGUOUS',
+      route,
+      provider_transaction: dispatched.transaction || null
     }, dispatched.status);
   }
 
   const updated = {
     ...attempt,
     status: 'queued' as const,
+    provider_transaction_id: dispatched.transaction?.id || attempt.provider_transaction_id || null,
     provider_request_id: dispatched.request_id,
     latency_ms: dispatched.latency_ms,
     updated_at: new Date().toISOString()
@@ -211,13 +319,17 @@ export default async (request: Request) => {
     reference_map: dispatched.prepared.reference_map,
     adapter_notes: dispatched.prepared.notes,
     keyframe_approval_ref: keyframeGate?.authoritative_ref || null,
-    keyframe_asset_uri: keyframeGate?.approval?.asset?.uri || null
+    keyframe_asset_uri: keyframeGate?.approval?.asset?.uri || null,
+    provider_transaction_id: dispatched.transaction?.id || null,
+    provider_submission_deduplicated: Boolean(dispatched.deduplicated_provider_submission)
   });
 
   return json({
     attempt: updated,
     route,
     queue_position: dispatched.queue_position,
+    provider_transaction_id: dispatched.transaction?.id || null,
+    provider_submission_deduplicated: Boolean(dispatched.deduplicated_provider_submission),
     poll: '/api/render-provider-status?attemptId=' + encodeURIComponent(updated.id),
     note: 'The provider request is queued. PARABLE still decides whether the resulting media is usable after QA.'
   }, 202);
