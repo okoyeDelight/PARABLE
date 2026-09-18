@@ -31,53 +31,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: Resolve this commit's immutable Netlify Deploy Preview
+      - name: Wait for AI V8 Deploy Preview
         env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_SHA: ${{ github.sha }}
-          REPOSITORY: ${{ github.repository }}
+          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
         run: |
           set -euo pipefail
           node <<'NODE'
-          const expected = process.env.EXPECTED_SHA;
-          const repository = process.env.REPOSITORY;
-          const token = process.env.GH_TOKEN;
-          const fs = await import('node:fs');
+          const base = process.env.PREVIEW_BASE;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
-
           for (let attempt = 1; attempt <= 60; attempt++) {
-            const statusResponse = await fetch(`https://api.github.com/repos/${repository}/commits/${expected}/status`, {
-              headers: {
-                authorization: 'Bearer ' + token,
-                accept: 'application/vnd.github+json',
-                'x-github-api-version': '2022-11-28'
-              }
-            });
-            const statusBody = await statusResponse.json().catch(() => ({}));
-            const netlify = (statusBody.statuses || []).find((item) => item.context === 'netlify/parable-studio/deploy-preview');
-            const target = String(netlify?.target_url || '');
-            const match = target.match(/\/deploys\/([a-zA-Z0-9]+)/);
-            if (match) {
-              const immutable = 'https://' + match[1] + '--parable-studio.netlify.app';
-              try {
-                const r = await fetch(immutable + '/api/platform-health', { cache: 'no-store' });
-                const body = await r.json().catch(() => ({}));
-                if (r.ok && body?.deployment?.deploy_id === match[1]) {
-                  fs.appendFileSync(process.env.GITHUB_ENV, 'PARABLE_TEST_BASE=' + immutable + '\n');
-                  process.exit(0);
-                }
-              } catch {}
+            try {
+              const r = await fetch(base + '/api/ai-status', { cache: 'no-store' });
+              const body = await r.json().catch(() => ({}));
+              console.log(`attempt ${attempt}: status=${r.status} runtime=${body?.ai_runtime?.version || 'unknown'}`);
+              if (
+                r.ok &&
+                body?.ai_runtime?.version === 'parable-ai-v8' &&
+                body?.story_understanding?.lanes?.benchmark?.enabled === true
+              ) process.exit(0);
+            } catch (error) {
+              console.log(`attempt ${attempt}: ${error.message}`);
             }
             await sleep(5000);
           }
-          throw new Error('The immutable Deploy Preview for this commit did not become available.');
+          throw new Error('AI V8 preview did not become ready in time.');
           NODE
 
       - name: Run isolated synthetic Story + Critic benchmark
+        env:
+          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
         run: |
           set -euo pipefail
           node <<'NODE'
-          const base = process.env.PARABLE_TEST_BASE;
+          const base = process.env.PREVIEW_BASE;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
           const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
