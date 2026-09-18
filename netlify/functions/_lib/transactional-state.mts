@@ -448,6 +448,30 @@ export async function readTransactionalJobCapacity() {
   });
 }
 
+export async function claimRecoverableTransactionalJobs(args: {
+  recoveryToken: string;
+  limit?: number | null;
+  minAgeMs?: number | null;
+}) {
+  return rpc<{
+    claimed: boolean;
+    scope?: string;
+    reason?: string;
+    jobs: Array<{
+      id: string;
+      kind: string;
+      project_id: string;
+      status: string;
+      attempts: number;
+    }>;
+  }>('claim_recoverable_jobs', {
+    scope_project_id: storageProjectId('_recovery_'),
+    recovery_token: clean(args.recoveryToken, 180),
+    limit: Math.max(1, Math.min(100, Math.floor(Number(args.limit) || 25))),
+    min_age_ms: Math.max(0, Math.min(3600000, Math.floor(Number(args.minAgeMs) || 30000)))
+  });
+}
+
 export async function transitionTransactionalJob(args: {
   id: string;
   toStatus: 'queued' | 'retrying' | 'succeeded' | 'failed' | 'cancelled';
