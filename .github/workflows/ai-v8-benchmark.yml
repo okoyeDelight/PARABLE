@@ -1,5 +1,7 @@
 name: PARABLE AI V8 Benchmark
 
+# Deploy-preview benchmark credentials are read from the freshly built preview environment.
+
 on:
   push:
     branches: [immersive-v2]
