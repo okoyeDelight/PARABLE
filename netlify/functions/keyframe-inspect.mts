@@ -4,6 +4,7 @@ import {
   readRenderSpec,
   saveKeyframeInspection
 } from './_lib/render-store.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -39,6 +40,14 @@ export default async (request: Request) => {
       return json({ error: 'Valid projectId, storyVersion, sceneId, shotId and specHash are required.' }, 400);
     }
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const report = await readLatestKeyframeInspection({
       projectId,
       storyVersion,
@@ -63,6 +72,14 @@ export default async (request: Request) => {
     return json({ error: 'Valid projectId, storyVersion, sceneId, shotId and specHash are required.' }, 400);
   }
   if (!assetUri || !safeHttpUrl(assetUri)) return json({ error: 'A valid http(s) assetUri is required.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'render:plan');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   const spec = await readRenderSpec({
     projectId,
