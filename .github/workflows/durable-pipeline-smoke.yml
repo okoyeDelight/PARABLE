@@ -32,10 +32,11 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          node <<'NODE' >> "$GITHUB_ENV"
+          node <<'NODE'
           const expected = process.env.EXPECTED_SHA;
           const repository = process.env.REPOSITORY;
           const token = process.env.GH_TOKEN;
+          const fs = await import('node:fs');
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
           let immutable = '';
@@ -56,10 +57,10 @@ jobs:
               try {
                 const r = await fetch(immutable + '/api/platform-health', { cache: 'no-store' });
                 const body = await r.json().catch(() => ({}));
-                const deployed = body?.deployment?.commit_ref;
-                console.log(`attempt ${attempt}: netlify=${netlify?.state || 'unknown'} commit=${deployed || 'not-ready'} expected=${expected}`);
-                if (r.ok && body?.ok === true && deployed === expected) {
-                  process.stdout.write('PARABLE_TEST_BASE=' + immutable + '\n');
+                const deployedId = body?.deployment?.deploy_id;
+                console.log(`attempt ${attempt}: netlify=${netlify?.state || 'unknown'} deploy=${deployedId || 'not-ready'} expectedDeploy=${match[1]}`);
+                if (r.ok && body?.ok === true && deployedId === match[1]) {
+                  fs.appendFileSync(process.env.GITHUB_ENV, 'PARABLE_TEST_BASE=' + immutable + '\n');
                   process.exit(0);
                 }
               } catch {}
