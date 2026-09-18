@@ -11,6 +11,10 @@ let currentCritic=null;
 let currentProjectRevision=null;
 let activeShot=null;
 let directionTimer=null;
+let currentVisualCanon=null;
+let currentRenderSpec=null;
+let currentKeyframePlan=null;
+let currentRenderRoute=null;
 const PENDING_PRODUCTION_JOB='parable.pending.production.v1';
 
 const escapeHtml=(v='')=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -36,7 +40,7 @@ async function loadAiStatus(){
 function setStep(step){
   $$('.workflow-step').forEach(btn=>{
     btn.classList.toggle('is-active',btn.dataset.step===step);
-    const order=['write','understand','adapt','direct','review'];
+    const order=['write','understand','adapt','direct','review','render'];
     if(currentResult){
       const activeIndex=order.indexOf(step);const i=order.indexOf(btn.dataset.step);
       btn.classList.toggle('is-ready',i<=activeIndex);
@@ -87,6 +91,8 @@ function selectShot(shot){
   $('#performanceText').textContent=shot.performance||'Keep the performance truthful to the beat.';
   $('#shotPreview').dataset.lens=String(shot.lens_mm||50);
   $('#directionSaveState').textContent='Director choices are versioned with this story.';
+  currentRenderSpec=null;currentKeyframePlan=null;currentRenderRoute=null;
+  if($('#renderState'))$('#renderState').textContent='Selected shot changed. Prepare it again before rendering.';
 }
 
 function renderDirect(data){
@@ -340,6 +346,9 @@ $$('.workflow-step').forEach(btn=>btn.addEventListener('click',()=>{
   if(step==='write'){$('.story-pane')?.scrollIntoView({behavior:'smooth',block:'start'});return}
   if(!currentResult){showToast('Analyze the story first.');return}
   setStep(step);
+  if(step==='render'&&!currentRenderSpec){
+    $('#renderState').textContent='Select a shot in Direct, then prepare it here. PARABLE will build canon and continuity before routing.';
+  }
 }));
 
 $('#copyScreenplay')?.addEventListener('click',async()=>{
@@ -350,6 +359,8 @@ $('#copyScreenplay')?.addEventListener('click',async()=>{
 
 $('#runCriticBtn')?.addEventListener('click',runDirectorCritic);
 $('#rerunCriticBtn')?.addEventListener('click',runDirectorCritic);
+$('#prepareRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
+$('#refreshRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
 
 $('#lensControl')?.addEventListener('change',e=>{
   $('#shotPreview').dataset.lens=e.target.value;
@@ -357,6 +368,240 @@ $('#lensControl')?.addEventListener('change',e=>{
 });
 $('#motionControl')?.addEventListener('change',e=>{if(activeShot){activeShot.motion=e.target.value;scheduleDirectionSave();}showToast(`Motion: ${e.target.value}`)});
 $('#lightControl')?.addEventListener('change',e=>{if(activeShot){activeShot.lighting=e.target.value;scheduleDirectionSave();}showToast(`Light: ${e.target.value}`)});
+
+
+function currentScene(){
+  const scenes=currentResult?.production_bible?.scenes||[];
+  return scenes[0]||{
+    id:'scene_1',
+    heading:currentResult?.screenplay?.heading||'',
+    index:1
+  };
+}
+
+function currentSceneText(){
+  const screenplay=currentResult?.screenplay||{};
+  return (screenplay.beats||[]).map(beat=>{
+    const body=String(beat?.text||'').trim();
+    if(!body)return '';
+    return beat?.speaker?String(beat.speaker).trim()+': '+body:body;
+  }).filter(Boolean).join('\n');
+}
+
+async function fetchJson(url,options={}){
+  const r=await fetch(url,options);
+  const body=await r.json().catch(()=>({}));
+  if(!r.ok){
+    const err=new Error(body.error||'PARABLE request failed.');
+    err.status=r.status;err.body=body;throw err;
+  }
+  return body;
+}
+
+async function refreshProjectRevision(){
+  if(!currentProjectId)return null;
+  try{
+    const body=await fetchJson('/api/project-revision?projectId='+encodeURIComponent(currentProjectId),{cache:'no-store'});
+    if(Number.isFinite(Number(body?.revision)))currentProjectRevision=Number(body.revision);
+    return currentProjectRevision;
+  }catch{return currentProjectRevision}
+}
+
+async function ensureVisualCanon(){
+  if(!currentProjectId||!currentResult?.story_version)throw new Error('Analyze the story first.');
+  let canon=null;
+  try{
+    canon=await fetchJson('/api/visual-canon?projectId='+encodeURIComponent(currentProjectId),{cache:'no-store'});
+  }catch(err){
+    if(err.status!==404)throw err;
+  }
+
+  if(!canon||canon.story_version!==currentResult.story_version){
+    canon=await fetchJson('/api/visual-canon',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        action:'bootstrap',
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(canon.project_revision)))currentProjectRevision=Number(canon.project_revision);
+  }
+
+  currentVisualCanon=canon;
+  const referenceCount=[...(canon.characters||[]),...(canon.locations||[]),...(canon.props||[])]
+    .reduce((sum,entity)=>sum+(entity.references||[]).length,0);
+  $('#canonStatus').textContent='ready';
+  $('#canonSummary').textContent=`${(canon.characters||[]).length} characters · ${(canon.locations||[]).length} locations · ${referenceCount} locked references`;
+  $('#canonRights').textContent=(canon.unresolved_rights||[]).length
+    ?`${canon.unresolved_rights.length} reference-rights item(s) still require review before final rendering.`
+    :'No unresolved reference-rights issue is recorded in this canon.';
+  return canon;
+}
+
+async function ensureSceneContinuity(){
+  const scene=currentScene();
+  const sceneId=scene.id||'scene_1';
+  const base='/api/scene-state?projectId='+encodeURIComponent(currentProjectId)
+    +'&storyVersion='+encodeURIComponent(currentResult.story_version)
+    +'&sceneId='+encodeURIComponent(sceneId);
+
+  try{
+    return await fetchJson(base,{cache:'no-store'});
+  }catch(err){
+    if(err.status!==404)throw err;
+  }
+
+  const result=await fetchJson('/api/scene-state',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      projectId:currentProjectId,
+      storyVersion:currentResult.story_version,
+      sceneId,
+      sceneIndex:Number(scene.index||1),
+      heading:scene.heading||currentResult?.screenplay?.heading||'',
+      sceneText:currentSceneText(),
+      mode:'apply',
+      ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+    })
+  });
+  if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+  return result;
+}
+
+async function ensureShotContinuityThroughSelected(){
+  const scene=currentScene();
+  const sceneId=scene.id||'scene_1';
+  const shots=currentResult?.shot_plan||[];
+  const targetIndex=shots.findIndex(shot=>shot.id===activeShot?.id);
+  if(targetIndex<0)throw new Error('Select a shot first.');
+
+  let last=null;
+  for(let i=0;i<=targetIndex;i++){
+    const shot=shots[i];
+    const base='/api/shot-state?projectId='+encodeURIComponent(currentProjectId)
+      +'&storyVersion='+encodeURIComponent(currentResult.story_version)
+      +'&sceneId='+encodeURIComponent(sceneId)
+      +'&shotId='+encodeURIComponent(shot.id);
+
+    let existing=null;
+    try{existing=await fetchJson(base,{cache:'no-store'});}catch(err){if(err.status!==404)throw err}
+
+    const shouldRefresh=i===targetIndex;
+    if(existing&&!shouldRefresh){last=existing;continue;}
+
+    last=await fetchJson('/api/shot-state',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:shot.id,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(last.project_revision)))currentProjectRevision=Number(last.project_revision);
+  }
+  return last;
+}
+
+function renderRenderSpec(spec,route,keyframe){
+  currentRenderSpec=spec;currentRenderRoute=route;currentKeyframePlan=keyframe;
+  $('#renderContract').hidden=false;
+  $('#renderShotLabel').textContent=(spec.shot_id||'shot').replaceAll('_',' ').toUpperCase();
+  $('#renderSpecHash').textContent=(spec.spec_hash||'').slice(0,18);
+  $('#compositionStatus').textContent='compiled';
+  $('#compositionGrammar').textContent=String(spec.composition?.grammar||'natural').replaceAll('_',' ');
+  $('#compositionReason').textContent=spec.composition?.reason||'Composition follows the dramatic intent.';
+  $('#keyframeStatus').textContent=keyframe?.final_motion_render_blocked_until_approved?'canon gate':'ready';
+  $('#keyframeSummary').textContent=keyframe?.acceptance_checklist?.[0]||'First-frame approval protects the visual canon before motion.';
+  $('#renderCamera').textContent=[spec.camera?.shot_type,spec.camera?.lens_mm?spec.camera.lens_mm+'mm':'',spec.camera?.motion].filter(Boolean).join(' · ');
+  $('#renderPerformance').textContent=spec.performance?.direction||'Natural performance';
+  $('#renderReferences').textContent=`${(spec.references||[]).length} approved continuity reference(s)`;
+  $('#renderContinuity').textContent=spec.human_review?.required_before_final_render?'Human review required':'Continuity gate compiled';
+  const selected=route?.route?.selected;
+  $('#routerStatus').textContent=selected?'route ready':'no runtime route';
+  $('#routerSelection').textContent=selected?`${selected.provider} · ${selected.model}`:'Render providers are not configured in the deployed runtime yet.';
+  $('#routerReason').textContent=(route?.route?.decision_notes||[]).join(' ')||'The ShotRenderSpec remains provider-neutral.';
+  $('#renderEngineBadge').textContent=selected?'renderer ready':'render spec ready';
+}
+
+async function prepareSelectedShotForRender(){
+  if(!currentProjectId||!currentResult?.story_version||!activeShot){
+    showToast('Analyze the story and select a shot first.');return;
+  }
+  const button=$('#prepareRenderBtn');if(button)button.disabled=true;
+  $('#renderState').textContent='Building Visual Canon…';
+  try{
+    await refreshProjectRevision();
+    await ensureVisualCanon();
+
+    $('#renderState').textContent='Checking scene continuity…';
+    await ensureSceneContinuity();
+
+    $('#renderState').textContent='Building shot-by-shot physical continuity…';
+    await ensureShotContinuityThroughSelected();
+
+    const scene=currentScene();const sceneId=scene.id||'scene_1';
+    $('#renderState').textContent='Compiling provider-neutral ShotRenderSpec…';
+    const spec=await fetchJson('/api/shot-compile',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:activeShot.id
+      })
+    });
+
+    $('#renderState').textContent='Planning the first-frame canon gate…';
+    const keyframe=await fetchJson('/api/keyframe-plan',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:activeShot.id,
+        specHash:spec.spec_hash
+      })
+    });
+
+    $('#renderState').textContent='Finding a renderer without weakening continuity…';
+    const route=await fetchJson('/api/render-route',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:activeShot.id,
+        specHash:spec.spec_hash
+      })
+    });
+
+    renderRenderSpec(spec,route,keyframe);
+    $('#renderState').textContent=route.ready_to_dispatch
+      ?'Shot is compiled and a compatible renderer route is available. Media generation remains a separate explicit action.'
+      :'Shot is compiled safely. No deployed renderer route is configured yet; PARABLE kept the production contract instead of degrading it.';
+    showToast('Render package prepared.');
+  }catch(err){
+    if(err.status===409&&err.body?.code==='PROJECT_REVISION_CONFLICT'){
+      await refreshProjectRevision();
+      $('#renderState').textContent='The project changed during preparation. PARABLE protected the newer revision; run Prepare selected shot again.';
+    }else{
+      $('#renderState').textContent=err.message||'Render preparation failed.';
+    }
+    showToast(err.message||'Render preparation failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
 
 async function resumePendingProduction(){
   const pending=readPendingProduction();
