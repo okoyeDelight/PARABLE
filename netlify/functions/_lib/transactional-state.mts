@@ -50,11 +50,19 @@ export function transactionalStateMode(): TransactionalStateMode {
     : 'blobs';
 }
 
+function previewDerivedSecretAvailable() {
+  const scope = runtimeScope();
+  return !scope.production && Boolean(String(Netlify.env.get('OPENROUTER_API_KEY') || '').trim());
+}
+
 export function transactionalStateConfigured() {
   return Boolean(
     String(Netlify.env.get('PARABLE_SUPABASE_URL') || '').trim() &&
     String(Netlify.env.get('PARABLE_SUPABASE_PUBLISHABLE_KEY') || '').trim() &&
-    String(Netlify.env.get('PARABLE_STATE_RPC_SECRET') || '').trim()
+    (
+      String(Netlify.env.get('PARABLE_STATE_RPC_SECRET') || '').trim() ||
+      previewDerivedSecretAvailable()
+    )
   );
 }
 
@@ -65,10 +73,28 @@ export function storageProjectId(projectId: string) {
     : 'preview:' + scope.deploy_id + ':' + projectId;
 }
 
-function credentials() {
+async function runtimeSigningSecret() {
+  const dedicated = String(Netlify.env.get('PARABLE_STATE_RPC_SECRET') || '').trim();
+  if (dedicated) return dedicated;
+
+  const scope = runtimeScope();
+  if (!scope.production) {
+    const source = String(Netlify.env.get('OPENROUTER_API_KEY') || '').trim();
+    if (source) {
+      // Preview-only bootstrap: derive an independent HMAC key from an already
+      // secret server credential. The source secret and derived value never
+      // leave the server or appear in API responses/logs.
+      return sha256Hex('PARABLE_STATE_RPC_V1|' + source);
+    }
+  }
+
+  return '';
+}
+
+async function credentials() {
   const url = String(Netlify.env.get('PARABLE_SUPABASE_URL') || '').replace(/\/$/, '');
   const key = String(Netlify.env.get('PARABLE_SUPABASE_PUBLISHABLE_KEY') || '').trim();
-  const secret = String(Netlify.env.get('PARABLE_STATE_RPC_SECRET') || '').trim();
+  const secret = await runtimeSigningSecret();
 
   if (!url || !key || !secret) {
     throw new TransactionalStateError(
@@ -118,7 +144,7 @@ function providerErrorCode(body: any, status: number) {
 }
 
 async function rpc<T>(action: string, payload: Record<string, unknown>): Promise<RpcResult<T>> {
-  const { url, key, secret } = credentials();
+  const { url, key, secret } = await credentials();
   const timestamp = Date.now();
   const nonce = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
   const payloadText = JSON.stringify(payload);
@@ -284,4 +310,84 @@ export async function transitionTransactionalProviderTransaction(args: {
 
 export async function transactionalRequestFingerprint(value: unknown) {
   return sha256Hex(JSON.stringify(value));
+}
+
+
+export async function bootstrapDerivedPreviewStateSecret(token: string) {
+  const scope = runtimeScope();
+  if (scope.production || scope.deploy_context !== 'deploy-preview') {
+    throw new TransactionalStateError(
+      'STATE_BOOTSTRAP_PREVIEW_ONLY',
+      'Runtime secret bootstrap is restricted to deploy previews.',
+      404,
+      false
+    );
+  }
+
+  const bootstrapToken = clean(token, 240);
+  if (!bootstrapToken) {
+    throw new TransactionalStateError(
+      'STATE_BOOTSTRAP_TOKEN_MISSING',
+      'No one-time transactional-state bootstrap token is configured.',
+      503,
+      false
+    );
+  }
+
+  const url = String(Netlify.env.get('PARABLE_SUPABASE_URL') || '').replace(/\/$/, '');
+  const key = String(Netlify.env.get('PARABLE_SUPABASE_PUBLISHABLE_KEY') || '').trim();
+  const secret = await runtimeSigningSecret();
+
+  if (!url || !key || !secret) {
+    throw new TransactionalStateError(
+      'STATE_BOOTSTRAP_NOT_CONFIGURED',
+      'The preview cannot derive and register its transactional-state signing key.',
+      503,
+      false
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url + '/rest/v1/rpc/parable_runtime_bootstrap', {
+      method: 'POST',
+      headers: {
+        apikey: key,
+        authorization: 'Bearer ' + key,
+        'content-type': 'application/json',
+        accept: 'application/json'
+      },
+      body: JSON.stringify({
+        p_token: bootstrapToken,
+        p_secret: secret
+      })
+    });
+  } catch (error) {
+    throw new TransactionalStateError(
+      'STATE_BOOTSTRAP_NETWORK_FAILED',
+      'PARABLE could not reach the one-time database bootstrap endpoint.',
+      503,
+      true,
+      clean(error instanceof Error ? error.message : error, 800)
+    );
+  }
+
+  const body = await response.json().catch(() => null) as any;
+  if (!response.ok || body?.ok !== true) {
+    throw new TransactionalStateError(
+      'STATE_BOOTSTRAP_REJECTED',
+      clean(body?.message || body?.error || 'The one-time database bootstrap was rejected.', 1000),
+      response.status || 503,
+      false,
+      body
+    );
+  }
+
+  return {
+    ok: true,
+    bootstrap_consumed: body?.bootstrap_consumed === true,
+    key_id: clean(body?.key_id, 120) || null,
+    deploy_context: scope.deploy_context,
+    secret_exposed: false
+  };
 }
