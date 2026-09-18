@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   buildVisualCanon,
+  buildKeyframePlan,
   compileShotRenderSpec,
   evaluateRenderQA
 } from '../netlify/functions/_lib/render-foundation.mts';
@@ -101,6 +102,11 @@ assert.equal(spec.output.audio_strategy, 'separate-stems');
 assert.equal(spec.references.length, 2);
 assert.equal(spec.human_review.required_before_final_render, false);
 
+const keyframe = buildKeyframePlan(spec);
+assert.equal(keyframe.first_frame.composition.grammar, 'negative_space');
+assert.equal(keyframe.final_motion_render_blocked_until_approved, true);
+assert.ok(keyframe.acceptance_checklist.length >= 6);
+
 const prepared = prepareRendererRequest({
   spec,
   provider: 'fal',
@@ -149,6 +155,7 @@ console.log(JSON.stringify({
   composition: spec.composition.grammar,
   spec_hash: spec.spec_hash.slice(0, 16),
   final_reference_count: prepared.reference_map.length,
+  keyframe_gate: keyframe.final_motion_render_blocked_until_approved,
   qa_pass: pass.decision,
   qa_repair: repair.decision
 }, null, 2));
