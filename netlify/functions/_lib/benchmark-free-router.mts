@@ -293,8 +293,7 @@ async function callGeminiBenchmark(
           signal,
           headers: {
             'x-goog-api-key': apiKey,
-            'content-type': 'application/json',
-            'Api-Revision': '2026-05-20'
+            'content-type': 'application/json'
           },
           body: JSON.stringify({
             model,
@@ -307,11 +306,17 @@ async function callGeminiBenchmark(
           })
         }
       );
-      const body = await response.json().catch(() => ({})) as any;
+      const responseText = await response.text();
+      let body: any = {};
+      try { body = JSON.parse(responseText); }
+      catch { body = { raw: responseText.slice(0, 900) }; }
+
       if (!response.ok) {
         throw new Error(
           body?.error?.message ||
           body?.error?.status ||
+          body?.message ||
+          body?.raw ||
           `HTTP ${response.status}`
         );
       }
