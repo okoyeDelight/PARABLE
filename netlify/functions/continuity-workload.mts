@@ -44,13 +44,29 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
   if (!existing) throw new ErrorDoNotRetry('Durable job record was not found.');
   if (existing.status === 'succeeded') return;
 
+  if (
+    existing.status === 'processing' &&
+    existing.lease_expires_at &&
+    Date.parse(existing.lease_expires_at) > Date.now()
+  ) {
+    return;
+  }
+
   const payload = await readJobPayload(jobId);
   if (!payload) {
     await failJob(jobId, 'Job payload was not found.');
     throw new ErrorDoNotRetry('Job payload was not found.');
   }
 
-  await markJobProcessing(jobId, Number(event.attempt || 0) + 1);
+  const leaseToken = 'lease_' + crypto.randomUUID().replaceAll('-', '');
+  await markJobProcessing(jobId, Number(event.attempt || 0) + 1, leaseToken);
+
+  // Blob writes are last-write-wins. A short claim-settle window plus a
+  // strong-consistency re-read ensures duplicate queue events converge on
+  // one execution lease instead of paying for the same AI call twice.
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  const claimed = await readDurableJob(jobId);
+  if (!claimed || claimed.lease_token !== leaseToken) return;
 
   const base = origin();
   if (!base) {
