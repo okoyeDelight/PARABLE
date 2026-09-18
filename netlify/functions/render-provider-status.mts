@@ -231,8 +231,16 @@ export default async (request: Request) => {
     attempt: succeeded,
     provider_status: polled.provider_status,
     seed: polled.seed,
-    next_action: 'POST /api/render-qa',
-    note: 'Media exists, but it is not accepted into the film until PARABLE QA passes or a human explicitly overrides.'
+    next_action: {
+      endpoint: 'POST /api/jobs',
+      kind: 'motion-inspect',
+      payload: {
+        projectId: succeeded.project_id,
+        attemptId: succeeded.id
+      },
+      idempotency_key_hint: 'motion-inspect:' + succeeded.id + ':' + succeeded.spec_hash
+    },
+    note: 'Media exists, but a final shot cannot enter the film timeline until PARABLE extracts temporal evidence, runs full-motion Visual Inspection, binds QA to this exact asset/spec, and then receives explicit acceptance.'
   });
 };
 
