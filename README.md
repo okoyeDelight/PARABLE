@@ -23,7 +23,7 @@ PARABLE should not simply generate *for* a place or audience. It should understa
 
 ## Current checkpoint
 
-**Story Intelligence V8 + Continuity Brain V3 + Scale Foundation V1 + Render Engine Foundation V1 — September 18, 2026**
+**Story Intelligence V8 + Continuity Brain V3 + Scale Foundation V1 + Render Engine Foundation V1.1 — September 18, 2026**
 
 The `immersive-v2` branch now includes:
 
@@ -67,12 +67,21 @@ The `immersive-v2` branch now includes:
 - immutable Render Attempt Ledger with provider/model/request/cost/failure history
 - Render QA contracts with PASS / REPAIR / HUMAN_REVIEW / REJECT outcomes and targeted repair plans
 - Studio stage 06 · RENDER wired through canon, scene continuity, sequential shot continuity, compilation, keyframe planning and renderer routing
+- persisted human first-frame approval bound to the exact ShotRenderSpec, keyframe-plan hash and immutable image
+- approval revocation plus dispatcher-time revalidation so stale/swapped keyframes cannot reach final motion
+- durable, idempotent first-frame generation with a per-shot generation ceiling and provider-reported cost telemetry
+- content-addressed immutable keyframe assets served by SHA-256
+- protected Visual Inspector for identity/wardrobe/props/geography/composition/lighting/cultural/technical checks, with explicit not-assessable states
+- human override provenance when a reviewer deliberately accepts a Visual Inspector blocker
+- exact approved-first-frame image-to-video conditioning for final motion
+- rights-aware Christian-film inspiration lane: official movie frames can inform original casting/cinematography language without silently becoming actor-identity inputs
+- durable cinematic-reference profiling for Christian movie frames, including non-identifying casting archetype, performance, composition, light, costume and production-design lessons
 
 The production path is now:
 
 `Story -> Story Understanding -> Production Bible -> Scene State -> Shot State -> Continuity Gate -> Director -> Visual Canon -> Shot Compiler -> Keyframe Gate -> Render Router -> Render Attempt -> QA -> Repair / Accept -> Sequence Assembly`
 
-The next film-system milestone is automated frame/video Visual Inspection, camera-axis / 180-degree memory, room topology, sequence-level QA, editable audio stems and FFmpeg/Remotion sequence assembly.
+The next film-system milestone is full-video Visual Inspection, first-frame model benchmarking, camera-axis / 180-degree memory, room topology, sequence-level QA, editable audio stems and FFmpeg/Remotion sequence assembly.
 
 The current **scale target** is 1,000 simultaneous active users. The architecture is now designed around stateless horizontal request handling plus durable asynchronous AI work, but this target is not treated as a guarantee until the manual 1,000-user load gate passes on the intended production plan and third-party AI quotas are verified. Same-project mutations now use optimistic project revisions, short leases, conditional compare-and-swap writes and immutable staged artifacts to prevent ordinary silent overwrites. A relational PostgreSQL tier is still appropriate later for complex multi-row collaboration, workspace membership, billing and other relational workloads; PARABLE does not pretend the current commit boundary is a general-purpose SQL transaction engine.
 
