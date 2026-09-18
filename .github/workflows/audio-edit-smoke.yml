@@ -1,0 +1,33 @@
+name: PARABLE Audio + Final Edit Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/audio-edit-foundation.mts'
+      - 'netlify/functions/audio-plan.mts'
+      - 'netlify/functions/final-edit-plan.mts'
+      - 'netlify/functions/final-film-manifest.mts'
+      - 'tools/assemble_final_film.py'
+      - 'tools/audio_edit_smoke.mts'
+      - '.github/workflows/audio-edit-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify audio/edit/final-film contracts
+        run: npx --yes tsx tools/audio_edit_smoke.mts
+      - name: Verify FFmpeg assembler is executable
+        run: |
+          python3 -m py_compile tools/assemble_final_film.py
+          ffmpeg -version >/dev/null
