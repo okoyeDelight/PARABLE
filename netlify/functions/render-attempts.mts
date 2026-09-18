@@ -10,6 +10,10 @@ import { evaluateProposedRenderAttempt } from './_lib/render-budget.mts';
 import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
 import type { RenderAttempt, RenderAttemptStatus } from './_lib/render-foundation.mts';
 import {
+  authorizeProject,
+  securityErrorResponse
+} from './_lib/security.mts';
+import {
   appendRenderAttemptEvent,
   listShotAttempts,
   readLatestRenderQA,
@@ -63,6 +67,13 @@ export default async (request: Request) => {
       if (!safeId(attemptId)) return json({ error: 'Invalid attemptId.' }, 400);
       const attempt = await readRenderAttempt(attemptId);
       if (!attempt) return json({ error: 'Render attempt was not found.' }, 404);
+      try {
+        await authorizeProject(request, attempt.project_id, 'project:read');
+      } catch (error) {
+        const handled = securityErrorResponse(error);
+        if (handled) return json(handled.body, handled.status);
+        throw error;
+      }
       const qa = await readLatestRenderQA(attemptId);
       return json({ attempt, qa });
     }
@@ -74,6 +85,14 @@ export default async (request: Request) => {
 
     if (![projectId, storyVersion, sceneId, shotId].every((value) => value && safeId(value))) {
       return json({ error: 'Provide attemptId or valid projectId, storyVersion, sceneId and shotId.' }, 400);
+    }
+
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
     }
 
     const events = await listShotAttempts({ projectId, storyVersion, sceneId, shotId, limit: 100 });
@@ -99,6 +118,14 @@ export default async (request: Request) => {
       return json({ error: 'Valid projectId, storyVersion, sceneId and shotId are required.' }, 400);
     }
     if (!provider || !model) return json({ error: 'provider and model are required.' }, 400);
+
+    try {
+      await authorizeProject(request, projectId, 'render:plan');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
 
     const spec = await readRenderSpec({
       projectId,
@@ -223,6 +250,7 @@ export default async (request: Request) => {
         keyframe_approval_ref: keyframeGate?.authoritative_ref || null,
         keyframe_asset_uri: keyframeGate?.approval?.asset?.uri || null,
         keyframe_plan_hash: keyframeGate?.approval?.keyframe_plan_hash || null,
+        provider_transaction_id: null,
         provider_request_id: null,
         asset_uri: null,
         poster_uri: null,
@@ -277,6 +305,26 @@ export default async (request: Request) => {
 
   const attempt = await readRenderAttempt(attemptId);
   if (!attempt) return json({ error: 'Render attempt was not found.' }, 404);
+
+  const providerStateAction = ['queued','provider_started','result','failure'].includes(action);
+  const reviewAction = ['accept','reject','supersede'].includes(action);
+  try {
+    const access = await authorizeProject(
+      request,
+      attempt.project_id,
+      providerStateAction ? 'render:spend' : reviewAction ? 'review:approve' : 'render:plan'
+    );
+    if (providerStateAction && !access.actor.internal) {
+      return json({
+        error: 'Provider lifecycle state can only be changed by a trusted PARABLE worker.',
+        code: 'INTERNAL_PROVIDER_STATE_REQUIRED'
+      }, 403);
+    }
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   let nextStatus: RenderAttemptStatus | null = null;
   if (action === 'queued') nextStatus = 'queued';
