@@ -7,6 +7,7 @@ import {
 } from './_lib/project-concurrency.mts';
 import { stageProjectArtifact } from './_lib/project-artifacts.mts';
 import { evaluateProposedRenderAttempt } from './_lib/render-budget.mts';
+import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
 import type { RenderAttempt, RenderAttemptStatus } from './_lib/render-foundation.mts';
 import {
   appendRenderAttemptEvent,
@@ -117,6 +118,24 @@ export default async (request: Request) => {
       }, 409);
     }
 
+    const keyframeGate = mode === 'final'
+      ? await evaluateStoredKeyframeGate({
+          projectId,
+          sceneId,
+          shotId,
+          specHash: spec.spec_hash
+        })
+      : null;
+
+    if (keyframeGate && !keyframeGate.allowed) {
+      return json({
+        error: keyframeGate.message,
+        code: keyframeGate.code,
+        final_motion_gate: 'blocked',
+        keyframe_approval: keyframeGate.approval
+      }, 409);
+    }
+
     let attemptId = 'render_' + crypto.randomUUID().replaceAll('-', '');
     if (idempotencyKey) {
       const deterministic = await sha256Text([
@@ -201,6 +220,9 @@ export default async (request: Request) => {
         model,
         status: 'planned',
         mode,
+        keyframe_approval_ref: keyframeGate?.authoritative_ref || null,
+        keyframe_asset_uri: keyframeGate?.approval?.asset?.uri || null,
+        keyframe_plan_hash: keyframeGate?.approval?.keyframe_plan_hash || null,
         provider_request_id: null,
         asset_uri: null,
         poster_uri: null,
@@ -217,7 +239,9 @@ export default async (request: Request) => {
       await appendRenderAttemptEvent(attempt, 'created', {
         draft: mode === 'draft',
         idempotency_key_present: Boolean(idempotencyKey),
-        budget_projected: budget.projected
+        budget_projected: budget.projected,
+        keyframe_approval_ref: keyframeGate?.authoritative_ref || null,
+        keyframe_plan_hash: keyframeGate?.approval?.keyframe_plan_hash || null
       });
 
       const committed = await commitProjectMutation(lease, {
@@ -229,7 +253,9 @@ export default async (request: Request) => {
         model,
         estimated_cost_usd: estimatedCostUsd,
         projected_shot_attempts: budget.projected.shot_attempts,
-        projected_project_cost_usd: budget.projected.project_cost_usd
+        projected_project_cost_usd: budget.projected.project_cost_usd,
+        keyframe_approval_ref: keyframeGate?.authoritative_ref || null,
+        keyframe_plan_hash: keyframeGate?.approval?.keyframe_plan_hash || null
       });
 
       return json({
