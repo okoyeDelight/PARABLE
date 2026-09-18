@@ -1,8 +1,8 @@
 import { getContext } from '@netlify/functions';
 import {
+  claimJobProcessing,
   completeJob,
   failJob,
-  markJobProcessing,
   markJobRetrying,
   readDurableJob,
   readJobPayload,
@@ -79,8 +79,19 @@ export async function processDurableJob(args: {
   }
 
   const leaseToken = 'lease_' + crypto.randomUUID().replaceAll('-', '');
-  const claimed = await markJobProcessing(jobId, attempt, leaseToken);
-  if (!claimed || claimed.lease_token !== leaseToken) return { status: 'busy' };
+  const claim = await claimJobProcessing(jobId, attempt, leaseToken);
+  const claimed = claim.job;
+
+  if (!claim.claimed || !claimed || claimed.lease_token !== leaseToken) {
+    if (claim.reason === 'capacity-global' || claim.reason === 'capacity-project') {
+      return {
+        status: 'retry',
+        message: 'PARABLE worker capacity is temporarily full (' + claim.reason + ').',
+        delay_ms: Math.max(500, claim.retry_after_ms || 1500)
+      };
+    }
+    return { status: 'busy' };
+  }
 
   if (kind === 'scale-noop') {
     const result = {
