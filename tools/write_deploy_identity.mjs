@@ -47,7 +47,7 @@ const payload = {
 const outDir = resolve('web/public');
 mkdirSync(outDir, { recursive: true });
 writeFileSync(
-  resolve(outDir, '.parable-deploy.json'),
+  resolve(outDir, 'parable-deploy-identity.json'),
   JSON.stringify(payload, null, 2) + '\n',
   'utf8'
 );
