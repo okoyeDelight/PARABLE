@@ -1,3 +1,4 @@
+import { getContext } from '@netlify/functions';
 import { AsyncWorkloadsClient } from '@netlify/async-workloads';
 import type { JobKind } from './job-store.mts';
 
@@ -10,6 +11,14 @@ export type DispatchResult = {
 const clean = (value: unknown, max = 800) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 function origin() {
+  try {
+    const context = getContext();
+    const deployId = context.deploy?.id;
+    const siteName = context.site?.name;
+    if (deployId && siteName) return ('https://' + deployId + '--' + siteName + '.netlify.app').replace(/\/$/, '');
+    if (context.site?.url) return context.site.url.replace(/\/$/, '');
+  } catch {}
+
   const value =
     Netlify.env.get('DEPLOY_URL') ||
     Netlify.env.get('DEPLOY_PRIME_URL') ||
