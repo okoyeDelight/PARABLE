@@ -9,6 +9,7 @@ import {
   readProjectRevision,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -137,6 +138,15 @@ export default async (request: Request) => {
   const projectId = cleanMetadata(body.projectId);
 
   if (projectId && !safeId(projectId)) return json({ error: 'Invalid project identifier.' }, 400);
+  if (projectId) {
+    try {
+      await authorizeProject(request, projectId, 'project:edit');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+  }
   if (input.sourceText.length < 20) return json({ error: 'Give PARABLE at least a few sentences to understand.' }, 400);
   if (input.sourceText.length > 120000) return json({ error: 'This pass accepts up to 120,000 characters. Long-form orchestration is a later stage.' }, 413);
 
