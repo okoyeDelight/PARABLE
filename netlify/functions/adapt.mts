@@ -9,6 +9,7 @@ import {
   readProjectRevision,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
+import { stageProjectArtifact } from './_lib/project-artifacts.mts';
 
 type Shot = {
   id: string;
@@ -342,10 +343,9 @@ export default async (request: Request) => {
   }
 
   try {
-    await Promise.all([
-      adaptations.setJSON(latestKey, result),
-      adaptations.setJSON(versionKey, result)
-    ]);
+    let projectSnapshot: Record<string, any> | null = null;
+    let adaptationRef: string | null = null;
+    let projectRef: string | null = null;
 
     if (projectId) {
       const project = await projects.get(`project/${projectId}`, {
@@ -354,7 +354,7 @@ export default async (request: Request) => {
       } as any) as Record<string, any> | null;
 
       if (project) {
-        await projects.setJSON(`project/${projectId}`, {
+        projectSnapshot = {
           ...project,
           title: input.title,
           source_text: input.sourceText,
@@ -372,19 +372,66 @@ export default async (request: Request) => {
           status: 'shot_plan',
           progress: Math.max(Number(project.progress || 0), modelRun.engine.mode === 'model' ? 42 : 35),
           updated_at: now
-        });
+        };
       }
     }
 
-    if (lease) {
-      const committed = await commitProjectMutation(lease, {
-        story_version: storyVersion,
-        source_hash: sourceHash,
-        engine_mode: modelRun.engine.mode,
-        provider: modelRun.engine.provider
+    if (lease && projectId) {
+      adaptationRef = await stageProjectArtifact({
+        projectId,
+        mutationId: lease.mutation_id,
+        kind: 'adaptation',
+        artifactId: storyVersion,
+        value: result
       });
+
+      if (projectSnapshot) {
+        projectRef = await stageProjectArtifact({
+          projectId,
+          mutationId: lease.mutation_id,
+          kind: 'project',
+          artifactId: 'metadata',
+          value: projectSnapshot
+        });
+      }
+
+      const committed = await commitProjectMutation(
+        lease,
+        {
+          story_version: storyVersion,
+          source_hash: sourceHash,
+          engine_mode: modelRun.engine.mode,
+          provider: modelRun.engine.provider
+        },
+        {
+          'adaptation:latest': adaptationRef,
+          ...(projectRef ? { 'project:metadata': projectRef } : {})
+        }
+      );
+
       (result as any).project_revision = committed.revision;
       (result as any).mutation_id = committed.mutation_id;
+      (result as any).authoritative_ref = adaptationRef;
+
+      // These mutable records are compatibility/read-performance caches.
+      // The CAS-protected project head + immutable artifact is authoritative.
+      await Promise.allSettled([
+        adaptations.setJSON(latestKey, result),
+        adaptations.setJSON(versionKey, result),
+        ...(projectSnapshot ? [projects.setJSON(`project/${projectId}`, {
+          ...projectSnapshot,
+          project_revision: committed.revision,
+          authoritative_ref: projectRef
+        })] : [])
+      ]);
+    } else {
+      await Promise.all([
+        adaptations.setJSON(latestKey, result),
+        adaptations.setJSON(versionKey, result)
+      ]);
+      if (projectId && projectSnapshot) {
+        await projects.setJSON(`project/${projectId}`, projectSnapshot);
+      }
     }
 
     return json(result, 201);
