@@ -11,6 +11,7 @@ export default async (request: Request) => {
   const production = deployContext === 'production';
   const openrouter = Boolean(env('OPENROUTER_API_KEY'));
   const groq = Boolean(env('GROQ_API_KEY'));
+  const gemini = Boolean(env('GEMINI_API_KEY') || env('GOOGLE_API_KEY'));
   const benchmarkEnabled = deployContext === 'deploy-preview';
 
   return json({
@@ -24,7 +25,7 @@ export default async (request: Request) => {
     story_understanding: {
       ready: openrouter || groq,
       version: 'story-understanding-v2',
-      configured_providers: { openrouter, groq },
+      configured_providers: { openrouter, groq, gemini },
       lanes: {
         protected: {
           default_for_user_manuscripts: true,
@@ -34,10 +35,17 @@ export default async (request: Request) => {
         benchmark: {
           enabled: benchmarkEnabled,
           synthetic_only: true,
-          policy: 'Only hardcoded PARABLE CI fixtures can enter the benchmark lane, and that endpoint is exposed only on Deploy Previews. Real manuscripts never use this lane.',
-          model_router: env('PARABLE_BENCHMARK_MODEL') || 'qwen/qwen3.8-27b:free',
-          fallback_router: 'openrouter/free',
-          acceptance_requires_real_model: true
+          policy: 'Only hardcoded PARABLE CI fixtures can enter the benchmark lane. Benchmark routing is independent of the protected manuscript lane and may use free-tier providers because the fixtures contain no user manuscript data.',
+          provider_order: ['groq','gemini','openrouter'],
+          configured_providers: { groq, gemini, openrouter },
+          models: {
+            groq: env('PARABLE_GROQ_BENCHMARK_MODEL') || env('PARABLE_GROQ_MODEL') || 'openai/gpt-oss-120b',
+            gemini: env('PARABLE_GEMINI_BENCHMARK_MODEL') || 'gemini-3.8-flash',
+            openrouter: env('PARABLE_OPENROUTER_BENCHMARK_MODEL') || 'nvidia/nemotron-3-ultra-550b-a55b:free',
+            openrouter_fallback: 'openrouter/free'
+          },
+          acceptance_requires_real_model: true,
+          acceptance_requires_fixture_quality_gate: true
         }
       },
       fallback_available: true

@@ -25,6 +25,9 @@ jobs:
       - name: Verify benchmark quality gate itself
         run: node tools/benchmark_quality_smoke.mts
 
+      - name: Verify benchmark provider failover contract
+        run: node tools/benchmark_provider_smoke.mts
+
       - name: Resolve exact Netlify deploy for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -194,7 +197,10 @@ jobs:
               text.includes('insufficient credit') ||
               text.includes('insufficient balance') ||
               text.includes('billing') ||
-              text.includes('circuit-open')
+              text.includes('circuit-open') ||
+              text.includes('resource_exhausted') ||
+              text.includes('rate limit') ||
+              text.includes('too many requests')
             );
           }
 
@@ -255,7 +261,7 @@ jobs:
             const run = outcome.body;
             assert(run.engine?.mode === 'model', `${id}: story did not use a model`);
             assert(run.engine?.privacy_lane === 'benchmark', `${id}: wrong story privacy lane`);
-            assert(run.engine?.privacy_mode === 'benchmark-free-routing-synthetic-only', `${id}: story privacy mode was not explicit`);
+            assert(run.engine?.privacy_mode === 'benchmark-synthetic-only', `${id}: story privacy mode was not explicit`);
             assert(run.result?.story_bible?.premise && run.result?.story_bible?.core_conflict, `${id}: incomplete Story Bible`);
             assert(Array.isArray(run.result?.characters) && run.result.characters.length > 0, `${id}: no grounded characters`);
             assert(Array.isArray(run.result?.scenes) && run.result.scenes.length > 0, `${id}: no scene understanding`);
@@ -284,7 +290,7 @@ jobs:
             const run = outcome.body;
             assert(run.engine?.mode === 'model', `${id}: critic did not use a model`);
             assert(run.engine?.privacy_lane === 'benchmark', `${id}: wrong critic privacy lane`);
-            assert(run.engine?.privacy_mode === 'benchmark-free-routing-synthetic-only', `${id}: critic privacy mode was not explicit`);
+            assert(run.engine?.privacy_mode === 'benchmark-synthetic-only', `${id}: critic privacy mode was not explicit`);
             assert(run.result?.summary && run.result?.readiness, `${id}: critic output incomplete`);
             assert(Array.isArray(run.result?.priorities) && run.result.priorities.length > 0, `${id}: critic priorities missing`);
             assert(run.quality_gate?.version === 'parable-benchmark-quality-v1', `${id}: critic quality gate missing`);

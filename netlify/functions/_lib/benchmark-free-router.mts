@@ -130,138 +130,309 @@ function sanitizeCritic(value: any, adaptation: any) {
   return result;
 }
 
-async function openRouterFree(
+type BenchmarkStage = 'story-understanding' | 'film-critic';
+
+type BenchmarkProviderResult = {
+  parsed: Record<string, any>;
+  provider: 'groq' | 'gemini' | 'openrouter';
+  model: string;
+  requested_model: string;
+  finish_reason: string | null;
+};
+
+const env = (key: string) => String(Netlify.env.get(key) || '').trim();
+
+function compactSchema(value: any): any {
+  if (Array.isArray(value)) return value.map(compactSchema);
+  if (!value || typeof value !== 'object') return value;
+  const out: Record<string, any> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (['additionalProperties','maxLength','minLength'].includes(key)) continue;
+    out[key] = compactSchema(child);
+  }
+  return out;
+}
+
+function jsonInstruction(schema: Record<string, any>) {
+  return '\nReturn ONLY valid JSON matching this schema. Do not use markdown fences. Schema:\n' +
+    JSON.stringify(compactSchema(schema));
+}
+
+async function guardedProviderCall<T>(args: {
+  provider: string;
+  model: string;
+  stage: BenchmarkStage;
+  operationId: string;
+  run: (signal: AbortSignal) => Promise<T>;
+}) {
+  const started = Date.now();
+  const timeout = timeoutSignal(14500);
+  let lease: ProviderGuardLease | null = null;
+  try {
+    lease = await acquireProviderGuard({
+      service: 'ai',
+      provider: args.provider,
+      model: args.model,
+      operationId: args.operationId,
+      leaseMs: 30000
+    });
+    const result = await args.run(timeout.signal);
+    await releaseProviderGuard(lease, { outcome: 'success' }).catch(() => null);
+    lease = null;
+    await recordAIHealth({
+      stage: args.stage,
+      lane: 'benchmark',
+      provider: args.provider,
+      model: args.model,
+      ok: true,
+      latency_ms: Date.now() - started
+    });
+    return result;
+  } catch (error) {
+    if (lease) {
+      await releaseProviderGuard(lease, { outcome: 'failure', error }).catch(() => null);
+      lease = null;
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    await recordAIHealth({
+      stage: args.stage,
+      lane: 'benchmark',
+      provider: args.provider,
+      model: args.model,
+      ok: false,
+      latency_ms: Date.now() - started,
+      error: reason
+    });
+    throw error;
+  } finally {
+    timeout.cancel();
+  }
+}
+
+async function callGroqBenchmark(
   messages: Array<{ role: string; content: string }>,
-  stage: 'story-understanding' | 'film-critic',
+  stage: BenchmarkStage,
   schema: Record<string, any>,
   schemaName: string
-) {
-  const apiKey = Netlify.env.get('OPENROUTER_API_KEY') || '';
-  if (!apiKey) throw new Error('OpenRouter credential is not configured on this Deploy Preview.');
+): Promise<BenchmarkProviderResult> {
+  const apiKey = env('GROQ_API_KEY');
+  if (!apiKey) throw new Error('GROQ_API_KEY is not configured.');
+  const model = env('PARABLE_GROQ_BENCHMARK_MODEL') || env('PARABLE_GROQ_MODEL') || 'openai/gpt-oss-120b';
 
-  const configuredModel = clean(Netlify.env.get('PARABLE_BENCHMARK_MODEL') || '', 180);
-  const candidates = [...new Set([
-    configuredModel,
-    'qwen/qwen3.8-27b:free',
-    'openrouter/free'
-  ].filter(Boolean))].slice(0, 3);
-
-  const errors: string[] = [];
-
-  // Prefer a benchmark-only configured model when present, then a current
-  // structured-output-capable free model, and finally OpenRouter's dynamic free
-  // router. Do not inherit PARABLE_OPENROUTER_MODEL here: that setting belongs
-  // to product inference and can outlive a temporary benchmark model.
-  for (const candidate of candidates) {
-    const strictSchema =
-      candidate === 'openrouter/free' ||
-      candidate === 'qwen/qwen3.8-27b:free';
-    const started = Date.now();
-    const timeout = timeoutSignal(12000);
-    let providerLease: ProviderGuardLease | null = null;
-    try {
-      providerLease = await acquireProviderGuard({
-        service: 'ai',
-        provider: 'openrouter',
-        model: candidate,
-        operationId: 'benchmark:' + stage + ':' + schemaName + ':' + candidate,
-        leaseMs: 25000
-      });
-
-      const payload: Record<string, any> = {
-        model: candidate,
-        temperature: 0.1,
-        max_tokens: stage === 'story-understanding' ? 1200 : 1000,
-        messages,
-        response_format: strictSchema
-          ? { type: 'json_schema', json_schema: { name: schemaName, strict: true, schema } }
-          : { type: 'json_object' }
-      };
-
-      if (strictSchema) {
-        payload.provider = {
-          require_parameters: true,
-          allow_fallbacks: true,
-          sort: { by: 'throughput', partition: 'none' }
-        };
-      }
-
-      const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  return guardedProviderCall({
+    provider: 'groq',
+    model,
+    stage,
+    operationId: 'benchmark:' + stage + ':groq:' + schemaName,
+    run: async (signal) => {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
-        signal: timeout.signal,
+        signal,
         headers: {
           authorization: `Bearer ${apiKey}`,
-          'content-type': 'application/json',
-          'HTTP-Referer': Netlify.env.get('PARABLE_PUBLIC_URL') || 'https://parable-studio.netlify.app',
-          'X-OpenRouter-Title': 'PARABLE Synthetic Benchmark'
+          'content-type': 'application/json'
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          model,
+          temperature: 0.1,
+          max_tokens: stage === 'story-understanding' ? 1200 : 1000,
+          messages,
+          response_format: {
+            type: 'json_schema',
+            json_schema: { name: schemaName, strict: true, schema }
+          }
+        })
       });
-
       const body = await response.json().catch(() => ({})) as any;
       if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
-
-      const parsed = parseJson(body?.choices?.[0]?.message?.content);
-      const model = String(body?.model || candidate);
-      await releaseProviderGuard(providerLease, { outcome: 'success' }).catch(() => null);
-      providerLease = null;
-      await recordAIHealth({
-        stage,
-        lane: 'benchmark',
-        provider: 'openrouter',
-        model,
-        ok: true,
-        latency_ms: Date.now() - started
-      });
       return {
-        parsed,
-        model,
-        requested_model: candidate,
+        parsed: parseJson(body?.choices?.[0]?.message?.content),
+        provider: 'groq' as const,
+        model: String(body?.model || model),
+        requested_model: model,
         finish_reason: body?.choices?.[0]?.finish_reason || null
       };
-    } catch (error) {
-      if (providerLease) {
-        await releaseProviderGuard(providerLease, {
-          outcome: 'failure',
-          error
-        }).catch(() => null);
-        providerLease = null;
+    }
+  });
+}
+
+async function callGeminiBenchmark(
+  messages: Array<{ role: string; content: string }>,
+  stage: BenchmarkStage,
+  schema: Record<string, any>,
+  schemaName: string
+): Promise<BenchmarkProviderResult> {
+  const apiKey = env('GEMINI_API_KEY') || env('GOOGLE_API_KEY');
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not configured.');
+  const model = env('PARABLE_GEMINI_BENCHMARK_MODEL') || 'gemini-3.8-flash';
+  const system = messages.find((item) => item.role === 'system')?.content || '';
+  const user = messages.filter((item) => item.role !== 'system').map((item) => item.content).join('\n\n');
+
+  return guardedProviderCall({
+    provider: 'gemini',
+    model,
+    stage,
+    operationId: 'benchmark:' + stage + ':gemini:' + schemaName,
+    run: async (signal) => {
+      const response = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+        {
+          method: 'POST',
+          signal,
+          headers: {
+            'x-goog-api-key': apiKey,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: system }] },
+            contents: [{ role: 'user', parts: [{ text: user }] }],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: stage === 'story-understanding' ? 1200 : 1000,
+              responseFormat: {
+                text: {
+                  mimeType: 'application/json',
+                  schema: compactSchema(schema)
+                }
+              }
+            }
+          })
+        }
+      );
+      const body = await response.json().catch(() => ({})) as any;
+      if (!response.ok) {
+        throw new Error(
+          body?.error?.message ||
+          body?.error?.status ||
+          `HTTP ${response.status}`
+        );
       }
-      const reason = error instanceof Error ? error.message : String(error);
-      errors.push(candidate + ': ' + reason);
-      await recordAIHealth({
-        stage,
-        lane: 'benchmark',
+      const text = (body?.candidates?.[0]?.content?.parts || [])
+        .map((part: any) => typeof part?.text === 'string' ? part.text : '')
+        .join('\n');
+      return {
+        parsed: parseJson(text),
+        provider: 'gemini' as const,
+        model,
+        requested_model: model,
+        finish_reason: body?.candidates?.[0]?.finishReason || null
+      };
+    }
+  });
+}
+
+async function callOpenRouterBenchmark(
+  messages: Array<{ role: string; content: string }>,
+  stage: BenchmarkStage,
+  schema: Record<string, any>,
+  schemaName: string
+): Promise<BenchmarkProviderResult> {
+  const apiKey = env('OPENROUTER_API_KEY');
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY is not configured.');
+
+  const primary = env('PARABLE_OPENROUTER_BENCHMARK_MODEL') ||
+    'nvidia/nemotron-3-ultra-550b-a55b:free';
+  const candidates = [...new Set([primary, 'openrouter/free'])];
+
+  const errors: string[] = [];
+  for (const model of candidates) {
+    try {
+      return await guardedProviderCall({
         provider: 'openrouter',
-        model: candidate,
-        ok: false,
-        latency_ms: Date.now() - started,
-        error: reason
+        model,
+        stage,
+        operationId: 'benchmark:' + stage + ':openrouter:' + schemaName + ':' + model,
+        run: async (signal) => {
+          const augmented = messages.map((item, index) =>
+            index === messages.length - 1
+              ? { ...item, content: item.content + jsonInstruction(schema) }
+              : item
+          );
+          const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            signal,
+            headers: {
+              authorization: `Bearer ${apiKey}`,
+              'content-type': 'application/json',
+              'HTTP-Referer': env('PARABLE_PUBLIC_URL') || 'https://parable-studio.netlify.app',
+              'X-OpenRouter-Title': 'PARABLE Synthetic Benchmark'
+            },
+            body: JSON.stringify({
+              model,
+              temperature: 0.1,
+              max_tokens: stage === 'story-understanding' ? 1200 : 1000,
+              messages: augmented,
+              provider: {
+                allow_fallbacks: true,
+                sort: { by: 'throughput', partition: 'none' }
+              }
+            })
+          });
+          const body = await response.json().catch(() => ({})) as any;
+          if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
+          return {
+            parsed: parseJson(body?.choices?.[0]?.message?.content),
+            provider: 'openrouter' as const,
+            model: String(body?.model || model),
+            requested_model: model,
+            finish_reason: body?.choices?.[0]?.finish_reason || null
+          };
+        }
       });
-    } finally {
-      timeout.cancel();
+    } catch (error) {
+      errors.push(model + ': ' + (error instanceof Error ? error.message : String(error)));
     }
   }
-
   throw new Error(errors.join(' | ').slice(0, 1800));
+}
+
+async function benchmarkModel(
+  messages: Array<{ role: string; content: string }>,
+  stage: BenchmarkStage,
+  schema: Record<string, any>,
+  schemaName: string
+): Promise<BenchmarkProviderResult> {
+  const errors: string[] = [];
+
+  // Deliberately prefer direct free-tier providers when configured. This keeps
+  // V8 acceptance independent of OpenRouter's 50-request/day free-account cap.
+  if (env('GROQ_API_KEY')) {
+    try { return await callGroqBenchmark(messages, stage, schema, schemaName); }
+    catch (error) { errors.push('groq: ' + (error instanceof Error ? error.message : String(error))); }
+  }
+
+  if (env('GEMINI_API_KEY') || env('GOOGLE_API_KEY')) {
+    try { return await callGeminiBenchmark(messages, stage, schema, schemaName); }
+    catch (error) { errors.push('gemini: ' + (error instanceof Error ? error.message : String(error))); }
+  }
+
+  if (env('OPENROUTER_API_KEY')) {
+    try { return await callOpenRouterBenchmark(messages, stage, schema, schemaName); }
+    catch (error) { errors.push('openrouter: ' + (error instanceof Error ? error.message : String(error))); }
+  }
+
+  if (!errors.length) {
+    errors.push('No benchmark inference credential is configured.');
+  }
+  throw new Error(errors.join(' | ').slice(0, 2400));
 }
 
 export async function runFreeStoryBenchmark(fixture: BenchmarkFixture) {
   const system = `You are PARABLE Story Understanding. This is a synthetic CI fixture, not a private user manuscript. Understand the supplied story without rewriting it. Never invent character names, Scripture, motives or events. Preserve ambiguity. Return only the requested structured data. Only use names literally present in the manuscript.`;
   const user = JSON.stringify({ title: fixture.input.title, setting: fixture.input.setting, audience: fixture.input.primaryAudience, manuscript: fixture.input.sourceText });
-  const response = await openRouterFree([{ role: 'system', content: system }, { role: 'user', content: user }], 'story-understanding', STORY_SCHEMA, 'parable_benchmark_story');
+  const response = await benchmarkModel([{ role: 'system', content: system }, { role: 'user', content: user }], 'story-understanding', STORY_SCHEMA, 'parable_benchmark_story');
   return {
     data: sanitizeStory(response.parsed, fixture),
-    engine: { provider: 'openrouter', model: response.model, requested_model: response.requested_model || null, mode: 'model', version: 'benchmark-router-v4', privacy_mode: 'benchmark-free-routing-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
+    engine: { provider: response.provider, model: response.model, requested_model: response.requested_model || null, mode: 'model', version: 'benchmark-router-v5', privacy_mode: 'benchmark-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
   };
 }
 
 export async function runFreeCriticBenchmark(fixture: BenchmarkFixture, adaptation: any) {
   const system = `You are PARABLE Film Quality Critic. This is a synthetic CI fixture. Diagnose story-to-screen choices; do not praise by default and do not rewrite the story. Never invent facts, characters or Scripture. affected_shot_ids may only use IDs present in the supplied shot plan. Give 1-4 high-leverage priorities and return only the requested structured data.`;
   const payload = { title: fixture.input.title, manuscript: fixture.input.sourceText, shot_plan: adaptation?.shot_plan || [], screenplay: adaptation?.screenplay || null };
-  const response = await openRouterFree([{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }], 'film-critic', CRITIC_SCHEMA, 'parable_benchmark_critic');
+  const response = await benchmarkModel([{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }], 'film-critic', CRITIC_SCHEMA, 'parable_benchmark_critic');
   return {
     data: sanitizeCritic(response.parsed, adaptation),
-    engine: { provider: 'openrouter', model: response.model, requested_model: response.requested_model || null, mode: 'model', version: 'benchmark-critic-v4', privacy_mode: 'benchmark-free-routing-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
+    engine: { provider: response.provider, model: response.model, requested_model: response.requested_model || null, mode: 'model', version: 'benchmark-critic-v5', privacy_mode: 'benchmark-synthetic-only', privacy_lane: 'benchmark', finish_reason: response.finish_reason }
   };
 }
