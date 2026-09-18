@@ -1,3 +1,4 @@
+import { getContext } from '@netlify/functions';
 import {
   completeJob,
   failJob,
@@ -17,6 +18,14 @@ export type ProcessOutcome =
 const clean = (value: unknown, max = 1200) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 function origin() {
+  try {
+    const context = getContext();
+    const deployId = context.deploy?.id;
+    const siteName = context.site?.name;
+    if (deployId && siteName) return ('https://' + deployId + '--' + siteName + '.netlify.app').replace(/\/$/, '');
+    if (context.site?.url) return context.site.url.replace(/\/$/, '');
+  } catch {}
+
   const value =
     Netlify.env.get('DEPLOY_URL') ||
     Netlify.env.get('DEPLOY_PRIME_URL') ||
