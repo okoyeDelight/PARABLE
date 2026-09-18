@@ -18,6 +18,7 @@ export type DurableJob = {
   completed_at: string | null;
   lease_token: string | null;
   lease_expires_at: string | null;
+  queue_event_id: string | null;
 };
 
 function stores() {
@@ -84,7 +85,8 @@ export async function createDurableJob(args: {
     updated_at: now,
     completed_at: null,
     lease_token: null,
-    lease_expires_at: null
+    lease_expires_at: null,
+    queue_event_id: null
   };
 
   await Promise.all([
@@ -100,6 +102,20 @@ export async function readDurableJob(jobId: string) {
 
 export async function readJobPayload(jobId: string) {
   return stores().payloads.get('payload/' + jobId, { type: 'json' }) as Promise<Record<string, any> | null>;
+}
+
+export async function markJobQueued(jobId: string, eventId?: string | null) {
+  const { jobs } = stores();
+  const current = await readDurableJob(jobId);
+  if (!current) return null;
+  const next: DurableJob = {
+    ...current,
+    status: 'queued',
+    queue_event_id: clean(eventId, 180) || current.queue_event_id || null,
+    updated_at: new Date().toISOString()
+  };
+  await jobs.setJSON('job/' + jobId, next);
+  return next;
 }
 
 export async function markJobProcessing(jobId: string, attempts: number, leaseToken?: string, leaseMs = 120000) {
