@@ -1,4 +1,3 @@
-import { AsyncWorkloadsClient } from '@netlify/async-workloads';
 import {
   createDurableJob,
   failJob,
@@ -6,6 +5,7 @@ import {
   readDurableJob,
   type JobKind
 } from './_lib/job-store.mts';
+import { dispatchDurableJob } from './_lib/job-dispatcher.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -60,24 +60,21 @@ export default async (request: Request) => {
   }
 
   const shouldDispatch = created.created || created.job.status === 'failed';
+  let dispatchBackend: 'async-workloads' | 'netlify-background' | null = null;
+  let degradedFromPrimary = false;
+
   if (shouldDispatch) {
     try {
-      const client = new AsyncWorkloadsClient();
-      const sent = await client.send('parable.pipeline.process', {
-        data: {
-          jobId: created.job.id,
-          kind
-        }
-      });
-      if (sent?.sendStatus && sent.sendStatus !== 'succeeded') {
-        throw new Error('Async Workloads router did not acknowledge the event.');
-      }
-      await markJobQueued(created.job.id, sent?.eventId || null);
+      const dispatched = await dispatchDurableJob(created.job.id, kind);
+      dispatchBackend = dispatched.backend;
+      degradedFromPrimary = Boolean(dispatched.primary_error);
+      await markJobQueued(created.job.id, dispatched.event_id);
     } catch (error) {
       await failJob(created.job.id, error);
       return json({
-        error: 'The durable workload could not be queued.',
+        error: 'PARABLE could not start this production job.',
         job_id: created.job.id,
+        retryable: true,
         detail: clean(error instanceof Error ? error.message : error, 600)
       }, 503);
     }
@@ -88,6 +85,8 @@ export default async (request: Request) => {
     job: current,
     accepted: true,
     deduplicated: !created.created,
+    dispatch_backend: dispatchBackend,
+    degraded_from_primary_queue: degradedFromPrimary,
     poll: '/api/job-status?id=' + current.id
   }, created.created ? 202 : 200);
 };
