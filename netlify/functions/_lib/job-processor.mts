@@ -41,6 +41,7 @@ function routeFor(kind: JobKind) {
   if (kind === 'story-understanding') return '/api/understand';
   if (kind === 'film-critic') return '/api/director-critic';
   if (kind === 'adaptation') return '/api/adapt';
+  if (kind === 'keyframe-generate') return '/api/keyframe-generate';
   return null;
 }
 
