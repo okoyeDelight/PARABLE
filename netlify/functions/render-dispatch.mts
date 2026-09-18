@@ -10,6 +10,7 @@ import {
   providerTransactionErrorResponse
 } from './_lib/provider-transactions.mts';
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
+import { hydrateRenderSpecReferences } from './_lib/canon-assets.mts';
 import {
   appendRenderAttemptEvent,
   readRenderAttempt,
@@ -39,8 +40,10 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
     };
   }
 
+  const hydratedSpec = await hydrateRenderSpecReferences(spec);
+
   const prepared = prepareRendererRequest({
-    spec,
+    spec: hydratedSpec,
     provider: attempt.provider,
     model: attempt.model,
     mode: attempt.mode,
