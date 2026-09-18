@@ -32,11 +32,14 @@ on:
       - 'netlify/functions/canon-assets.mts'
       - 'netlify/functions/canon-asset.mts'
       - 'netlify/functions/keyframe-assets.mts'
+      - 'netlify/functions/render-dispatch.mts'
+      - 'netlify/functions/render-provider-status.mts'
       - 'netlify/functions/_lib/transactional-state.mts'
       - 'netlify/functions/state-health.mts'
       - 'netlify/functions/state-self-test.mts'
-      - 'netlify/functions/state-secret-bootstrap.mts'
+      - 'netlify/functions/state-race-test.mts'
       - 'database/transactional-hot-state-v1.sql'
+      - 'database/transactional-hot-state-v2.sql'
       - '.github/workflows/durable-pipeline-smoke.yml'
   workflow_dispatch:
 
@@ -50,34 +53,38 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     env:
       PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
+
     steps:
-      - name: Wait for scale foundation preview
+      - name: Wait for exact transactional preview
         run: |
           set -euo pipefail
           node <<'NODE'
           const base = process.env.PREVIEW_BASE;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-          for (let attempt = 1; attempt <= 60; attempt++) {
+          for (let attempt = 1; attempt <= 72; attempt++) {
             try {
               const r = await fetch(base + '/api/platform-health', { cache: 'no-store' });
               const body = await r.json().catch(() => ({}));
               const architecture = body?.architecture || {};
               console.log(
-                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'} state=${architecture?.transactional_hot_state || 'unknown'}`
+                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'} state=${architecture?.transactional_hot_state || 'unknown'} adapter=${architecture?.state_adapter_version || 'unknown'}`
               );
+
               if (
                 r.ok &&
                 body?.ok === true &&
-                body?.runtime === 'parable-scale-foundation-v2' &&
-                architecture?.state_adapter_version === 'transactional-state-v1' &&
+                body?.runtime === 'parable-scale-foundation-v3' &&
+                architecture?.state_adapter_version === 'transactional-state-v2' &&
                 architecture?.queue_backend_abstraction === true &&
                 architecture?.single_queue_dependency === false &&
                 architecture?.transactional_hot_state === 'postgres-authoritative-cas' &&
-                body?.checks?.transactional_state?.ok === true
+                architecture?.split_brain_write_fallback === false &&
+                body?.checks?.transactional_state?.ok === true &&
+                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v2'
               ) process.exit(0);
             } catch (error) {
               console.log(`attempt ${attempt}: ${error.message}`);
@@ -85,11 +92,10 @@ jobs:
             await sleep(5000);
           }
 
-          throw new Error('Scale foundation preview did not become healthy in time.');
+          throw new Error('The exact PostgreSQL-backed preview did not become healthy in time.');
           NODE
 
-
-      - name: Verify transactional state bridge
+      - name: Verify signed Vault-backed transactional bridge
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -98,17 +104,25 @@ jobs:
           const text = await r.text();
           let body; try { body = JSON.parse(text); } catch { body = text; }
 
-          console.log('state health:', r.status, JSON.stringify(body).slice(0, 2500));
+          console.log('state health:', r.status, JSON.stringify(body).slice(0, 3000));
 
           if (!r.ok || body?.ok !== true || body?.mode !== 'postgres' || body?.transactional !== true) {
             throw new Error('Transactional state health failed: ' + JSON.stringify(body));
           }
-          if (body?.upstream?.engine !== 'parable-postgres-hot-state-v1') {
-            throw new Error('Unexpected transactional state engine.');
+
+          const upstream = body?.upstream || {};
+          if (
+            upstream?.engine !== 'parable-postgres-hot-state-v2' ||
+            upstream?.vault_backed_signing !== true ||
+            upstream?.replay_protection !== true ||
+            upstream?.job_leases !== 'postgres' ||
+            upstream?.rights_authority !== 'postgres'
+          ) {
+            throw new Error('Transactional state capabilities are incomplete: ' + JSON.stringify(upstream));
           }
           NODE
 
-      - name: Verify PostgreSQL collision and anti-double-spend guards
+      - name: Verify revisions spend rights and durable leases
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -117,22 +131,86 @@ jobs:
           const text = await r.text();
           let body; try { body = JSON.parse(text); } catch { body = text; }
 
-          console.log('state self-test:', r.status, JSON.stringify(body).slice(0, 3000));
+          console.log('state self-test:', r.status, JSON.stringify(body).slice(0, 4500));
 
-          if (!r.ok || body?.ok !== true) {
+          if (!r.ok || body?.ok !== true || body?.probe_version !== 'transactional-state-self-test-v2') {
             throw new Error('Transactional state self-test failed: ' + JSON.stringify(body));
           }
-          if (body?.project_revision_race?.one_writer_committed !== true) {
-            throw new Error('Exactly one competing project writer did not commit.');
+          if (body?.project_revision?.stale_writer_rejected !== true) {
+            throw new Error('Stale project writer was not rejected.');
           }
-          if (body?.project_revision_race?.stale_writer_rejected !== true) {
-            throw new Error('The stale competing project writer was not rejected.');
+          if (body?.provider_spend_guard?.duplicate_submission_blocked !== true) {
+            throw new Error('Duplicate paid submission was not blocked.');
           }
-          if (body?.provider_double_spend_race?.one_submission_claimed !== true) {
-            throw new Error('Provider submission ownership was not serialized.');
-          }
-          if (body?.provider_double_spend_race?.automatic_retry_blocked !== true) {
+          if (body?.provider_spend_guard?.automatic_retry_blocked !== true) {
             throw new Error('Ambiguous provider submission did not fail closed.');
+          }
+          if (body?.rights_guard?.revoked_rights_blocked_paid_submission !== true) {
+            throw new Error('Revoked rights did not block paid rendering.');
+          }
+          if (
+            body?.durable_job_guard?.first_worker_claimed !== true ||
+            body?.durable_job_guard?.second_worker_blocked !== true ||
+            body?.durable_job_guard?.stale_worker_completion_rejected !== true ||
+            body?.durable_job_guard?.final_status !== 'succeeded'
+          ) {
+            throw new Error('Durable job lease safety failed.');
+          }
+          NODE
+
+      - name: Verify real cross-invocation collision races
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const probe = 'ci' + Date.now().toString(36) + Math.random().toString(36).slice(2,10);
+          const url = (mode, writer='') =>
+            base + '/api/state-race-test?mode=' + encodeURIComponent(mode) +
+            '&probe=' + encodeURIComponent(probe) +
+            (writer ? '&writer=' + encodeURIComponent(writer) : '');
+
+          const init = await fetch(url('init'), { cache:'no-store' });
+          const initBody = await init.json().catch(() => ({}));
+          if (!init.ok || initBody?.ok !== true) {
+            throw new Error('Race probe initialization failed: ' + JSON.stringify(initBody));
+          }
+
+          const projectResponses = await Promise.all([
+            fetch(url('project-claim','a'), { cache:'no-store' }),
+            fetch(url('project-claim','b'), { cache:'no-store' })
+          ]);
+          const projectBodies = await Promise.all(projectResponses.map(r => r.json().catch(() => ({}))));
+          const projectStatuses = projectResponses.map(r => r.status).sort((a,b)=>a-b);
+          console.log('project race:', projectStatuses, projectBodies);
+
+          if (projectStatuses[0] !== 200 || projectStatuses[1] !== 409) {
+            throw new Error('Project race did not serialize exactly one writer.');
+          }
+
+          const providerResponses = await Promise.all([
+            fetch(url('provider-claim','a'), { cache:'no-store' }),
+            fetch(url('provider-claim','b'), { cache:'no-store' })
+          ]);
+          const providerBodies = await Promise.all(providerResponses.map(r => r.json().catch(() => ({}))));
+          const providerStatuses = providerResponses.map(r => r.status).sort((a,b)=>a-b);
+          console.log('provider race:', providerStatuses, providerBodies);
+
+          if (providerStatuses[0] !== 200 || providerStatuses[1] !== 409) {
+            throw new Error('Provider race did not serialize exactly one submission claim.');
+          }
+
+          const finalResponse = await fetch(url('read'), { cache:'no-store' });
+          const final = await finalResponse.json().catch(() => ({}));
+          console.log('race final:', finalResponse.status, final);
+
+          if (
+            !finalResponse.ok ||
+            final?.project_revision !== 1 ||
+            !['a','b'].includes(final?.project_winner) ||
+            final?.provider_state !== 'submitting' ||
+            final?.provider_submission_attempts !== 1
+          ) {
+            throw new Error('Cross-invocation race final state is invalid: ' + JSON.stringify(final));
           }
           NODE
 
@@ -145,7 +223,7 @@ jobs:
           const text = await r.text();
           let body; try { body = JSON.parse(text); } catch { body = text; }
 
-          console.log('queue self-test:', r.status, JSON.stringify(body).slice(0, 2500));
+          console.log('queue self-test:', r.status, JSON.stringify(body).slice(0, 3500));
 
           if (!r.ok || body?.ok !== true) {
             throw new Error('Durable queue self-test failed: ' + JSON.stringify(body));
@@ -168,7 +246,7 @@ jobs:
           );
           NODE
 
-      - name: Verify project concurrency guard
+      - name: Verify public project concurrency contract
         run: |
           set -euo pipefail
           node <<'NODE'
@@ -177,7 +255,7 @@ jobs:
           const text = await r.text();
           let body; try { body = JSON.parse(text); } catch { body = text; }
 
-          console.log('concurrency self-test:', r.status, JSON.stringify(body).slice(0, 2500));
+          console.log('concurrency self-test:', r.status, JSON.stringify(body).slice(0, 3000));
 
           if (!r.ok || body?.ok !== true) {
             throw new Error('Project concurrency self-test failed: ' + JSON.stringify(body));
@@ -191,7 +269,6 @@ jobs:
           if (body?.revisions?.final !== 2) {
             throw new Error('Unexpected final project revision.');
           }
-
           if (body?.probe_version !== 'project-concurrency-v2') {
             throw new Error('Unexpected project concurrency self-test version.');
           }
