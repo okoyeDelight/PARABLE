@@ -21,61 +21,113 @@ jobs:
       - name: Resolve exact Netlify deploy for this commit
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIEW_ALIAS: https://deploy-preview-1--parable-studio.netlify.app
+          OUTPUT_VAR: PREVIEW_BASE
         run: |
           set -euo pipefail
           node <<'NODE'
           const { appendFileSync } = await import('node:fs');
+
           const repo = process.env.GITHUB_REPOSITORY;
           const sha = process.env.GITHUB_SHA;
           const token = process.env.GH_TOKEN;
-          const sleep = ms => new Promise(r => setTimeout(r, ms));
-          let deployId = null;
+          const fallbackAlias = process.env.PREVIEW_ALIAS;
+          const outputVar = process.env.OUTPUT_VAR || 'PREVIEW_BASE';
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-          for (let attempt = 1; attempt <= 90; attempt++) {
-            const response = await fetch(
-              `https://api.github.com/repos/${repo}/commits/${sha}/status`,
-              {
-                headers: {
-                  authorization: `Bearer ${token}`,
-                  accept: 'application/vnd.github+json',
-                  'x-github-api-version': '2022-11-28'
-                },
-                cache: 'no-store'
-              }
-            );
+          const githubHeaders = {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28'
+          };
 
-            if (response.ok) {
-              const body = await response.json();
-              const status = (body.statuses || []).find(
-                item => item.context === 'netlify/parable-studio/deploy-preview'
-              );
+          const normalizeSha = value => String(value || '').trim().toLowerCase();
+          const validDeployId = value => /^[a-zA-Z0-9_-]{6,128}$/.test(String(value || ''));
 
-              console.log(
-                `attempt ${attempt}: netlify=${status?.state || 'missing'} target=${status?.target_url || 'none'}`
-              );
-
-              if (status?.state === 'failure' || status?.state === 'error') {
-                throw new Error('Netlify marked this exact commit deploy as failed.');
-              }
-
-              const pendingMatch = String(status?.target_url || '').match(/\/deploys\/([a-zA-Z0-9_-]+)/);
-            if (pendingMatch) deployId = pendingMatch[1];
-
-            if (status?.state === 'success') {
-                if (!deployId) throw new Error('Netlify succeeded but no exact deploy id was observed while the commit was building.');
-                const base = `https://${deployId}--parable-studio.netlify.app`;
-                appendFileSync(process.env.GITHUB_ENV, `PREVIEW_BASE=${base}\nNETLIFY_DEPLOY_ID=${deployId}\n`);
-                console.log('Exact preview:', base);
-                process.exit(0);
-              }
-            }
-
-            await sleep(4000);
+          async function readJson(url) {
+            const response = await fetch(url, { cache: 'no-store' });
+            const text = await response.text();
+            let body = {};
+            try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 600) }; }
+            return { response, body };
           }
 
-          throw new Error('Timed out waiting for the exact Netlify deploy.');
-          NODE
+          for (let attempt = 1; attempt <= 90; attempt++) {
+            const statusResponse = await fetch(
+              `https://api.github.com/repos/${repo}/commits/${sha}/status`,
+              { headers: githubHeaders, cache: 'no-store' }
+            );
 
+            if (!statusResponse.ok) {
+              console.log(`attempt ${attempt}: GitHub status lookup -> ${statusResponse.status}`);
+              await sleep(4000);
+              continue;
+            }
+
+            const combined = await statusResponse.json();
+            const status = (combined.statuses || []).find(
+              item => item.context === 'netlify/parable-studio/deploy-preview'
+            );
+
+            console.log(
+              `attempt ${attempt}: netlify=${status?.state || 'missing'} target=${status?.target_url || 'none'}`
+            );
+
+            if (status?.state === 'failure' || status?.state === 'error') {
+              throw new Error('Netlify marked this exact commit deploy as failed.');
+            }
+
+            if (status?.state !== 'success') {
+              await sleep(4000);
+              continue;
+            }
+
+            const alias = String(status?.target_url || fallbackAlias || '').replace(/\/$/, '');
+            if (!/^https:\/\//i.test(alias)) {
+              throw new Error('Netlify succeeded but did not provide a usable preview URL.');
+            }
+
+            const identity = await readJson(alias + '/api/deploy-identity');
+            const observedCommit = normalizeSha(identity.body?.commit_ref);
+            const deployId = String(identity.body?.deploy_id || '').trim();
+
+            console.log(
+              `identity: status=${identity.response.status} commit=${observedCommit || 'missing'} deploy=${deployId || 'missing'}`
+            );
+
+            // A moving PR alias is never trusted by itself. It must prove that
+            // it is currently serving this exact Git commit and disclose the
+            // Netlify deploy id before any benchmark/smoke request can run.
+            if (!identity.response.ok || observedCommit !== normalizeSha(sha) || !validDeployId(deployId)) {
+              await sleep(4000);
+              continue;
+            }
+
+            const immutableBase = String(
+              identity.body?.immutable_url || `https://${deployId}--parable-studio.netlify.app`
+            ).replace(/\/$/, '');
+
+            const immutableIdentity = await readJson(immutableBase + '/api/deploy-identity');
+            if (
+              !immutableIdentity.response.ok ||
+              normalizeSha(immutableIdentity.body?.commit_ref) !== normalizeSha(sha) ||
+              String(immutableIdentity.body?.deploy_id || '') !== deployId
+            ) {
+              console.log('Immutable deploy identity verification failed; retrying.');
+              await sleep(4000);
+              continue;
+            }
+
+            appendFileSync(
+              process.env.GITHUB_ENV,
+              `${outputVar}=${immutableBase}\nNETLIFY_DEPLOY_ID=${deployId}\nPARABLE_COMMIT_REF=${sha}\n`
+            );
+            console.log('Verified immutable preview:', immutableBase);
+            process.exit(0);
+          }
+
+          throw new Error('Timed out waiting for a verified immutable Netlify deploy for this exact commit.');
+          NODE
       - name: Wait for AI V8 Deploy Preview
         run: |
           set -euo pipefail
