@@ -17,7 +17,7 @@ import {
 type ContinuityEvent = AsyncWorkloadEvent & {
   eventData: {
     jobId: string;
-    kind: 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic';
+    kind: 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic' | 'scale-noop';
   };
 };
 
@@ -36,7 +36,7 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
   const jobId = clean(event.eventData?.jobId, 96);
   const kind = clean(event.eventData?.kind, 40);
 
-  if (!jobId || !['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic'].includes(kind)) {
+  if (!jobId || !['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic', 'scale-noop'].includes(kind)) {
     throw new ErrorDoNotRetry('Invalid PARABLE continuity workload event.');
   }
 
@@ -67,6 +67,17 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
   await new Promise((resolve) => setTimeout(resolve, 80));
   const claimed = await readDurableJob(jobId);
   if (!claimed || claimed.lease_token !== leaseToken) return;
+
+  if (kind === 'scale-noop') {
+    await completeJob(jobId, {
+      ok: true,
+      probe: 'durable-queue-v1',
+      event_id: event.eventId,
+      attempt: event.attempt,
+      completed_at: new Date().toISOString()
+    });
+    return;
+  }
 
   const base = origin();
   if (!base) {
