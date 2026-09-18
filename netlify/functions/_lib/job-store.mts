@@ -253,7 +253,9 @@ export async function createDurableJob(args: {
       if (!job) {
         throw new Error('Transactional durable-job state resolved outside the current deployment scope.');
       }
-      await mirrorAndRecord(job);
+      // PostgreSQL already records the authoritative created event. Do not
+      // block queue acceptance on duplicate Blob mirrors/telemetry; workers and
+      // readers may refresh those mirrors later without affecting correctness.
       return {
         job,
         created: state.created === true,
