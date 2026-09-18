@@ -1,5 +1,12 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import { readProjectRevision } from './_lib/project-concurrency.mts';
+import {
+  authorizeProject,
+  authorizeProjectCreation,
+  createProjectAccess,
+  listAccessibleProjectIds,
+  securityErrorResponse
+} from './_lib/security.mts';
 
 const starterProjects = [
   {
@@ -105,6 +112,13 @@ export default async (request: Request) => {
 
     if (projectId) {
       if (!safeId(projectId)) return json({ error: 'Invalid project identifier.' }, 400);
+      try {
+        await authorizeProject(request, projectId, 'project:read');
+      } catch (error) {
+        const handled = securityErrorResponse(error);
+        if (handled) return json(handled.body, handled.status);
+        throw error;
+      }
       const stored = await projects.get(`project/${projectId}`, { type: 'json' });
       if (stored) return json(stored);
       const starter = starterProjects.find((project) => project.id === projectId);
@@ -112,10 +126,28 @@ export default async (request: Request) => {
     }
 
     const requestedLimit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 50) || 50));
-    return json(await listProjects(projects, requestedLimit));
+    try {
+      const accessible = await listAccessibleProjectIds(request);
+      const all = await listProjects(projects, Math.max(requestedLimit, 100));
+      const allowed = new Set(accessible.project_ids);
+      return json(all.filter((project) => allowed.has(project.id)).slice(0, requestedLimit));
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
   }
 
   if (request.method === 'POST') {
+    let actor;
+    try {
+      actor = await authorizeProjectCreation(request);
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     const title = String(body.title || '').trim();
     if (!title) return json({ error: 'Story title is required.' }, 400);
@@ -156,6 +188,7 @@ export default async (request: Request) => {
       contexts.setJSON(`project/${id}`, projectContexts)
     ]);
 
+    await createProjectAccess(id, actor);
     const revision = await readProjectRevision(id);
     return json({
       ...project,
