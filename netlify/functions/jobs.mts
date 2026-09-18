@@ -17,7 +17,7 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 
 const clean = (value: unknown, max = 300) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
-const supported = new Set<JobKind>(['scene-state', 'shot-state', 'story-understanding', 'adaptation']);
+const supported = new Set<JobKind>(['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic']);
 
 export default async (request: Request) => {
   if (request.method === 'GET') {
