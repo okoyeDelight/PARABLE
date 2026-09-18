@@ -18,6 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 18
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify benchmark quality gate itself
+        run: node tools/benchmark_quality_smoke.mts
+
       - name: Resolve exact Netlify deploy for this commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -252,6 +259,9 @@ jobs:
             assert(run.result?.story_bible?.premise && run.result?.story_bible?.core_conflict, `${id}: incomplete Story Bible`);
             assert(Array.isArray(run.result?.characters) && run.result.characters.length > 0, `${id}: no grounded characters`);
             assert(Array.isArray(run.result?.scenes) && run.result.scenes.length > 0, `${id}: no scene understanding`);
+            assert(run.quality_gate?.version === 'parable-benchmark-quality-v1', `${id}: story quality gate missing`);
+            assert(run.quality_gate?.passed === true, `${id}: story quality gate failed: ${JSON.stringify(run.quality_gate)}`);
+            assert(Number(run.quality_gate?.score || 0) >= 0.82, `${id}: story quality score below threshold`);
             storyRuns.push(run);
             await sleep(2000);
           }
@@ -277,6 +287,9 @@ jobs:
             assert(run.engine?.privacy_mode === 'benchmark-free-routing-synthetic-only', `${id}: critic privacy mode was not explicit`);
             assert(run.result?.summary && run.result?.readiness, `${id}: critic output incomplete`);
             assert(Array.isArray(run.result?.priorities) && run.result.priorities.length > 0, `${id}: critic priorities missing`);
+            assert(run.quality_gate?.version === 'parable-benchmark-quality-v1', `${id}: critic quality gate missing`);
+            assert(run.quality_gate?.passed === true, `${id}: critic quality gate failed: ${JSON.stringify(run.quality_gate)}`);
+            assert(Number(run.quality_gate?.score || 0) >= 0.82, `${id}: critic quality score below threshold`);
             await sleep(2000);
           }
 
@@ -287,5 +300,5 @@ jobs:
           assert(recent.some(x => x.stage === 'film-critic' && x.lane === 'benchmark' && x.ok), 'health has no successful Film Critic benchmark event');
           assert(recent.every(x => !('prompt' in x) && !('manuscript' in x)), 'health telemetry leaked story content');
 
-          console.log('PARABLE AI V8 benchmark passed: protected lane preserved; 3 synthetic genres used dynamic free routing; Story Understanding + Film Critic both returned grounded model output; health/failover telemetry active.');
+          console.log('PARABLE AI V8 benchmark passed: exact deploy verified; all 3 Story Understanding fixtures and all 3 Film Critic fixtures used real model inference and passed the fixture-specific quality gate; protected-lane and telemetry checks passed.');
           NODE

@@ -1,6 +1,7 @@
 import { benchmarkLaneEnabled } from './_lib/understand-ai.mts';
 import { buildBenchmarkAdaptation, getBenchmarkFixture } from './_lib/benchmarks.mts';
 import { runFreeCriticBenchmark, runFreeStoryBenchmark } from './_lib/benchmark-free-router.mts';
+import { assessCriticBenchmark, assessStoryBenchmark } from './_lib/benchmark-quality.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -20,20 +21,24 @@ export default async (request: Request) => {
   try {
     if (stage === 'story') {
       const result = await runFreeStoryBenchmark(fixture);
+      const qualityGate = assessStoryBenchmark(fixture, result.data);
       return json({
         benchmark: { fixture: fixture.id, label: fixture.label, stage: 'story-understanding', synthetic_only: true },
-        passed: result.engine.mode === 'model' && Boolean(result.data),
+        passed: result.engine.mode === 'model' && qualityGate.passed,
         engine: result.engine,
+        quality_gate: qualityGate,
         result: result.data
       });
     }
 
     const adaptation = buildBenchmarkAdaptation(fixture);
     const result = await runFreeCriticBenchmark(fixture, adaptation);
+    const qualityGate = assessCriticBenchmark(fixture, adaptation, result.data);
     return json({
       benchmark: { fixture: fixture.id, label: fixture.label, stage: 'film-critic', synthetic_only: true },
-      passed: result.engine.mode === 'model' && Boolean(result.data),
+      passed: result.engine.mode === 'model' && qualityGate.passed,
       engine: result.engine,
+      quality_gate: qualityGate,
       result: result.data
     });
   } catch (error) {
