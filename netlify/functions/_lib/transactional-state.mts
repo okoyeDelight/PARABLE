@@ -174,7 +174,7 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
         authorization: 'Bearer ' + key,
         'content-type': 'application/json',
         accept: 'application/json',
-        'x-parable-state-engine': 'postgres-v2'
+        'x-parable-state-engine': 'postgres-v3'
       },
       body: JSON.stringify({
         p_action: action,
@@ -415,17 +415,35 @@ export async function claimTransactionalJob(args: {
   leaseToken: string;
   attempt: number;
   leaseMs: number;
+  maxGlobalActive?: number | null;
+  maxProjectActive?: number | null;
 }) {
   return rpc<{
     claimed: boolean;
     job: Record<string, any>;
     reason?: string;
+    retry_after_ms?: number;
+    active?: number;
+    limit?: number;
   }>('claim_job', {
     id: args.id,
     lease_token: args.leaseToken,
     attempt: Math.max(1, Math.floor(args.attempt || 1)),
-    lease_ms: Math.max(5000, Math.min(300000, Math.floor(args.leaseMs || 120000)))
+    lease_ms: Math.max(5000, Math.min(300000, Math.floor(args.leaseMs || 120000))),
+    max_global_active: Math.max(1, Math.min(2000, Math.floor(Number(args.maxGlobalActive) || 250))),
+    max_project_active: Math.max(1, Math.min(100, Math.floor(Number(args.maxProjectActive) || 8)))
   });
+}
+
+export async function readTransactionalJobCapacity() {
+  return rpc<{
+    active_processing: number;
+    queued: number;
+    retrying: number;
+    failed: number;
+    succeeded: number;
+    at: string;
+  }>('job_capacity', {});
 }
 
 export async function transitionTransactionalJob(args: {
