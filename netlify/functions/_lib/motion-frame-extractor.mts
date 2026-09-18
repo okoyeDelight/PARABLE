@@ -1,5 +1,9 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import {
+  ingestTrustedMotionFrame,
+  signedMotionFrameUrl
+} from './motion-frame-assets.mts';
+import {
   acknowledgeProviderSubmission,
   beginProviderSubmission,
   ensureProviderTransaction,
@@ -39,9 +43,7 @@ function stores() {
     ? getStore(name, { consistency: 'strong' })
     : getDeployStore(name);
   return {
-    frameSets: make('parable-motion-frame-sets'),
-    evidence: make('parable-motion-evidence-assets'),
-    evidenceMeta: make('parable-motion-evidence-meta')
+    frameSets: make('parable-motion-frame-sets')
   };
 }
 
@@ -75,65 +77,6 @@ async function readCached(attempt: RenderAttempt) {
 async function saveCached(value: MotionFrameSet) {
   await stores().frameSets.setJSON(key(value.attempt_id), value);
   return value;
-}
-
-async function sha256Bytes(bytes: Uint8Array) {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-async function snapshotEvidenceFrame(args: {
-  uri: string;
-  attemptId: string;
-  index: number;
-}) {
-  const response = await fetch(args.uri, {
-    headers: { accept: 'image/*' },
-    signal: AbortSignal.timeout(12000)
-  });
-  if (!response.ok) {
-    throw Object.assign(new Error('Could not snapshot extracted motion evidence frame: HTTP ' + response.status), {
-      retryableEvidence: response.status === 429 || response.status >= 500
-    });
-  }
-
-  const contentType = clean(response.headers.get('content-type'), 120).toLowerCase();
-  if (!/^image\/(jpeg|jpg|png|webp)(?:;|$)/i.test(contentType)) {
-    throw new Error('Motion evidence frame returned an unsupported content type.');
-  }
-
-  const declared = Number(response.headers.get('content-length') || 0);
-  if (declared > 15 * 1024 * 1024) throw new Error('Motion evidence frame exceeds the 15 MB evidence limit.');
-
-  const buffer = await response.arrayBuffer();
-  if (!buffer.byteLength || buffer.byteLength > 15 * 1024 * 1024) {
-    throw new Error('Motion evidence frame is empty or exceeds the 15 MB evidence limit.');
-  }
-
-  const bytes = new Uint8Array(buffer);
-  const hash = await sha256Bytes(bytes);
-  const assetKey = 'frame/' + hash;
-
-  if (!await stores().evidence.getMetadata(assetKey)) {
-    await stores().evidence.set(assetKey, buffer, { onlyIfNew: true } as any);
-  }
-
-  await stores().evidenceMeta.setJSON('meta/' + hash, {
-    evidence_asset_version: 'parable-motion-evidence-asset-v1',
-    sha256: hash,
-    media_type: contentType.split(';')[0],
-    byte_length: buffer.byteLength,
-    attempt_id: args.attemptId,
-    frame_index: args.index,
-    source_uri: args.uri,
-    captured_at: new Date().toISOString()
-  });
-
-  return {
-    sha256: hash,
-    byte_length: buffer.byteLength,
-    media_type: contentType.split(';')[0]
-  };
 }
 
 function falUrls(endpoint: string, requestId: string) {
@@ -475,22 +418,35 @@ export async function extractMotionFrames(args: {
     result
   });
 
-  // Evidence is copied into PARABLE-owned content-addressed storage before QA.
-  // A later provider URL expiry or mutation therefore cannot destroy the audit
-  // trail used to accept the shot.
-  const snapshots = await Promise.all(
-    frameSet.frames.map((frame, index) =>
-      snapshotEvidenceFrame({
-        uri: frame.uri,
+  // Evidence is copied into PARABLE-owned content-addressed storage before QA,
+  // and the inspector receives signed URLs for those exact immutable bytes.
+  const trustedFrames = await Promise.all(
+    frameSet.frames.map(async (frame) => {
+      const asset = await ingestTrustedMotionFrame({
+        projectId: args.attempt.project_id,
         attemptId: args.attempt.id,
-        index
-      })
-    )
+        sourceUrl: frame.uri,
+        sourceProvider: 'fal',
+        sourceRequestId: requestId,
+        role: frame.role || 'sample',
+        timestampSeconds: frame.timestamp_seconds
+      });
+
+      const uri = await signedMotionFrameUrl({
+        projectId: args.attempt.project_id,
+        hash: asset.sha256,
+        purpose: 'motion-inspector',
+        ttlSeconds: 3600
+      });
+
+      return {
+        ...frame,
+        uri,
+        sha256: asset.sha256
+      };
+    })
   );
-  frameSet.frames = frameSet.frames.map((frame, index) => ({
-    ...frame,
-    sha256: snapshots[index].sha256
-  }));
+  frameSet.frames = trustedFrames;
 
   await saveCached(frameSet);
   await settleProviderTransaction({
