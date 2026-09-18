@@ -53,6 +53,7 @@ export type RenderBudgetDecision = {
 
 const roundMoney = (value: number) => Math.round(value * 1000000) / 1000000;
 const finiteMoney = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? roundMoney(n) : null;
 };
