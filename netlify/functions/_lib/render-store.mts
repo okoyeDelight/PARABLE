@@ -13,7 +13,8 @@ function stores() {
     attemptEvents: make('parable-render-attempt-events'),
     qa: make('parable-render-qa'),
     keyframes: make('parable-keyframe-plans'),
-    keyframeInspections: make('parable-keyframe-inspections')
+    keyframeInspections: make('parable-keyframe-inspections'),
+    motionInspections: make('parable-motion-inspections')
   };
 }
 
@@ -216,4 +217,27 @@ export async function readLatestKeyframeInspection(args: {
 }) {
   const key = ['latest', safe(args.projectId), safe(args.storyVersion), safe(args.sceneId), safe(args.shotId), safe(args.specHash)].join('/');
   return stores().keyframeInspections.get(key, { type: 'json' }) as Promise<Record<string, any> | null>;
+}
+
+
+export async function saveMotionInspection(report: Record<string, any>) {
+  const key = [
+    'attempt',
+    safe(report.attempt_id),
+    safe(report.sample_set_hash || report.id),
+    safe(report.id)
+  ].join('/');
+  await stores().motionInspections.setJSON(key, report, { onlyIfNew: true } as any);
+  await stores().motionInspections.setJSON(
+    'latest/' + safe(report.attempt_id),
+    report
+  );
+  return key;
+}
+
+export async function readLatestMotionInspection(attemptId: string) {
+  return stores().motionInspections.get(
+    'latest/' + safe(attemptId),
+    { type: 'json' }
+  ) as Promise<Record<string, any> | null>;
 }
