@@ -1,3 +1,4 @@
+import { readProjectRevision } from './project-concurrency.mts';
 import { getStore } from '@netlify/blobs';
 import { getContext } from '@netlify/functions';
 
@@ -70,4 +71,21 @@ export async function readProjectArtifact<T = unknown>(ref: string): Promise<T |
     value?: T;
   } | null;
   return envelope?.value ?? null;
+}
+
+
+export async function readAuthoritativeProjectState<T = unknown>(
+  projectId: string,
+  stateKey: string
+): Promise<{ value: T; ref: string; revision: number } | null> {
+  const head = await readProjectRevision(projectId);
+  const ref = head.state_refs?.[stateKey];
+  if (!ref) return null;
+  const value = await readProjectArtifact<T>(ref);
+  if (value === null) return null;
+  return {
+    value,
+    ref,
+    revision: head.revision
+  };
 }
