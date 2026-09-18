@@ -169,6 +169,7 @@ export type ShotRenderSpec = {
     transitions: unknown;
     continuity_after: unknown;
     spatial_continuity?: unknown;
+    previous_accepted_handoff?: unknown;
   };
   references: CanonReference[];
   inspiration_references?: CanonReference[];
@@ -664,7 +665,8 @@ export async function compileShotRenderSpec(args: {
       continuity_before: pkg.continuity_before || null,
       transitions: pkg.shot_transitions || null,
       continuity_after: pkg.continuity_after || null,
-      spatial_continuity: pkg.spatial_continuity || null
+      spatial_continuity: pkg.spatial_continuity || null,
+      previous_accepted_handoff: pkg.previous_accepted_handoff || null
     },
     references,
     inspiration_references: inspirationReferences,
@@ -672,9 +674,16 @@ export async function compileShotRenderSpec(args: {
       ...(pkg.hard_constraints || {}),
       preserve_visual_canon: true,
       preserve_approved_reference_identity: true,
-      preserve_composition_intent: true
+      preserve_composition_intent: true,
+      match_previous_accepted_handoff: Boolean(
+        pkg?.hard_constraints?.match_previous_accepted_handoff &&
+        pkg?.previous_accepted_handoff?.handoff_frame?.uri
+      )
     },
     negative_constraints: [
+      ...(pkg?.previous_accepted_handoff?.handoff_frame?.uri
+        ? ['Match visible performer pose, prop placement, room geography, lighting direction and action continuity from the previous accepted handoff frame where the cut is continuous.']
+        : []),
       'No identity drift.',
       'No unexplained wardrobe change.',
       'No unexplained prop teleportation.',
