@@ -1,5 +1,10 @@
 import { recordAIHealth } from './ai-health-store.mts';
 import type { ShotRenderSpec } from './render-foundation.mts';
+import {
+  acquireProviderGuard,
+  releaseProviderGuard,
+  type ProviderGuardLease
+} from './provider-resilience.mts';
 
 export type KeyframeInspectionMetric =
   | 'identity'
@@ -356,7 +361,16 @@ export async function inspectKeyframe(input: InspectInput): Promise<KeyframeInsp
 
   const started = Date.now();
   const timeout = timeoutSignal(18000);
+  let providerLease: ProviderGuardLease | null = null;
   try {
+    providerLease = await acquireProviderGuard({
+      service: 'ai',
+      provider: 'openrouter',
+      model,
+      operationId: 'keyframe-inspection:' + input.spec.project_id + ':' + input.spec.shot_id,
+      maxActive: Math.max(1, Math.min(16, Number(env('PARABLE_KEYFRAME_INSPECTOR_MAX_ACTIVE')) || 8)),
+      leaseMs: 30000
+    });
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       signal: timeout.signal,
@@ -409,6 +423,9 @@ export async function inspectKeyframe(input: InspectInput): Promise<KeyframeInsp
     const report = sanitize(parseJson(body?.choices?.[0]?.message?.content), input);
     report.engine.model = String(body?.model || model);
 
+    await releaseProviderGuard(providerLease, { outcome: 'success' }).catch(() => null);
+    providerLease = null;
+
     await recordAIHealth({
       stage: 'keyframe-visual-inspection',
       lane: 'protected',
@@ -420,6 +437,10 @@ export async function inspectKeyframe(input: InspectInput): Promise<KeyframeInsp
 
     return report;
   } catch (error) {
+    if (providerLease) {
+      await releaseProviderGuard(providerLease, { outcome: 'failure', error }).catch(() => null);
+      providerLease = null;
+    }
     const reason = error instanceof Error ? error.message : String(error);
     await recordAIHealth({
       stage: 'keyframe-visual-inspection',
