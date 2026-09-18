@@ -6,7 +6,13 @@ export function parseRightsEnforcementMode(value: unknown): RightsEnforcementMod
 
 export function runtimeRightsEnforcementMode(): RightsEnforcementMode {
   try {
-    return parseRightsEnforcementMode(Netlify.env.get('PARABLE_RIGHTS_ENFORCEMENT_MODE'));
+    const configured = String(Netlify.env.get('PARABLE_RIGHTS_ENFORCEMENT_MODE') || '').trim();
+    if (configured) return parseRightsEnforcementMode(configured);
+
+    const deployContext = String(Netlify.context?.deploy?.context || '').trim().toLowerCase();
+    if (deployContext === 'deploy-preview' || deployContext === 'branch-deploy') return 'observe';
+
+    return 'strict';
   } catch {
     return 'strict';
   }
