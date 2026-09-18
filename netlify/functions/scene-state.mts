@@ -45,19 +45,40 @@ const clean = (value: unknown, max = 120000) => String(value ?? '').replace(/\r\
 const oneLine = (value: unknown, max = 240) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 
-async function latestProductionBible(projectId: string) {
+async function adaptationForVersion(projectId: string, storyVersion?: string | null) {
   const s = stores();
-  const [adaptation, understanding] = await Promise.all([
-    s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>,
-    s.understandings.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>
-  ]);
-  return adaptation?.production_bible || understanding?.understanding || understanding || null;
+  const authoritative = await readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest');
+  if (authoritative?.value && (!storyVersion || authoritative.value.story_version === storyVersion)) {
+    return authoritative.value;
+  }
+
+  if (storyVersion) {
+    const versioned = await s.adaptations.get(
+      'project/' + projectId + '/versions/' + storyVersion,
+      { type: 'json' }
+    ) as Record<string, any> | null;
+    if (versioned) return versioned;
+  }
+
+  return s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>;
 }
 
-async function latestAdaptation(projectId: string) {
-  const authoritative = await readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest');
-  if (authoritative?.value) return authoritative.value;
-  return stores().adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>;
+async function productionBibleForVersion(projectId: string, storyVersion: string) {
+  const s = stores();
+  const [adaptation, understanding] = await Promise.all([
+    adaptationForVersion(projectId, storyVersion),
+    s.understandings.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>
+  ]);
+
+  if (adaptation?.story_version === storyVersion && adaptation?.production_bible) {
+    return adaptation.production_bible;
+  }
+
+  if (understanding?.story_version === storyVersion) {
+    return understanding?.understanding || understanding;
+  }
+
+  return null;
 }
 
 function screenplayText(adaptation: Record<string, any> | null) {
@@ -87,7 +108,7 @@ async function loadOrBootstrap(projectId: string, storyVersion: string, bodyBibl
 
   const bible = bodyBible && typeof bodyBible === 'object'
     ? bodyBible as Record<string, any>
-    : await latestProductionBible(projectId);
+    : await productionBibleForVersion(projectId, storyVersion);
   if (!bible) return null;
 
   return bootstrapContinuity({
@@ -151,13 +172,19 @@ export default async (request: Request) => {
     type: 'json',
     consistency: 'strong'
   } as any) as Record<string, any> | null;
-  const adaptation = await latestAdaptation(projectId);
+
+  const requestedStoryVersion = oneLine(body.storyVersion, 96);
+  const latestAdaptation = await adaptationForVersion(projectId, requestedStoryVersion || null);
 
   const storyVersion = oneLine(
-    body.storyVersion || project?.story_version || adaptation?.story_version || 'story_unknown',
+    requestedStoryVersion || project?.story_version || latestAdaptation?.story_version || 'story_unknown',
     96
   );
   if (!safeId(storyVersion)) return json({ error: 'Invalid storyVersion.' }, 400);
+
+  const adaptation = latestAdaptation?.story_version === storyVersion
+    ? latestAdaptation
+    : await adaptationForVersion(projectId, storyVersion);
 
   const suppliedScene = body.scene && typeof body.scene === 'object' ? body.scene : {};
   const adapted = screenplayText(adaptation);
@@ -206,10 +233,17 @@ export default async (request: Request) => {
         ttlMs: 30000
       });
 
-      const latest = await s.continuity.get('project/' + projectId + '/latest', {
-        type: 'json',
-        consistency: 'strong'
-      } as any) as ContinuitySnapshot | null;
+      const [versionLatest, globalLatest] = await Promise.all([
+        s.continuity.get(
+          'project/' + projectId + '/versions/' + storyVersion + '/latest',
+          { type: 'json', consistency: 'strong' } as any
+        ) as Promise<ContinuitySnapshot | null>,
+        s.continuity.get('project/' + projectId + '/latest', {
+          type: 'json',
+          consistency: 'strong'
+        } as any) as Promise<ContinuitySnapshot | null>
+      ]);
+      const latest = versionLatest || (globalLatest?.story_version === storyVersion ? globalLatest : null);
       if (latest) continuityBefore = upgradeContinuitySnapshot(latest);
     } catch (error) {
       const handled = projectMutationErrorResponse(error);
