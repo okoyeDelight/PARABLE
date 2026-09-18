@@ -6,6 +6,14 @@ import {
   type ContinuitySnapshot,
   type SceneContinuityInput
 } from './_lib/continuity-core.mts';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  readProjectRevision,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -91,6 +99,21 @@ export default async (request: Request) => {
   const action = clean(body.action || 'apply_scene');
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
 
+  const startingRevision = await readProjectRevision(projectId);
+  const explicitExpectedRevision = Number.isFinite(Number(body.expectedProjectRevision))
+    ? Number(body.expectedProjectRevision)
+    : null;
+
+  if (explicitExpectedRevision !== null && explicitExpectedRevision !== startingRevision.revision) {
+    return json({
+      error: 'The project changed before continuity processing started.',
+      code: 'PROJECT_REVISION_CONFLICT',
+      expected_revision: explicitExpectedRevision,
+      current_revision: startingRevision.revision,
+      retryable: true
+    }, 409);
+  }
+
   if (action === 'bootstrap') {
     const bible = await resolveBible(projectId, body.productionBible);
     if (!bible) return json({
@@ -105,12 +128,34 @@ export default async (request: Request) => {
       productionBible: bible as Record<string, any>
     });
 
-    await saveSnapshot(snapshot);
-    return json({
-      action: 'bootstrap',
-      continuity: snapshot,
-      context: compactContinuityContext(snapshot)
-    }, 201);
+    let lease: ProjectMutationLease | null = null;
+    try {
+      lease = await acquireProjectMutation({
+        projectId,
+        mutationType: 'continuity-bootstrap',
+        expectedRevision: explicitExpectedRevision ?? startingRevision.revision,
+        ttlMs: 30000
+      });
+
+      await saveSnapshot(snapshot);
+      const committed = await commitProjectMutation(lease, {
+        story_version: storyVersion,
+        action: 'bootstrap'
+      });
+
+      return json({
+        action: 'bootstrap',
+        continuity: snapshot,
+        context: compactContinuityContext(snapshot),
+        project_revision: committed.revision,
+        mutation_id: committed.mutation_id
+      }, 201);
+    } catch (error) {
+      if (lease) await abortProjectMutation(lease).catch(() => false);
+      const handled = projectMutationErrorResponse(error);
+      if (handled) return json({ ...handled.body, retryable: true }, handled.status);
+      throw error;
+    }
   }
 
   if (!['apply_scene', 'check_scene'].includes(action)) {
@@ -134,16 +179,54 @@ export default async (request: Request) => {
   const scene = (body.scene || {}) as SceneContinuityInput;
   const result = evaluateAndApplyScene(current, scene, { apply: action === 'apply_scene' });
 
-  if (action === 'apply_scene') await saveSnapshot(result.snapshot);
+  if (action === 'apply_scene') {
+    let lease: ProjectMutationLease | null = null;
+    try {
+      lease = await acquireProjectMutation({
+        projectId,
+        mutationType: 'continuity-scene',
+        expectedRevision: explicitExpectedRevision ?? startingRevision.revision,
+        ttlMs: 30000
+      });
+
+      const latest = await loadLatest(projectId);
+      const rebased = latest
+        ? evaluateAndApplyScene(latest, scene, { apply: true })
+        : result;
+
+      await saveSnapshot(rebased.snapshot);
+      const committed = await commitProjectMutation(lease, {
+        story_version: rebased.snapshot.story_version,
+        scene_id: rebased.scene_id,
+        can_render: rebased.can_render,
+        warning_count: rebased.warnings.length
+      });
+
+      return json({
+        action,
+        scene_id: rebased.scene_id,
+        can_render: rebased.can_render,
+        warnings: rebased.warnings,
+        continuity: rebased.snapshot,
+        context: compactContinuityContext(rebased.snapshot),
+        project_revision: committed.revision,
+        mutation_id: committed.mutation_id
+      }, 201);
+    } catch (error) {
+      if (lease) await abortProjectMutation(lease).catch(() => false);
+      const handled = projectMutationErrorResponse(error);
+      if (handled) return json({ ...handled.body, retryable: true }, handled.status);
+      throw error;
+    }
+  }
 
   return json({
     action,
     scene_id: result.scene_id,
     can_render: result.can_render,
     warnings: result.warnings,
-    continuity: action === 'apply_scene' ? result.snapshot : undefined,
     context: compactContinuityContext(result.snapshot)
-  }, action === 'apply_scene' ? 201 : 200);
+  }, 200);
 };
 
 export const config = {
