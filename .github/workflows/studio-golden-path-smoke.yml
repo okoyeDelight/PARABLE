@@ -1,0 +1,216 @@
+name: PARABLE Studio Golden Path Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'web/public/studio.js'
+      - 'web/public/studio.html'
+      - 'netlify/functions/understand.mts'
+      - 'netlify/functions/adapt.mts'
+      - 'netlify/functions/visual-canon.mts'
+      - 'netlify/functions/scene-state.mts'
+      - 'netlify/functions/shot-state.mts'
+      - 'netlify/functions/shot-compile.mts'
+      - 'netlify/functions/keyframe-plan.mts'
+      - 'netlify/functions/keyframe-generate.mts'
+      - 'netlify/functions/_lib/job-store.mts'
+      - 'netlify/functions/_lib/render-foundation.mts'
+      - '.github/workflows/studio-golden-path-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: read
+
+concurrency:
+  group: parable-studio-golden-path
+  cancel-in-progress: true
+
+jobs:
+  golden-path:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - name: Resolve exact Netlify preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node <<'NODE'
+          const { appendFileSync } = await import('node:fs');
+          const repo = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const token = process.env.GH_TOKEN;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          let deployId = null;
+          for (let attempt = 1; attempt <= 100; attempt++) {
+            const r = await fetch(`https://api.github.com/repos/${repo}/commits/${sha}/status`, {
+              headers: {
+                authorization: `Bearer ${token}`,
+                accept: 'application/vnd.github+json',
+                'x-github-api-version': '2022-11-28'
+              },
+              cache: 'no-store'
+            });
+            const body = await r.json();
+            const status = (body.statuses || []).find(x => x.context === 'netlify/parable-studio/deploy-preview');
+            const pending = String(status?.target_url || '').match(/\/deploys\/([a-zA-Z0-9_-]+)/);
+            if (pending) deployId = pending[1];
+            if (status?.state === 'failure' || status?.state === 'error') throw new Error('Netlify deploy failed.');
+            if (status?.state === 'success' && deployId) {
+              const base = `https://${deployId}--parable-studio.netlify.app`;
+              appendFileSync(process.env.GITHUB_ENV, `PREVIEW_BASE=${base}\n`);
+              console.log('Exact preview:', base);
+              process.exit(0);
+            }
+            await sleep(4000);
+          }
+          throw new Error('Timed out waiting for exact deploy.');
+          NODE
+
+      - name: Run staged Story → Canon → first-frame path
+        run: |
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const story = {
+            title: 'The Altar Golden Path',
+            sourceText: 'The room fell quiet.\n\nDaniel looked at the empty chair across from him. Outside, rain touched the windows like fingertips. He had prayed for an answer. He had not expected silence. His calling had never frightened him until tonight.',
+            setting: 'Awka, Nigeria',
+            primaryAudience: 'Global Christian young adults',
+            audienceScope: 'global',
+            storyPeriod: 'present'
+          };
+
+          async function request(path, options = {}) {
+            const r = await fetch(base + path, options);
+            const text = await r.text();
+            let body; try { body = JSON.parse(text); } catch { body = text; }
+            if (!r.ok) {
+              const e = new Error(`${path} -> ${r.status}: ${typeof body === 'string' ? body : JSON.stringify(body)}`);
+              e.status = r.status; e.body = body; throw e;
+            }
+            return body;
+          }
+          async function post(path, body, headers = {}) {
+            return request(path, {
+              method: 'POST',
+              headers: { 'content-type':'application/json', ...headers },
+              body: JSON.stringify(body)
+            });
+          }
+          function assert(ok, message) { if (!ok) throw new Error(message); }
+
+          async function durable(kind, payload, key, timeoutMs = 150000) {
+            const submitted = await post('/api/jobs', { kind, payload }, { 'Idempotency-Key': key });
+            assert(submitted?.job?.id, `${kind}: no job id`);
+            const started = Date.now();
+            while (Date.now() - started < timeoutMs) {
+              const state = await request('/api/job-status?id=' + encodeURIComponent(submitted.job.id), { cache:'no-store' });
+              if (state.job?.status === 'succeeded') {
+                assert(state.result, `${kind}: succeeded without result`);
+                return state.result;
+              }
+              if (state.job?.status === 'failed') throw new Error(`${kind}: ${state.job?.last_error || 'failed'}`);
+              await sleep(Math.max(700, Math.min(6000, Number(state.poll_after_ms) || 1200)));
+            }
+            throw new Error(`${kind}: timed out`);
+          }
+
+          const project = await post('/api/projects', story);
+          assert(project.id, 'Project creation failed.');
+
+          const understanding = await durable(
+            'story-understanding',
+            { ...story, projectId: project.id },
+            'golden-understanding-' + project.id
+          );
+          assert(understanding.story_version, 'Understanding produced no story version.');
+          assert(Array.isArray(understanding.characters) && understanding.characters.some(c => c.name === 'Daniel'), 'Understanding lost Daniel.');
+
+          const adaptation = await durable(
+            'adaptation',
+            { ...story, projectId: project.id },
+            'golden-adaptation-' + project.id
+          );
+          assert(adaptation.staged_understanding_used === true, 'Adaptation did not consume staged Story Understanding.');
+          assert(Array.isArray(adaptation.production_bible?.characters) && adaptation.production_bible.characters.length >= 1, 'Production Bible has no characters.');
+          assert(Array.isArray(adaptation.shot_plan) && adaptation.shot_plan.length >= 1, 'Adaptation has no shot plan.');
+
+          const canon = await post('/api/visual-canon', {
+            action:'bootstrap',
+            projectId:project.id,
+            storyVersion:adaptation.story_version
+          });
+          assert((canon.characters || []).length >= 1, 'Visual Canon has no character entities.');
+          assert((canon.locations || []).length >= 1, 'Visual Canon did not derive the Story Bible setting as a location.');
+
+          const scene = adaptation.production_bible?.scenes?.[0] || {};
+          const sceneId = scene.id || 'scene_1';
+          await post('/api/scene-state', {
+            projectId:project.id,
+            storyVersion:adaptation.story_version,
+            sceneId,
+            sceneIndex:1,
+            heading:adaptation.screenplay?.heading || scene.heading || 'INT. AWKA - NIGHT',
+            sceneText:(adaptation.screenplay?.beats || []).map(b => b.text).filter(Boolean).join('\n'),
+            mode:'apply'
+          });
+
+          const shot = adaptation.shot_plan[0];
+          await post('/api/shot-state', {
+            projectId:project.id,
+            storyVersion:adaptation.story_version,
+            sceneId,
+            shotId:shot.id
+          });
+
+          const spec = await post('/api/shot-compile', {
+            projectId:project.id,
+            storyVersion:adaptation.story_version,
+            sceneId,
+            shotId:shot.id
+          });
+          assert(spec.spec_hash, 'ShotRenderSpec missing hash.');
+
+          await post('/api/keyframe-plan', {
+            projectId:project.id,
+            storyVersion:adaptation.story_version,
+            sceneId,
+            shotId:shot.id,
+            specHash:spec.spec_hash
+          });
+
+          const keyframe = await durable(
+            'keyframe-generate',
+            {
+              projectId:project.id,
+              storyVersion:adaptation.story_version,
+              sceneId,
+              shotId:shot.id,
+              specHash:spec.spec_hash,
+              freeDevelopment:true,
+              nonConfidentialConfirmed:true
+            },
+            'golden-free-keyframe-' + spec.spec_hash,
+            180000
+          );
+
+          assert(keyframe.provider === 'pollinations-dev', 'Free preview keyframe did not use the zero-cost development route.');
+          assert(Number(keyframe.actual_cost_usd) === 0, 'Free development keyframe reported a non-zero provider cost.');
+          assert(keyframe.development_only === true && keyframe.production_eligible === false, 'Development visual was not correctly isolated from production eligibility.');
+          assert(typeof keyframe.asset_uri === 'string' && keyframe.asset_uri.length > 20, 'No generated first-frame asset URI.');
+
+          const image = await fetch(keyframe.asset_uri);
+          assert(image.ok, 'Signed first-frame asset is not readable.');
+          assert(/^image\//i.test(image.headers.get('content-type') || ''), 'First-frame asset is not an image.');
+
+          console.log(JSON.stringify({
+            ok:true,
+            project_id:project.id,
+            understanding_engine:understanding.engine,
+            adaptation_engine:adaptation.engine,
+            visual_canon:{characters:canon.characters.length,locations:canon.locations.length},
+            first_frame:{provider:keyframe.provider,cost:keyframe.actual_cost_usd,sha:keyframe.content_sha256}
+          }, null, 2));
+          NODE
