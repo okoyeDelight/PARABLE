@@ -1,5 +1,6 @@
 import { buildKeyframePlan } from './_lib/render-foundation.mts';
 import { readKeyframePlan, readRenderSpec, saveKeyframePlan } from './_lib/render-store.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -27,6 +28,14 @@ export default async (request: Request) => {
 
   if (![projectId, storyVersion, sceneId, shotId].every((value) => value && safeId(value))) {
     return json({ error: 'Valid projectId, storyVersion, sceneId and shotId are required.' }, 400);
+  }
+
+  try {
+    await authorizeProject(request, projectId, request.method === 'GET' ? 'project:read' : 'render:plan');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
   }
 
   if (request.method === 'GET') {
