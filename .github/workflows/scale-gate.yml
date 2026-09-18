@@ -30,7 +30,7 @@ jobs:
           PARABLE_BASE: ${{ inputs.base_url }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error "${PARABLE_BASE}/api/ai-status" >/dev/null
+          curl --fail --silent --show-error "${PARABLE_BASE}/api/scale-probe" >/dev/null
 
       - name: Run 1,000 virtual-user read-tier gate
         env:
