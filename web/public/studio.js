@@ -8,6 +8,7 @@ const toast=$('#studioToast');
 let currentProjectId=null;
 let currentResult=null;
 let currentCritic=null;
+let currentProjectRevision=null;
 let activeShot=null;
 let directionTimer=null;
 const PENDING_PRODUCTION_JOB='parable.pending.production.v1';
@@ -139,6 +140,7 @@ function renderCritic(result){
 
 function renderResult(data){
   currentResult=data;
+  if(Number.isFinite(Number(data?.project_revision))) currentProjectRevision=Number(data.project_revision);
   emptyState.hidden=true;
   resultState.hidden=false;
   resetCritic();
@@ -279,12 +281,24 @@ async function persistDirection(){
     motion:activeShot.motion||'',
     lighting:activeShot.lighting||'',
     performance:activeShot.performance||'',
-    blocking:activeShot.blocking||''
+    blocking:activeShot.blocking||'',
+    ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
   };
   try{
     const r=await fetch('/api/direction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const body=await r.json();if(!r.ok)throw new Error(body.error||'Could not save this directing choice');
-    $('#directionSaveState').textContent='Saved to this story version.';
+    const body=await r.json();
+    if(!r.ok){
+      if(r.status===409&&(body.code==='PROJECT_REVISION_CONFLICT'||body.code==='PROJECT_MUTATION_BUSY')){
+        try{
+          const latest=await fetch('/api/project-revision?projectId='+encodeURIComponent(currentProjectId),{cache:'no-store'}).then(x=>x.json());
+          if(Number.isFinite(Number(latest?.revision)))currentProjectRevision=Number(latest.revision);
+        }catch{}
+        throw new Error('This project changed elsewhere while you were directing. PARABLE protected the newer version instead of overwriting it.');
+      }
+      throw new Error(body.error||'Could not save this directing choice');
+    }
+    if(Number.isFinite(Number(body.project_revision)))currentProjectRevision=Number(body.project_revision);
+    $('#directionSaveState').textContent='Saved safely to project revision '+(currentProjectRevision??'—')+'.';
   }catch(err){
     $('#directionSaveState').textContent='Not saved — retry by changing the control again.';
     showToast(err.message||'Direction save failed.');
