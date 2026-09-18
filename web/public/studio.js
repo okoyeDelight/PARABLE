@@ -16,6 +16,7 @@ let currentRenderSpec=null;
 let currentKeyframePlan=null;
 let currentRenderRoute=null;
 let currentKeyframeApproval=null;
+let currentKeyframeInspection=null;
 const PENDING_PRODUCTION_JOB='parable.pending.production.v1';
 
 const escapeHtml=(v='')=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
@@ -92,7 +93,7 @@ function selectShot(shot){
   $('#performanceText').textContent=shot.performance||'Keep the performance truthful to the beat.';
   $('#shotPreview').dataset.lens=String(shot.lens_mm||50);
   $('#directionSaveState').textContent='Director choices are versioned with this story.';
-  currentRenderSpec=null;currentKeyframePlan=null;currentRenderRoute=null;currentKeyframeApproval=null;
+  currentRenderSpec=null;currentKeyframePlan=null;currentRenderRoute=null;currentKeyframeApproval=null;currentKeyframeInspection=null;
   if($('#keyframeApprovalBox'))$('#keyframeApprovalBox').hidden=true;
   if($('#renderState'))$('#renderState').textContent='Selected shot changed. Prepare it again before rendering.';
 }
@@ -363,6 +364,7 @@ $('#runCriticBtn')?.addEventListener('click',runDirectorCritic);
 $('#rerunCriticBtn')?.addEventListener('click',runDirectorCritic);
 $('#prepareRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
 $('#refreshRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
+$('#generateKeyframeBtn')?.addEventListener('click',generateCurrentKeyframe);
 $('#approveKeyframeBtn')?.addEventListener('click',approveCurrentKeyframe);
 $('#revokeKeyframeBtn')?.addEventListener('click',revokeCurrentKeyframe);
 $('#keyframeAssetUrl')?.addEventListener('input',e=>setKeyframePreview(e.target.value));
@@ -515,6 +517,129 @@ async function ensureShotContinuityThroughSelected(){
 }
 
 
+
+function renderKeyframeInspection(report){
+  currentKeyframeInspection=report||null;
+  const box=$('#keyframeInspector');
+  if(!box)return;
+  box.hidden=!report;
+  if(!report)return;
+
+  const decision=String(report.decision||'INSPECTOR_UNAVAILABLE');
+  const badge=$('#keyframeInspectorBadge');
+  badge.textContent=decision==='CLEAR_FOR_HUMAN_REVIEW'?'CLEAR'
+    :decision==='REPAIR_BEFORE_REVIEW'?'REPAIR':'MANUAL';
+  badge.classList.toggle('is-clear',decision==='CLEAR_FOR_HUMAN_REVIEW');
+  badge.classList.toggle('is-repair',decision==='REPAIR_BEFORE_REVIEW');
+  $('#keyframeInspectorDecision').textContent=decision.replaceAll('_',' ').toLowerCase();
+
+  const blockers=report.blockers||[];
+  const warnings=report.warnings||[];
+  $('#keyframeInspectorSummary').textContent=blockers[0]
+    ||warnings[0]
+    ||'No automated hard blocker was found. Human approval is still required.';
+
+  const scores=Object.entries(report.scores||{}).map(([key,value])=>
+    `<em>${escapeHtml(key.replaceAll('_',' '))} · ${Math.round(Number(value||0)*100)}%</em>`
+  ).join('');
+  const unavailable=(report.not_assessable||[]).slice(0,4).map(key=>
+    `<em>${escapeHtml(String(key).replaceAll('_',' '))} · manual</em>`
+  ).join('');
+  $('#keyframeInspectorDetails').className='keyframe-inspector-details';
+  $('#keyframeInspectorDetails').innerHTML=scores+unavailable;
+
+  const overrideRow=$('#keyframeOverrideRow');
+  if(overrideRow)overrideRow.hidden=decision!=='REPAIR_BEFORE_REVIEW';
+  if(decision!=='REPAIR_BEFORE_REVIEW'&&$('#keyframeOverrideInspector'))$('#keyframeOverrideInspector').checked=false;
+}
+
+async function inspectCurrentKeyframe(assetUri){
+  if(!currentRenderSpec||!assetUri)return null;
+  $('#keyframeInspector').hidden=false;
+  $('#keyframeInspectorBadge').textContent='CHECKING';
+  $('#keyframeInspectorDecision').textContent='Visual Inspector is checking the still…';
+  $('#keyframeInspectorSummary').textContent='Identity, wardrobe, props, geography, composition, lighting, technical artifacts and cultural grounding are being checked where evidence exists.';
+  try{
+    const report=await fetchJson('/api/keyframe-inspect',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentRenderSpec.story_version,
+        sceneId:currentRenderSpec.scene_id,
+        shotId:currentRenderSpec.shot_id,
+        specHash:currentRenderSpec.spec_hash,
+        assetUri
+      })
+    });
+    renderKeyframeInspection(report);
+    return report;
+  }catch(err){
+    renderKeyframeInspection({
+      decision:'INSPECTOR_UNAVAILABLE',
+      scores:{},
+      not_assessable:[],
+      blockers:[],
+      warnings:[err.message||'Automated inspection was unavailable.'],
+      observations:[]
+    });
+    return null;
+  }
+}
+
+async function generateCurrentKeyframe(){
+  if(!currentRenderSpec||!currentKeyframePlan){
+    showToast('Prepare the selected shot first.');return;
+  }
+  const button=$('#generateKeyframeBtn');if(button)button.disabled=true;
+  $('#renderState').textContent='Generating one first-frame candidate through the durable production queue…';
+  try{
+    const key='keyframe|'+currentProjectId+'|'+currentRenderSpec.story_version+'|'
+      +currentRenderSpec.scene_id+'|'+currentRenderSpec.shot_id+'|'+currentRenderSpec.spec_hash+'|'
+      +Date.now()+'|'+(crypto.randomUUID?crypto.randomUUID():Math.random());
+
+    const submitted=await submitDurableJob('keyframe-generate',{
+      projectId:currentProjectId,
+      storyVersion:currentRenderSpec.story_version,
+      sceneId:currentRenderSpec.scene_id,
+      shotId:currentRenderSpec.shot_id,
+      specHash:currentRenderSpec.spec_hash
+    },await stableIdempotencyKey(key));
+
+    const result=await waitForJob(submitted.job.id,{
+      timeoutMs:180000,
+      onProgress:(status)=>{
+        $('#renderState').textContent=status==='processing'
+          ?'PARABLE is generating and storing the first-frame candidate…'
+          :status==='retrying'
+            ?'The image provider slowed down. The same durable job is retrying without creating a second purchase…'
+            :'First-frame generation is queued safely…';
+      }
+    });
+
+    if(!result?.asset_uri)throw new Error('Keyframe generation completed without an asset.');
+
+    $('#keyframeAssetUrl').value=result.asset_uri;
+    $('#keyframeContentSha').value=result.content_sha256||'';
+    $('#keyframeAssetSource').value='generated';
+    $('#keyframeImmutable').checked=true;
+    setKeyframePreview(result.asset_uri);
+
+    const cost=Number(result.actual_cost_usd);
+    $('#renderState').textContent=Number.isFinite(cost)
+      ?`Candidate generated and stored immutably. Provider cost reported: ${cost.toFixed(4)}. Running Visual Inspector…`
+      :'Candidate generated and stored immutably. Running Visual Inspector…';
+
+    await inspectCurrentKeyframe(result.asset_uri);
+    showToast('First-frame candidate ready for human review.');
+  }catch(err){
+    $('#renderState').textContent=err.message||'First-frame generation failed.';
+    showToast(err.message||'First-frame generation failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
 function setKeyframePreview(uri){
   const image=$('#keyframeAssetPreview');
   const empty=$('#keyframePreviewEmpty');
@@ -607,6 +732,8 @@ async function approveCurrentKeyframe(){
         immutableBinding:Boolean($('#keyframeImmutable')?.checked),
         checks:keyframeChecksPayload(),
         humanApproved:true,
+        overrideInspector:Boolean($('#keyframeOverrideInspector')?.checked),
+        note:String($('#keyframeReviewerNote')?.value||'').trim()||undefined,
         ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
       })
     });
