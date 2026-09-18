@@ -16,6 +16,8 @@ export type DurableJob = {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  lease_token: string | null;
+  lease_expires_at: string | null;
 };
 
 function stores() {
@@ -80,7 +82,9 @@ export async function createDurableJob(args: {
     result_ref: null,
     created_at: now,
     updated_at: now,
-    completed_at: null
+    completed_at: null,
+    lease_token: null,
+    lease_expires_at: null
   };
 
   await Promise.all([
@@ -98,16 +102,19 @@ export async function readJobPayload(jobId: string) {
   return stores().payloads.get('payload/' + jobId, { type: 'json' }) as Promise<Record<string, any> | null>;
 }
 
-export async function markJobProcessing(jobId: string, attempts: number) {
+export async function markJobProcessing(jobId: string, attempts: number, leaseToken?: string, leaseMs = 120000) {
   const { jobs } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
+  const now = new Date();
   const next: DurableJob = {
     ...current,
     status: 'processing',
     attempts: Math.max(current.attempts, attempts),
     completed_at: null,
-    updated_at: new Date().toISOString()
+    lease_token: leaseToken || current.lease_token || null,
+    lease_expires_at: leaseToken ? new Date(now.getTime() + leaseMs).toISOString() : current.lease_expires_at || null,
+    updated_at: now.toISOString()
   };
   await jobs.setJSON('job/' + jobId, next);
   return next;
@@ -123,6 +130,8 @@ export async function markJobRetrying(jobId: string, error: unknown, attempts: n
     attempts: Math.max(current.attempts, attempts),
     last_error: clean(error instanceof Error ? error.message : error, 1200),
     completed_at: null,
+    lease_token: null,
+    lease_expires_at: null,
     updated_at: new Date().toISOString()
   };
   await jobs.setJSON('job/' + jobId, next);
@@ -142,7 +151,9 @@ export async function completeJob(jobId: string, result: unknown) {
     result_ref: resultRef,
     last_error: null,
     updated_at: now,
-    completed_at: now
+    completed_at: now,
+    lease_token: null,
+    lease_expires_at: null
   };
   await jobs.setJSON('job/' + jobId, next);
   return next;
@@ -158,7 +169,9 @@ export async function failJob(jobId: string, error: unknown) {
     status: 'failed',
     last_error: clean(error instanceof Error ? error.message : error, 1200),
     updated_at: now,
-    completed_at: now
+    completed_at: now,
+    lease_token: null,
+    lease_expires_at: null
   };
   await jobs.setJSON('job/' + jobId, next);
   return next;
