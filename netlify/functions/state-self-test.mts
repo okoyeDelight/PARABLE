@@ -184,6 +184,95 @@ export default async (request: Request) => {
       resultRef: 'synthetic://self-test'
     });
 
+    // Backpressure must preserve work instead of dropping it. Two jobs in the
+    // same project compete under a one-worker project limit: the first runs,
+    // the second is refused temporarily, then succeeds after capacity frees.
+    const capacityProjectId = projectId + '_capacity';
+    const capacityJobA = 'job_capacity_a_' + token;
+    const capacityJobB = 'job_capacity_b_' + token;
+    const capacityPayloadHashA = await transactionalRequestFingerprint({ token, slot: 'a' });
+    const capacityPayloadHashB = await transactionalRequestFingerprint({ token, slot: 'b' });
+
+    await ensureTransactionalJob({
+      id: capacityJobA,
+      kind: 'scale-noop',
+      projectId: capacityProjectId,
+      workspaceId: 'ws_probe',
+      actorUserId: 'usr_preview_owner',
+      authContext: {
+        actor_id: 'usr_preview_owner',
+        provider: 'parable-preview',
+        subject: 'preview-owner',
+        workspace_id: 'ws_probe',
+        role: 'owner',
+        action: 'project:edit'
+      },
+      payloadHash: capacityPayloadHashA,
+      idempotencyKey: 'capacity-a-' + token
+    });
+
+    await ensureTransactionalJob({
+      id: capacityJobB,
+      kind: 'scale-noop',
+      projectId: capacityProjectId,
+      workspaceId: 'ws_probe',
+      actorUserId: 'usr_preview_owner',
+      authContext: {
+        actor_id: 'usr_preview_owner',
+        provider: 'parable-preview',
+        subject: 'preview-owner',
+        workspace_id: 'ws_probe',
+        role: 'owner',
+        action: 'project:edit'
+      },
+      payloadHash: capacityPayloadHashB,
+      idempotencyKey: 'capacity-b-' + token
+    });
+
+    const capacityLeaseA = 'capacity_lease_a_' + token;
+    const capacityLeaseB = 'capacity_lease_b_' + token;
+
+    const capacityClaimA = await claimTransactionalJob({
+      id: capacityJobA,
+      leaseToken: capacityLeaseA,
+      attempt: 1,
+      leaseMs: 30000,
+      maxGlobalActive: 2000,
+      maxProjectActive: 1
+    });
+
+    const capacityClaimBWhileFull = await claimTransactionalJob({
+      id: capacityJobB,
+      leaseToken: capacityLeaseB,
+      attempt: 1,
+      leaseMs: 30000,
+      maxGlobalActive: 2000,
+      maxProjectActive: 1
+    });
+
+    await transitionTransactionalJob({
+      id: capacityJobA,
+      toStatus: 'succeeded',
+      leaseToken: capacityLeaseA,
+      resultRef: 'synthetic://capacity-a'
+    });
+
+    const capacityClaimBAfterRelease = await claimTransactionalJob({
+      id: capacityJobB,
+      leaseToken: capacityLeaseB,
+      attempt: 2,
+      leaseMs: 30000,
+      maxGlobalActive: 2000,
+      maxProjectActive: 1
+    });
+
+    await transitionTransactionalJob({
+      id: capacityJobB,
+      toStatus: 'succeeded',
+      leaseToken: capacityLeaseB,
+      resultRef: 'synthetic://capacity-b'
+    });
+
     const ok =
       submitting.state === 'submitting' &&
       duplicateSubmissionBlocked &&
@@ -194,11 +283,15 @@ export default async (request: Request) => {
       claimA.claimed === true &&
       claimB.claimed === false &&
       staleLeaseRejected &&
-      completed?.status === 'succeeded';
+      completed?.status === 'succeeded' &&
+      capacityClaimA.claimed === true &&
+      capacityClaimBWhileFull.claimed === false &&
+      capacityClaimBWhileFull.reason === 'capacity-project' &&
+      capacityClaimBAfterRelease.claimed === true;
 
     return json({
       ok,
-      probe_version: 'transactional-state-self-test-v3',
+      probe_version: 'transactional-state-self-test-v4',
       provider_spend_guard: {
         first_submission_claimed: submitting.state === 'submitting',
         duplicate_submission_blocked: duplicateSubmissionBlocked,
@@ -215,12 +308,18 @@ export default async (request: Request) => {
         second_worker_blocked: claimB.claimed === false,
         stale_worker_completion_rejected: staleLeaseRejected,
         final_status: completed?.status || null
+      },
+      admission_control: {
+        first_project_worker_claimed: capacityClaimA.claimed,
+        excess_project_worker_deferred: capacityClaimBWhileFull.claimed === false,
+        saturation_reason: capacityClaimBWhileFull.reason || null,
+        deferred_worker_claimed_after_release: capacityClaimBAfterRelease.claimed
       }
     }, ok ? 200 : 500);
   } catch (error) {
     return json({
       ok: false,
-      probe_version: 'transactional-state-self-test-v3',
+      probe_version: 'transactional-state-self-test-v4',
       error: error instanceof Error ? error.message : String(error),
       code: errorCode(error) || null
     }, 500);
