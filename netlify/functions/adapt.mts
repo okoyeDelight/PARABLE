@@ -1,6 +1,14 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import { sha256, type StoryInput } from './_lib/story-ai.mts';
 import { runStoryModel } from './_lib/story-router.mts';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  readProjectRevision,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
 
 type Shot = {
   id: string;
@@ -270,6 +278,8 @@ export default async (request: Request) => {
     return json({ error: 'This pass accepts up to 120,000 characters. Long-form chapter orchestration is a separate production stage.' }, 413);
   }
 
+  const startingRevision = projectId ? await readProjectRevision(projectId) : null;
+
   const sourceHash = await sha256(`${input.title}\n${input.setting}\n${input.primaryAudience}\n${input.sourceText}`);
   const storyVersion = `story_${sourceHash.slice(0, 12)}`;
   const modelRun = await runStoryModel(input);
@@ -308,37 +318,82 @@ export default async (request: Request) => {
   const { adaptations, projects } = stores();
   const latestKey = projectId ? `project/${projectId}/latest` : `adaptation/${result.id}`;
   const versionKey = projectId ? `project/${projectId}/versions/${storyVersion}` : `adaptation/${result.id}/version/${storyVersion}`;
-  await Promise.all([
-    adaptations.setJSON(latestKey, result),
-    adaptations.setJSON(versionKey, result)
-  ]);
+  let lease: ProjectMutationLease | null = null;
 
-  if (projectId) {
-    const project = await projects.get(`project/${projectId}`, { type: 'json' }) as Record<string, unknown> | null;
-    if (project) {
-      await projects.setJSON(`project/${projectId}`, {
-        ...project,
-        title: input.title,
-        source_text: input.sourceText,
-        source_hash: sourceHash,
-        story_version: storyVersion,
-        setting: input.setting || project.setting || null,
-        primary_audience: input.primaryAudience || project.primary_audience || null,
-        story_engine: {
-          provider: modelRun.engine.provider,
-          model: modelRun.engine.model,
-          version: modelRun.engine.version,
-          mode: modelRun.engine.mode,
-          privacy_mode: modelRun.engine.privacy_mode || null
-        },
-        status: 'shot_plan',
-        progress: Math.max(Number(project.progress || 0), modelRun.engine.mode === 'model' ? 42 : 35),
-        updated_at: now
+  if (projectId && startingRevision) {
+    try {
+      lease = await acquireProjectMutation({
+        projectId,
+        mutationType: 'story-adaptation',
+        expectedRevision: startingRevision.revision,
+        ttlMs: 30000
       });
+    } catch (error) {
+      const handled = projectMutationErrorResponse(error);
+      if (handled) {
+        return json({
+          ...handled.body,
+          retryable: true,
+          hint: 'The durable job can safely retry against the newer project revision.'
+        }, handled.status);
+      }
+      throw error;
     }
   }
 
-  return json(result, 201);
+  try {
+    await Promise.all([
+      adaptations.setJSON(latestKey, result),
+      adaptations.setJSON(versionKey, result)
+    ]);
+
+    if (projectId) {
+      const project = await projects.get(`project/${projectId}`, {
+        type: 'json',
+        consistency: 'strong'
+      } as any) as Record<string, any> | null;
+
+      if (project) {
+        await projects.setJSON(`project/${projectId}`, {
+          ...project,
+          title: input.title,
+          source_text: input.sourceText,
+          source_hash: sourceHash,
+          story_version: storyVersion,
+          setting: input.setting || project.setting || null,
+          primary_audience: input.primaryAudience || project.primary_audience || null,
+          story_engine: {
+            provider: modelRun.engine.provider,
+            model: modelRun.engine.model,
+            version: modelRun.engine.version,
+            mode: modelRun.engine.mode,
+            privacy_mode: modelRun.engine.privacy_mode || null
+          },
+          status: 'shot_plan',
+          progress: Math.max(Number(project.progress || 0), modelRun.engine.mode === 'model' ? 42 : 35),
+          updated_at: now
+        });
+      }
+    }
+
+    if (lease) {
+      const committed = await commitProjectMutation(lease, {
+        story_version: storyVersion,
+        source_hash: sourceHash,
+        engine_mode: modelRun.engine.mode,
+        provider: modelRun.engine.provider
+      });
+      (result as any).project_revision = committed.revision;
+      (result as any).mutation_id = committed.mutation_id;
+    }
+
+    return json(result, 201);
+  } catch (error) {
+    if (lease) await abortProjectMutation(lease).catch(() => false);
+    const handled = projectMutationErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 };
 
 export const config = {
