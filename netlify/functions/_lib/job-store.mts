@@ -1,4 +1,5 @@
-import { getDeployStore, getStore } from '@netlify/blobs';
+import { getStore } from '@netlify/blobs';
+import { getContext } from '@netlify/functions';
 
 export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic' | 'scale-noop';
 export type JobStatus = 'queued' | 'processing' | 'retrying' | 'succeeded' | 'failed';
@@ -31,17 +32,38 @@ type JobEvent = {
   error_class: string | null;
 };
 
-function stores() {
-  const production = Netlify.context?.deploy?.context === 'production';
-  const make = (name: string) => production
-    ? getStore(name, { consistency: 'strong' })
-    : getDeployStore(name);
+function runtimeScope() {
+  let context: any = null;
+  try { context = getContext(); } catch {}
+
+  const deployContext = context?.deploy?.context || Netlify.context?.deploy?.context || 'unknown';
+  const production = deployContext === 'production';
+  if (production) return { production: true, prefix: '' };
+
+  const deployId = String(context?.deploy?.id || Netlify.context?.deploy?.id || 'local')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+    .slice(0, 96);
+
   return {
-    jobs: make('parable-jobs'),
-    payloads: make('parable-job-payloads'),
-    results: make('parable-job-results'),
-    events: make('parable-job-events')
+    production: false,
+    prefix: 'deploy/' + (deployId || 'local') + '/'
   };
+}
+
+function stores() {
+  const scope = runtimeScope();
+  const suffix = scope.production ? '' : '-sandbox';
+  return {
+    scope,
+    jobs: getStore('parable-jobs' + suffix, { consistency: 'strong' }),
+    payloads: getStore('parable-job-payloads' + suffix, { consistency: 'strong' }),
+    results: getStore('parable-job-results' + suffix, { consistency: 'strong' }),
+    events: getStore('parable-job-events' + suffix, { consistency: 'strong' })
+  };
+}
+
+function scopedKey(path: string) {
+  return stores().scope.prefix + path;
 }
 
 const clean = (value: unknown, max = 500) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -75,6 +97,7 @@ function classifyJobError(error: unknown) {
 
 async function recordJobEvent(job: DurableJob) {
   try {
+    const { events, scope } = stores();
     const now = new Date();
     const at = now.toISOString();
     const event: JobEvent = {
@@ -86,8 +109,8 @@ async function recordJobEvent(job: DurableJob) {
       at,
       error_class: classifyJobError(job.last_error)
     };
-    const key = hourPrefix(now) + at.replace(/[:.]/g, '-') + '-' + event.id.slice(-12);
-    await stores().events.setJSON(key, event);
+    const key = scope.prefix + hourPrefix(now) + at.replace(/[:.]/g, '-') + '-' + event.id.slice(-12);
+    await events.setJSON(key, event);
   } catch {
     // Operational telemetry must never make a production job fail.
   }
@@ -99,7 +122,7 @@ export async function createDurableJob(args: {
   payload: Record<string, unknown>;
   idempotencyKey?: string | null;
 }) {
-  const { jobs, payloads } = stores();
+  const { jobs, payloads, scope } = stores();
   const payloadJson = JSON.stringify(args.payload);
   const payloadHash = await sha256(payloadJson);
   const normalizedKey = clean(args.idempotencyKey, 240);
@@ -107,7 +130,7 @@ export async function createDurableJob(args: {
     ? await sha256([args.kind, args.projectId, normalizedKey].join('|'))
     : crypto.randomUUID().replaceAll('-', '');
   const id = 'job_' + deterministic.slice(0, 28);
-  const key = 'job/' + id;
+  const key = scope.prefix + 'job/' + id;
   const existing = await jobs.get(key, { type: 'json' }) as DurableJob | null;
 
   if (existing) {
@@ -142,7 +165,7 @@ export async function createDurableJob(args: {
   };
 
   await Promise.all([
-    payloads.setJSON('payload/' + id, args.payload),
+    payloads.setJSON(scope.prefix + 'payload/' + id, args.payload),
     jobs.setJSON(key, job)
   ]);
   await recordJobEvent(job);
@@ -150,21 +173,17 @@ export async function createDurableJob(args: {
 }
 
 export async function readDurableJob(jobId: string) {
-  return stores().jobs.get('job/' + jobId, {
-    type: 'json',
-    consistency: 'strong'
-  } as any) as Promise<DurableJob | null>;
+  const { jobs, scope } = stores();
+  return jobs.get(scope.prefix + 'job/' + jobId, { type: 'json' }) as Promise<DurableJob | null>;
 }
 
 export async function readJobPayload(jobId: string) {
-  return stores().payloads.get('payload/' + jobId, {
-    type: 'json',
-    consistency: 'strong'
-  } as any) as Promise<Record<string, any> | null>;
+  const { payloads, scope } = stores();
+  return payloads.get(scope.prefix + 'payload/' + jobId, { type: 'json' }) as Promise<Record<string, any> | null>;
 }
 
 export async function markJobQueued(jobId: string, eventId?: string | null) {
-  const { jobs } = stores();
+  const { jobs, scope } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
   const next: DurableJob = {
@@ -173,13 +192,13 @@ export async function markJobQueued(jobId: string, eventId?: string | null) {
     queue_event_id: clean(eventId, 180) || current.queue_event_id || null,
     updated_at: new Date().toISOString()
   };
-  await jobs.setJSON('job/' + jobId, next);
+  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
   await recordJobEvent(next);
   return next;
 }
 
 export async function markJobProcessing(jobId: string, attempts: number, leaseToken?: string, leaseMs = 120000) {
-  const { jobs } = stores();
+  const { jobs, scope } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
   const now = new Date();
@@ -192,13 +211,13 @@ export async function markJobProcessing(jobId: string, attempts: number, leaseTo
     lease_expires_at: leaseToken ? new Date(now.getTime() + leaseMs).toISOString() : current.lease_expires_at || null,
     updated_at: now.toISOString()
   };
-  await jobs.setJSON('job/' + jobId, next);
+  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
   await recordJobEvent(next);
   return next;
 }
 
 export async function markJobRetrying(jobId: string, error: unknown, attempts: number) {
-  const { jobs } = stores();
+  const { jobs, scope } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
   const next: DurableJob = {
@@ -211,16 +230,16 @@ export async function markJobRetrying(jobId: string, error: unknown, attempts: n
     lease_expires_at: null,
     updated_at: new Date().toISOString()
   };
-  await jobs.setJSON('job/' + jobId, next);
+  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
   await recordJobEvent(next);
   return next;
 }
 
 export async function completeJob(jobId: string, result: unknown) {
-  const { jobs, results } = stores();
+  const { jobs, results, scope } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
-  const resultRef = 'result/' + jobId;
+  const resultRef = scope.prefix + 'result/' + jobId;
   const now = new Date().toISOString();
   await results.setJSON(resultRef, result);
   const next: DurableJob = {
@@ -233,13 +252,13 @@ export async function completeJob(jobId: string, result: unknown) {
     lease_token: null,
     lease_expires_at: null
   };
-  await jobs.setJSON('job/' + jobId, next);
+  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
   await recordJobEvent(next);
   return next;
 }
 
 export async function failJob(jobId: string, error: unknown) {
-  const { jobs } = stores();
+  const { jobs, scope } = stores();
   const current = await readDurableJob(jobId);
   if (!current) return null;
   const now = new Date().toISOString();
@@ -252,7 +271,7 @@ export async function failJob(jobId: string, error: unknown) {
     lease_token: null,
     lease_expires_at: null
   };
-  await jobs.setJSON('job/' + jobId, next);
+  await jobs.setJSON(scope.prefix + 'job/' + jobId, next);
   await recordJobEvent(next);
   return next;
 }
@@ -264,10 +283,13 @@ export async function readJobResult(job: DurableJob) {
 
 export async function readJobHealth() {
   try {
-    const { events } = stores();
+    const { events, scope } = stores();
     const now = new Date();
     const previousHour = new Date(now.getTime() - 60 * 60 * 1000);
-    const prefixes = [...new Set([hourPrefix(now), hourPrefix(previousHour)])];
+    const prefixes = [...new Set([
+      scope.prefix + hourPrefix(now),
+      scope.prefix + hourPrefix(previousHour)
+    ])];
     const rows: JobEvent[] = [];
 
     for (const prefix of prefixes) {
@@ -297,6 +319,7 @@ export async function readJobHealth() {
 
     return {
       window: 'approximately last 2 UTC hours',
+      storage_scope: scope.production ? 'production' : scope.prefix,
       jobs_observed: current.length,
       status_counts,
       kind_counts,
