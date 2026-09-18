@@ -24,9 +24,8 @@ export class TransactionalStateError extends Error {
   }
 }
 
-type RpcResult<T> = T;
-
-const clean = (value: unknown, max = 1000) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+const clean = (value: unknown, max = 1000) =>
+  String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 function runtimeScope() {
   let context: any = null;
@@ -73,6 +72,11 @@ export function storageProjectId(projectId: string) {
     : 'preview:' + scope.deploy_id + ':' + projectId;
 }
 
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 async function runtimeSigningSecret() {
   const dedicated = String(Netlify.env.get('PARABLE_STATE_RPC_SECRET') || '').trim();
   if (dedicated) return dedicated;
@@ -81,9 +85,6 @@ async function runtimeSigningSecret() {
   if (!scope.production) {
     const source = String(Netlify.env.get('OPENROUTER_API_KEY') || '').trim();
     if (source) {
-      // Preview-only bootstrap: derive an independent HMAC key from an already
-      // secret server credential. The source secret and derived value never
-      // leave the server or appear in API responses/logs.
       return sha256Hex('PARABLE_STATE_RPC_V1|' + source);
     }
   }
@@ -106,11 +107,6 @@ async function credentials() {
   }
 
   return { url, key, secret };
-}
-
-async function sha256Hex(value: string) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 async function hmacHex(secret: string, value: string) {
@@ -136,14 +132,20 @@ function providerErrorCode(body: any, status: number) {
   if (/PROJECT_REVISION_CONFLICT/i.test(text)) return 'PROJECT_REVISION_CONFLICT';
   if (/PROVIDER_TRANSACTION_REQUEST_CONFLICT/i.test(text)) return 'PROVIDER_TRANSACTION_REQUEST_CONFLICT';
   if (/PROVIDER_TRANSACTION_STATE_CONFLICT/i.test(text)) return 'PROVIDER_TRANSACTION_STATE_CONFLICT';
+  if (/RIGHTS_ASSERTION_FAILED/i.test(text)) return 'RIGHTS_ASSERTION_FAILED';
+  if (/RIGHTS_RESTORE_REQUIRES_EXPLICIT_WORKFLOW/i.test(text)) return 'RIGHTS_RESTORE_REQUIRES_EXPLICIT_WORKFLOW';
+  if (/JOB_IDEMPOTENCY_CONFLICT/i.test(text)) return 'JOB_IDEMPOTENCY_CONFLICT';
+  if (/JOB_LEASE_MISMATCH/i.test(text)) return 'JOB_LEASE_MISMATCH';
+  if (/JOB_NOT_PROCESSING/i.test(text)) return 'JOB_NOT_PROCESSING';
   if (/RUNTIME_REPLAY_REJECTED/i.test(text)) return 'RUNTIME_REPLAY_REJECTED';
   if (/RUNTIME_SIGNATURE|RUNTIME_REQUEST_EXPIRED/i.test(text)) return 'RUNTIME_AUTH_REJECTED';
+  if (/lock timeout|statement timeout|canceling statement/i.test(text)) return 'TRANSACTIONAL_STATE_CONTENTION_TIMEOUT';
   if (status === 429) return 'TRANSACTIONAL_STATE_RATE_LIMITED';
   if (status >= 500) return 'TRANSACTIONAL_STATE_UPSTREAM_FAILED';
   return 'TRANSACTIONAL_STATE_RPC_REJECTED';
 }
 
-async function rpc<T>(action: string, payload: Record<string, unknown>): Promise<RpcResult<T>> {
+async function rpc<T>(action: string, payload: Record<string, unknown>): Promise<T> {
   const { url, key, secret } = await credentials();
   const timestamp = Date.now();
   const nonce = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
@@ -160,7 +162,7 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
         authorization: 'Bearer ' + key,
         'content-type': 'application/json',
         accept: 'application/json',
-        'x-parable-state-engine': 'postgres-v1'
+        'x-parable-state-engine': 'postgres-v2'
       },
       body: JSON.stringify({
         p_action: action,
@@ -168,12 +170,16 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
         p_nonce: nonce,
         p_payload_text: payloadText,
         p_signature: signature
-      })
+      }),
+      signal: AbortSignal.timeout(9000)
     });
   } catch (error) {
+    const timeout = error instanceof Error && /timeout|abort/i.test(error.name + ' ' + error.message);
     throw new TransactionalStateError(
-      'TRANSACTIONAL_STATE_NETWORK_FAILED',
-      'PARABLE could not reach the transactional state service.',
+      timeout ? 'TRANSACTIONAL_STATE_TIMEOUT' : 'TRANSACTIONAL_STATE_NETWORK_FAILED',
+      timeout
+        ? 'PARABLE transactional state exceeded its fail-fast request deadline.'
+        : 'PARABLE could not reach the transactional state service.',
       503,
       true,
       clean(error instanceof Error ? error.message : error, 800)
@@ -184,16 +190,31 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
   if (!response.ok) {
     const code = providerErrorCode(body, response.status);
     const message = clean(body?.message || body?.error || 'Transactional state request failed.', 1200);
+    const conflictCodes = new Set([
+      'PROJECT_REVISION_CONFLICT',
+      'PROVIDER_TRANSACTION_STATE_CONFLICT',
+      'PROVIDER_TRANSACTION_REQUEST_CONFLICT',
+      'JOB_IDEMPOTENCY_CONFLICT',
+      'JOB_LEASE_MISMATCH',
+      'JOB_NOT_PROCESSING',
+      'RIGHTS_ASSERTION_FAILED',
+      'RIGHTS_RESTORE_REQUIRES_EXPLICIT_WORKFLOW'
+    ]);
+
     throw new TransactionalStateError(
       code,
       message,
-      code === 'PROJECT_REVISION_CONFLICT' || code === 'PROVIDER_TRANSACTION_STATE_CONFLICT' ? 409 : response.status,
+      conflictCodes.has(code) ? 409 : response.status,
       response.status >= 500 || response.status === 429,
       body
     );
   }
 
   return body as T;
+}
+
+export async function transactionalStateHealth() {
+  return rpc<Record<string, unknown>>('health', {});
 }
 
 export async function readTransactionalProjectState(projectId: string) {
@@ -250,10 +271,6 @@ export async function commitTransactionalProjectMutation(args: {
   });
 }
 
-export async function transactionalStateHealth() {
-  return rpc<Record<string, unknown>>('health', {});
-}
-
 export async function ensureTransactionalProviderTransaction(args: {
   projectId: string;
   id: string;
@@ -292,9 +309,12 @@ export async function transitionTransactionalProviderTransaction(args: {
   fromStates: string[];
   toState: string;
   providerRequestId?: string | null;
+  statusUrl?: string | null;
+  responseUrl?: string | null;
   failureClass?: string | null;
   failureDetail?: string | null;
   actualCostUsd?: number | null;
+  rightsAssertions?: Array<Record<string, unknown>>;
 }) {
   return rpc<Record<string, any>>('transition_provider_transaction', {
     project_id: storageProjectId(args.projectId),
@@ -302,92 +322,119 @@ export async function transitionTransactionalProviderTransaction(args: {
     from_states: args.fromStates,
     to_state: args.toState,
     provider_request_id: args.providerRequestId || null,
+    provider_status_url: args.statusUrl || null,
+    provider_response_url: args.responseUrl || null,
     failure_class: args.failureClass || null,
     failure_detail: args.failureDetail || null,
-    actual_cost_usd: args.actualCostUsd ?? null
+    actual_cost_usd: args.actualCostUsd ?? null,
+    rights_assertions: args.rightsAssertions || []
+  });
+}
+
+export async function readTransactionalRights(args: {
+  projectId: string;
+  assetSha256: string;
+}) {
+  return rpc<Record<string, any> | null>('read_rights', {
+    project_id: storageProjectId(args.projectId),
+    asset_sha256: args.assetSha256
+  });
+}
+
+export async function upsertTransactionalRights(args: {
+  projectId: string;
+  assetSha256: string;
+  rights: Record<string, any>;
+}) {
+  return rpc<Record<string, any>>('upsert_rights', {
+    project_id: storageProjectId(args.projectId),
+    asset_sha256: args.assetSha256,
+    ...args.rights
+  });
+}
+
+export async function revokeTransactionalRights(args: {
+  projectId: string;
+  assetSha256: string;
+  actorId: string;
+  reason: string;
+}) {
+  return rpc<Record<string, any> | null>('revoke_rights', {
+    project_id: storageProjectId(args.projectId),
+    asset_sha256: args.assetSha256,
+    actor_id: args.actorId,
+    reason: args.reason
+  });
+}
+
+export async function ensureTransactionalJob(args: {
+  id: string;
+  kind: string;
+  projectId: string;
+  workspaceId?: string | null;
+  actorUserId?: string | null;
+  authContext?: Record<string, unknown> | null;
+  payloadHash: string;
+  idempotencyKey?: string | null;
+}) {
+  return rpc<{
+    job: Record<string, any>;
+    created: boolean;
+    conflict: boolean;
+  }>('ensure_job', {
+    id: args.id,
+    kind: args.kind,
+    project_id: storageProjectId(args.projectId),
+    workspace_id: args.workspaceId || null,
+    actor_user_id: args.actorUserId || null,
+    auth_context: args.authContext || null,
+    payload_hash: args.payloadHash,
+    idempotency_key: args.idempotencyKey || null
+  });
+}
+
+export async function readTransactionalJob(id: string) {
+  return rpc<Record<string, any> | null>('read_job', { id });
+}
+
+export async function claimTransactionalJob(args: {
+  id: string;
+  leaseToken: string;
+  attempt: number;
+  leaseMs: number;
+}) {
+  return rpc<{
+    claimed: boolean;
+    job: Record<string, any>;
+    reason?: string;
+  }>('claim_job', {
+    id: args.id,
+    lease_token: args.leaseToken,
+    attempt: Math.max(1, Math.floor(args.attempt || 1)),
+    lease_ms: Math.max(5000, Math.min(300000, Math.floor(args.leaseMs || 120000)))
+  });
+}
+
+export async function transitionTransactionalJob(args: {
+  id: string;
+  toStatus: 'queued' | 'retrying' | 'succeeded' | 'failed' | 'cancelled';
+  leaseToken?: string | null;
+  attempt?: number | null;
+  lastError?: string | null;
+  resultRef?: string | null;
+  queueEventId?: string | null;
+}) {
+  return rpc<Record<string, any> | null>('transition_job', {
+    id: args.id,
+    to_status: args.toStatus,
+    lease_token: args.leaseToken || null,
+    attempt: args.attempt ?? null,
+    last_error: clean(args.lastError, 1200) || null,
+    result_ref: args.resultRef || null,
+    queue_event_id: args.queueEventId || null
   });
 }
 
 export async function transactionalRequestFingerprint(value: unknown) {
   return sha256Hex(JSON.stringify(value));
-}
-
-
-export async function bootstrapDerivedPreviewStateSecret(token: string) {
-  const scope = runtimeScope();
-  if (scope.production || scope.deploy_context !== 'deploy-preview') {
-    throw new TransactionalStateError(
-      'STATE_BOOTSTRAP_PREVIEW_ONLY',
-      'Runtime secret bootstrap is restricted to deploy previews.',
-      404,
-      false
-    );
-  }
-
-  const bootstrapToken = clean(token, 240);
-  if (!bootstrapToken) {
-    throw new TransactionalStateError(
-      'STATE_BOOTSTRAP_TOKEN_MISSING',
-      'No one-time transactional-state bootstrap token is configured.',
-      503,
-      false
-    );
-  }
-
-  const url = String(Netlify.env.get('PARABLE_SUPABASE_URL') || '').replace(/\/$/, '');
-  const key = String(Netlify.env.get('PARABLE_SUPABASE_PUBLISHABLE_KEY') || '').trim();
-  const secret = await runtimeSigningSecret();
-
-  if (!url || !key || !secret) {
-    throw new TransactionalStateError(
-      'STATE_BOOTSTRAP_NOT_CONFIGURED',
-      'The preview cannot derive and register its transactional-state signing key.',
-      503,
-      false
-    );
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(url + '/rest/v1/rpc/parable_runtime_bootstrap', {
-      method: 'POST',
-      headers: {
-        apikey: key,
-        authorization: 'Bearer ' + key,
-        'content-type': 'application/json',
-        accept: 'application/json'
-      },
-      body: JSON.stringify({
-        p_token: bootstrapToken,
-        p_secret: secret
-      })
-    });
-  } catch (error) {
-    throw new TransactionalStateError(
-      'STATE_BOOTSTRAP_NETWORK_FAILED',
-      'PARABLE could not reach the one-time database bootstrap endpoint.',
-      503,
-      true,
-      clean(error instanceof Error ? error.message : error, 800)
-    );
-  }
-
-  const body = await response.json().catch(() => null) as any;
-  if (!response.ok || body?.ok !== true) {
-    throw new TransactionalStateError(
-      'STATE_BOOTSTRAP_REJECTED',
-      clean(body?.message || body?.error || 'The one-time database bootstrap was rejected.', 1000),
-      response.status || 503,
-      false,
-      body
-    );
-  }
-
-  return {
-    ok: true,
-    bootstrap_consumed: body?.bootstrap_consumed === true,
-    key_id: clean(body?.key_id, 120) || null,
-    deploy_context: scope.deploy_context,
-    secret_exposed: false
-  };
 }
