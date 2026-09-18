@@ -30,14 +30,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - name: Run isolated synthetic Story + Critic benchmark
+      - name: Resolve this exact Deploy Preview
         env:
-          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
+          PREVIEW_ALIAS: https://deploy-preview-1--parable-studio.netlify.app
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          sleep 75
+          node <<'NODE' >> "$GITHUB_ENV"
+          const alias = process.env.PREVIEW_ALIAS;
+          const expected = process.env.EXPECTED_SHA;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          for (let attempt = 1; attempt <= 60; attempt++) {
+            try {
+              const r = await fetch(alias + '/api/platform-health', { cache: 'no-store' });
+              const body = await r.json().catch(() => ({}));
+              if (r.ok && body?.deployment?.commit_ref === expected && body?.deployment?.immutable_url) {
+                process.stdout.write('PARABLE_TEST_BASE=' + body.deployment.immutable_url + '\n');
+                process.exit(0);
+              }
+            } catch {}
+            await sleep(5000);
+          }
+          throw new Error('Exact Deploy Preview did not become available.');
+          NODE
+
+      - name: Run isolated synthetic Story + Critic benchmark
+        run: |
+          set -euo pipefail
           node <<'NODE'
-          const base = process.env.PREVIEW_BASE;
+          const base = process.env.PARABLE_TEST_BASE;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
           const assert = (condition, message) => { if (!condition) throw new Error(message); };
 
