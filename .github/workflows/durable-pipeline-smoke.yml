@@ -14,6 +14,16 @@ on:
       - 'netlify/functions/pipeline-background.mts'
       - 'netlify/functions/platform-health.mts'
       - 'netlify/functions/queue-self-test.mts'
+      - 'netlify/functions/_lib/project-concurrency.mts'
+      - 'netlify/functions/project-revision.mts'
+      - 'netlify/functions/concurrency-self-test.mts'
+      - 'netlify/functions/direction.mts'
+      - 'netlify/functions/reference-locks.mts'
+      - 'netlify/functions/adapt.mts'
+      - 'netlify/functions/understand.mts'
+      - 'netlify/functions/scene-state.mts'
+      - 'netlify/functions/shot-state.mts'
+      - 'netlify/functions/continuity.mts'
       - '.github/workflows/durable-pipeline-smoke.yml'
   workflow_dispatch:
 
@@ -91,4 +101,31 @@ jobs:
             'degraded_from_primary:',
             body.degraded_from_primary
           );
+          NODE
+
+      - name: Verify project concurrency guard
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/concurrency-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('concurrency self-test:', r.status, JSON.stringify(body).slice(0, 2500));
+
+          if (!r.ok || body?.ok !== true) {
+            throw new Error('Project concurrency self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.overlapping_mutation_blocked !== true) {
+            throw new Error('Overlapping project mutation was not blocked.');
+          }
+          if (body?.stale_revision_rejected !== true) {
+            throw new Error('Stale project revision was not rejected.');
+          }
+          if (body?.revisions?.final !== 2) {
+            throw new Error('Unexpected final project revision.');
+          }
+
+          console.log('PARABLE project concurrency guard passed.');
           NODE
