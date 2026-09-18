@@ -1,5 +1,6 @@
 import { prepareRendererRequest } from './_lib/render-adapters.mts';
 import { routeRenderSpec } from './_lib/render-router.mts';
+import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
 import {
   appendRenderAttemptEvent,
   readRenderAttempt,
@@ -18,7 +19,7 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 const clean = (value: unknown, max = 1600) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,160}$/.test(value);
 
-async function dispatchFal(attempt: any, spec: any) {
+async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null) {
   const key = Netlify.env.get('FAL_KEY') || '';
   if (!key) {
     return {
@@ -33,7 +34,8 @@ async function dispatchFal(attempt: any, spec: any) {
     spec,
     provider: attempt.provider,
     model: attempt.model,
-    mode: attempt.mode
+    mode: attempt.mode,
+    approvedKeyframe
   });
 
   const started = Date.now();
@@ -115,6 +117,39 @@ export default async (request: Request) => {
     }, 409);
   }
 
+  const keyframeGate = attempt.mode === 'final'
+    ? await evaluateStoredKeyframeGate({
+        projectId: attempt.project_id,
+        sceneId: attempt.scene_id,
+        shotId: attempt.shot_id,
+        specHash: spec.spec_hash
+      })
+    : null;
+
+  if (keyframeGate && !keyframeGate.allowed) {
+    return json({
+      error: keyframeGate.message,
+      code: keyframeGate.code,
+      final_motion_gate: 'blocked'
+    }, 409);
+  }
+
+  if (
+    attempt.mode === 'final' &&
+    (
+      !attempt.keyframe_approval_ref ||
+      attempt.keyframe_approval_ref !== keyframeGate?.authoritative_ref ||
+      attempt.keyframe_asset_uri !== keyframeGate?.approval?.asset?.uri ||
+      attempt.keyframe_plan_hash !== keyframeGate?.approval?.keyframe_plan_hash
+    )
+  ) {
+    return json({
+      error: 'The approved first frame changed after this render attempt was created. Create a new final attempt so its inputs remain immutable.',
+      code: 'KEYFRAME_APPROVAL_CHANGED',
+      final_motion_gate: 'blocked'
+    }, 409);
+  }
+
   const route = routeRenderSpec(spec);
   if (!route.selected) {
     return json({
@@ -136,7 +171,7 @@ export default async (request: Request) => {
 
   let dispatched: any;
   if (attempt.provider === 'fal') {
-    dispatched = await dispatchFal(attempt, spec);
+    dispatched = await dispatchFal(attempt, spec, keyframeGate?.approval || null);
   } else {
     dispatched = {
       ok: false,
@@ -174,7 +209,9 @@ export default async (request: Request) => {
     request_id: dispatched.request_id,
     queue_position: dispatched.queue_position,
     reference_map: dispatched.prepared.reference_map,
-    adapter_notes: dispatched.prepared.notes
+    adapter_notes: dispatched.prepared.notes,
+    keyframe_approval_ref: keyframeGate?.authoritative_ref || null,
+    keyframe_asset_uri: keyframeGate?.approval?.asset?.uri || null
   });
 
   return json({
