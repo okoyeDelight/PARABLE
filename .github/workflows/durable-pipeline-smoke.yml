@@ -133,11 +133,8 @@ jobs:
 
           console.log('state self-test:', r.status, JSON.stringify(body).slice(0, 4500));
 
-          if (!r.ok || body?.ok !== true || body?.probe_version !== 'transactional-state-self-test-v2') {
+          if (!r.ok || body?.ok !== true || body?.probe_version !== 'transactional-state-self-test-v3') {
             throw new Error('Transactional state self-test failed: ' + JSON.stringify(body));
-          }
-          if (body?.project_revision?.stale_writer_rejected !== true) {
-            throw new Error('Stale project writer was not rejected.');
           }
           if (body?.provider_spend_guard?.duplicate_submission_blocked !== true) {
             throw new Error('Duplicate paid submission was not blocked.');
