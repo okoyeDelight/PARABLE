@@ -23,7 +23,7 @@ PARABLE should not simply generate *for* a place or audience. It should understa
 
 ## Current checkpoint
 
-**Story Intelligence V8 + Continuity Brain V2 — September 18, 2026**
+**Story Intelligence V8 + Continuity Brain V3 — September 18, 2026**
 
 The `immersive-v2` branch now includes:
 
@@ -40,13 +40,17 @@ The `immersive-v2` branch now includes:
 - character knowledge-leak detection
 - scene-level human-review flags and uncertainty provenance
 - continuity-gated render handoff packages
+- per-shot continuity checkpoints with pre-shot and post-shot world state
+- prop ownership and hand-to-hand transfer memory
+- spatial graph and screen-direction continuity
+- human-approved actor/voice/location reference locks
 - human director overrides layered onto the shot plan without bypassing continuity
-- renderer hard constraints for identity, wardrobe, injury, props, screen geography and character knowledge
+- renderer hard constraints for identity, wardrobe, injury, prop ownership, screen geography and character knowledge
 
 The production path is now:
 
-`Story -> Story Understanding -> Production Bible -> Scene State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
+`Story -> Story Understanding -> Production Bible -> Scene State -> Shot State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
 
-The next Continuity milestone is deeper physical-world memory: prop ownership and transfers, spatial graphs / screen direction, per-shot transitions, casting reference IDs, location visual references and continuity-aware renderer seeds.
+The next Continuity milestone is camera-axis / 180-degree memory, room topology, entrances/exits, pose and eyeline continuity, continuity-aware renderer seeds, and advisory repair proposals.
 
 `main` remains unchanged until the `immersive-v2` checkpoint is deliberately approved and merged.
