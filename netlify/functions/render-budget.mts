@@ -12,6 +12,7 @@ import {
   summarizeRenderBudget
 } from './_lib/render-budget.mts';
 import { listProjectAttemptEvents } from './_lib/render-store.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -55,6 +56,14 @@ export default async (request: Request) => {
     if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
     if (storyVersion && !safeId(storyVersion)) return json({ error: 'Invalid storyVersion.' }, 400);
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const view = await budgetView(projectId, storyVersion || null);
     return json({
       project_id: projectId,
@@ -69,6 +78,14 @@ export default async (request: Request) => {
   const body = await request.json().catch(() => ({})) as Record<string, any>;
   const projectId = clean(body.projectId, 96);
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'render:budget');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   if (body.humanApproved !== true) {
     return json({
