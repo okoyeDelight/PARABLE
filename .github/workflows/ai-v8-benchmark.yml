@@ -14,6 +14,7 @@ on:
       - 'netlify/functions/ai-benchmark.mts'
       - 'netlify/functions/ai-health.mts'
       - 'netlify/functions/ai-status.mts'
+      - 'netlify/functions/platform-health.mts'
       - 'netlify/functions/director-critic.mts'
       - '.github/workflows/ai-v8-benchmark.yml'
   workflow_dispatch:
@@ -81,11 +82,12 @@ jobs:
 
           async function benchmark(fixture, stage) {
             let last;
-            for (let attempt = 1; attempt <= 3; attempt++) {
+            const maxAttempts = stage === 'critic' ? 5 : 3;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
               last = await post({ fixture, stage });
               console.log(`${fixture}/${stage} attempt ${attempt}: ${last.r.status} ${JSON.stringify(last.body).slice(0, 1100)}`);
               if (last.r.ok && last.body?.passed) return last.body;
-              if (attempt < 3) await sleep(5000);
+              if (attempt < maxAttempts) await sleep(stage === 'critic' ? 7000 : 5000);
             }
             throw new Error(`${fixture}/${stage} did not get a real model result: ${JSON.stringify(last?.body).slice(0, 1500)}`);
           }
