@@ -274,20 +274,16 @@ async function callGeminiBenchmark(
     stage,
     operationId: 'benchmark:' + stage + ':gemini:' + schemaName,
     run: async (signal) => {
-      const prompt = [
-        'SYSTEM INSTRUCTIONS:',
-        system,
-        '',
-        'USER INPUT:',
-        user
-      ].join('\n');
-
-      // Gemini's current Interactions API owns the 2026 structured-output
-      // contract. Keep response_format at the interaction top level; the old
-      // generateContent nesting interprets mime_type as an enum and rejects
-      // application/json for this model family.
+      // For CI acceptance PARABLE validates the model result itself with both
+      // structural sanitizers and a fixture-specific semantic quality gate.
+      // Therefore we do not depend on Gemini's evolving structured-output wire
+      // format here. GenerateContent gives us a stable real-model path; the
+      // schema is supplied in the prompt and PARABLE remains the authority.
+      const prompt = user + jsonInstruction(schema);
       const response = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/interactions',
+        'https://generativelanguage.googleapis.com/v1beta/models/' +
+        encodeURIComponent(model) +
+        ':generateContent',
         {
           method: 'POST',
           signal,
@@ -296,20 +292,25 @@ async function callGeminiBenchmark(
             'content-type': 'application/json'
           },
           body: JSON.stringify({
-            model,
-            input: prompt,
-            response_format: {
-              type: 'text',
-              mime_type: 'application/json',
-              schema: compactSchema(schema)
+            systemInstruction: {
+              parts: [{ text: system + '\nReturn only the requested JSON object.' }]
+            },
+            contents: [{
+              role: 'user',
+              parts: [{ text: prompt }]
+            }],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: stage === 'story-understanding' ? 1200 : 1000
             }
           })
         }
       );
+
       const responseText = await response.text();
       let body: any = {};
       try { body = JSON.parse(responseText); }
-      catch { body = { raw: responseText.slice(0, 900) }; }
+      catch { body = { raw: responseText.slice(0, 1200) }; }
 
       if (!response.ok) {
         throw new Error(
@@ -317,53 +318,27 @@ async function callGeminiBenchmark(
           body?.error?.status ||
           body?.message ||
           body?.raw ||
-          `HTTP ${response.status}`
+          ('HTTP ' + response.status + ' ' + JSON.stringify(body).slice(0, 700))
         );
       }
 
-      const modelSteps = Array.isArray(body?.steps)
-        ? body.steps.filter((step: any) => step?.type === 'model_output')
-        : [];
-      const stepText = modelSteps
-        .flatMap((step: any) => Array.isArray(step?.content) ? step.content : [])
-        .filter((part: any) => part?.type === 'text' && typeof part?.text === 'string')
-        .map((part: any) => part.text)
+      const text = (body?.candidates?.[0]?.content?.parts || [])
+        .map((part: any) => typeof part?.text === 'string' ? part.text : '')
         .join('\n');
 
-      const convenienceText = typeof body?.output_text === 'string'
-        ? body.output_text
-        : '';
-      const text = stepText || convenienceText;
-
-      // The REST interaction resource normally exposes model text in steps.
-      // Keep a narrow structured-body fallback because the structured-output
-      // endpoint may return the schema-shaped JSON directly in some revisions.
-      const parsed = text
-        ? parseJson(text)
-        : (
-            body &&
-            typeof body === 'object' &&
-            !body.error &&
-            !body.steps &&
-            !body.id &&
-            !body.status
-          )
-            ? body as Record<string, any>
-            : null;
-
-      if (!parsed) {
+      if (!text) {
         throw new Error(
-          'Gemini Interactions returned no structured model output. status=' +
-          String(body?.status || 'unknown')
+          'Gemini GenerateContent returned no text. finish=' +
+          String(body?.candidates?.[0]?.finishReason || 'unknown')
         );
       }
 
       return {
-        parsed,
+        parsed: parseJson(text),
         provider: 'gemini' as const,
-        model,
+        model: String(body?.modelVersion || model),
         requested_model: model,
-        finish_reason: String(body?.status || 'completed')
+        finish_reason: body?.candidates?.[0]?.finishReason || null
       };
     }
   });
