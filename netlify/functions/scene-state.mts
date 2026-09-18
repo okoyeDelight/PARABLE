@@ -17,6 +17,7 @@ import {
   readProjectRevision,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -137,6 +138,14 @@ export default async (request: Request) => {
       return json({ error: 'A valid projectId and sceneId are required.' }, 400);
     }
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const key = storyVersion && safeId(storyVersion)
       ? 'project/' + projectId + '/' + storyVersion + '/' + sceneId
       : 'project/' + projectId + '/latest/' + sceneId;
@@ -151,6 +160,14 @@ export default async (request: Request) => {
   const body = await request.json().catch(() => ({})) as Record<string, any>;
   const projectId = oneLine(body.projectId, 96);
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'project:edit');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   const s = stores();
   const startingRevision = await readProjectRevision(projectId);
