@@ -1,4 +1,9 @@
 import { recordAIHealth } from './ai-health-store.mts';
+import {
+  acquireProviderGuard,
+  releaseProviderGuard,
+  type ProviderGuardLease
+} from './provider-resilience.mts';
 import type { BenchmarkFixture } from './benchmarks.mts';
 
 const clean = (value: unknown, max = 1200) => String(value ?? '').trim().slice(0, max);
@@ -145,7 +150,16 @@ async function openRouterFree(
   for (let attempt = 1; attempt <= 2; attempt++) {
     const started = Date.now();
     const timeout = timeoutSignal(8500);
+    let providerLease: ProviderGuardLease | null = null;
     try {
+      providerLease = await acquireProviderGuard({
+        service: 'ai',
+        provider: 'openrouter',
+        model: 'openrouter/free',
+        operationId: 'benchmark:' + stage + ':' + schemaName + ':' + attempt,
+        leaseMs: 20000
+      });
+
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST', signal: timeout.signal,
         headers: {
@@ -167,9 +181,18 @@ async function openRouterFree(
       if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
       const parsed = parseJson(body?.choices?.[0]?.message?.content);
       const model = String(body?.model || 'openrouter/free');
+      await releaseProviderGuard(providerLease, { outcome: 'success' }).catch(() => null);
+      providerLease = null;
       await recordAIHealth({ stage, lane: 'benchmark', provider: 'openrouter', model, ok: true, latency_ms: Date.now() - started });
       return { parsed, model, finish_reason: body?.choices?.[0]?.finish_reason || null };
     } catch (error) {
+      if (providerLease) {
+        await releaseProviderGuard(providerLease, {
+          outcome: 'failure',
+          error
+        }).catch(() => null);
+        providerLease = null;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       errors.push(`attempt ${attempt}: ${reason}`);
       await recordAIHealth({ stage, lane: 'benchmark', provider: 'openrouter', model: 'openrouter/free', ok: false, latency_ms: Date.now() - started, error: reason });
