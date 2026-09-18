@@ -65,6 +65,11 @@ export default async (request: Request) => {
       production_blob_consistency: 'strong',
       transactional_hot_state: 'schema-prepared-not-provisioned'
     },
+    deployment: {
+      commit_ref: Netlify.env.get('COMMIT_REF') || null,
+      deploy_id: Netlify.env.get('DEPLOY_ID') || null,
+      deploy_url: Netlify.env.get('DEPLOY_PRIME_URL') || null
+    },
     measured_at: new Date().toISOString(),
     response_ms: Date.now() - started
   }, healthy ? 200 : 503);
