@@ -6,6 +6,7 @@ import {
   saveKeyframeGeneration
 } from './_lib/keyframe-assets.mts';
 import { readKeyframePlan, readRenderSpec } from './_lib/render-store.mts';
+import { hydrateRenderSpecReferences } from './_lib/canon-assets.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -127,7 +128,8 @@ export default async (request: Request) => {
     Netlify.env.get('PARABLE_KEYFRAME_IMAGE_MODEL') || 'google/gemini-3.1-flash-image',
     240
   );
-  const generationPlan = buildKeyframeGenerationPlan({ spec, model });
+  const hydratedSpec = await hydrateRenderSpecReferences(spec);
+  const generationPlan = buildKeyframeGenerationPlan({ spec: hydratedSpec, model });
 
   const startedAt = new Date().toISOString();
   await saveKeyframeGeneration({
