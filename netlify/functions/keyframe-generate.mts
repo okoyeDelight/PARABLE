@@ -72,6 +72,7 @@ async function generateFreeDevelopmentKeyframe(args: {
   shotId: string;
   specHash: string;
   spec: any;
+  requestOrigin: string;
 }) {
   if (Netlify.context?.deploy?.context !== 'deploy-preview') {
     return json({
@@ -190,7 +191,8 @@ async function generateFreeDevelopmentKeyframe(args: {
         projectId: args.projectId,
         hash: asset.sha256,
         purpose: 'preview',
-        ttlSeconds: 900
+        ttlSeconds: 900,
+        origin: args.requestOrigin
       }),
       content_sha256: asset.sha256,
       immutable_binding: true,
@@ -272,6 +274,7 @@ export default async (request: Request) => {
   }
 
   const body = await request.json().catch(() => ({})) as Record<string, any>;
+  const requestOrigin = new URL(request.url).origin;
   const projectId = clean(body.projectId, 96);
   const storyVersion = clean(body.storyVersion, 96);
   const sceneId = clean(body.sceneId, 96);
@@ -367,7 +370,8 @@ export default async (request: Request) => {
       sceneId,
       shotId,
       specHash,
-      spec
+      spec,
+      requestOrigin
     });
   }
 
@@ -652,7 +656,8 @@ export default async (request: Request) => {
         projectId,
         hash: asset.sha256,
         purpose: 'preview',
-        ttlSeconds: 900
+        ttlSeconds: 900,
+        origin: requestOrigin
       }),
       content_sha256: asset.sha256,
       immutable_binding: true,
