@@ -61,7 +61,7 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
     estimatedCostUsd: attempt.estimated_cost_usd
   });
 
-  const transaction = await beginProviderSubmission(transactionState.transaction.id);
+  const transaction = await beginProviderSubmission(transactionState.transaction.id, attempt.project_id);
 
   if (
     ['acknowledged','processing','settled'].includes(transaction.state) &&
@@ -95,6 +95,7 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
     const detail = clean(error instanceof Error ? error.message : error, 1000) || 'Provider submission connection failed.';
     const ambiguous = await markProviderSubmissionAmbiguous({
       id: transaction.id,
+      projectId: attempt.project_id,
       detail
     });
     return {
@@ -114,6 +115,7 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
     if (response.status >= 500) {
       const ambiguous = await markProviderSubmissionAmbiguous({
         id: transaction.id,
+        projectId: attempt.project_id,
         detail: detail || ('Provider returned HTTP ' + response.status + ' after submission.')
       });
       return {
@@ -128,6 +130,7 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
 
     const failed = await failProviderTransaction({
       id: transaction.id,
+      projectId: attempt.project_id,
       failureClass: response.status === 429 ? 'rate-limit' : 'provider-rejected',
       failureDetail: detail || ('HTTP ' + response.status)
     });
@@ -146,6 +149,7 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
   if (!requestId) {
     const ambiguous = await markProviderSubmissionAmbiguous({
       id: transaction.id,
+      projectId: attempt.project_id,
       detail: 'Provider returned success without a durable request id.'
     });
     return {
@@ -160,6 +164,7 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
 
   const acknowledged = await acknowledgeProviderSubmission({
     id: transaction.id,
+    projectId: attempt.project_id,
     providerRequestId: requestId,
     statusUrl: clean(body?.status_url, 1800) || null,
     responseUrl: clean(body?.response_url, 1800) || null
