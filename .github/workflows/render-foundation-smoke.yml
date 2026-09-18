@@ -15,6 +15,10 @@ on:
       - 'netlify/functions/render-dispatch.mts'
       - 'netlify/functions/render-provider-status.mts'
       - 'netlify/functions/render-qa.mts'
+      - 'netlify/functions/keyframe-plan.mts'
+      - 'web/public/studio.html'
+      - 'web/public/studio.js'
+      - 'web/public/studio-render.css'
       - 'tools/render_foundation_smoke.mts'
       - '.github/workflows/render-foundation-smoke.yml'
   workflow_dispatch:
@@ -35,5 +39,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Check Studio JavaScript syntax
+        run: node --check web/public/studio.js
+
       - name: Run deterministic Render Engine smoke
         run: node tools/render_foundation_smoke.mts
