@@ -351,9 +351,16 @@ export default async (request: Request) => {
   }
 
   if (action === 'accept') {
-    const [qa, motionInspection] = await Promise.all([
+    const [qa, motionInspection, exactSpec] = await Promise.all([
       readLatestRenderQA(attempt.id),
-      readLatestMotionInspection(attempt.id)
+      readLatestMotionInspection(attempt.id),
+      readRenderSpec({
+        projectId: attempt.project_id,
+        storyVersion: attempt.story_version,
+        sceneId: attempt.scene_id,
+        shotId: attempt.shot_id,
+        specHash: attempt.spec_hash
+      })
     ]);
     const humanOverride = body.humanApproved === true;
     const reviewerNote = clean(body.note, 1000);
@@ -418,11 +425,11 @@ export default async (request: Request) => {
         updated_at: new Date().toISOString()
       };
 
-      const ref = await stageProjectArtifact({
+      const acceptedRef = await stageProjectArtifact({
         projectId: attempt.project_id,
         mutationId: lease.mutation_id,
         kind: 'accepted-render',
-        artifactId: attempt.scene_id + ':' + attempt.shot_id,
+        artifactId: attempt.story_version + ':' + attempt.scene_id + ':' + attempt.shot_id,
         value: {
           attempt: accepted,
           qa,
@@ -432,9 +439,55 @@ export default async (request: Request) => {
         }
       });
 
+      const handoffSample = motionInspection?.handoff_sample || null;
+      const handoff = {
+        handoff_version: 'parable-shot-handoff-v1',
+        project_id: attempt.project_id,
+        story_version: attempt.story_version,
+        scene_id: attempt.scene_id,
+        shot_id: attempt.shot_id,
+        attempt_id: attempt.id,
+        spec_hash: attempt.spec_hash,
+        accepted_asset_uri: attempt.asset_uri,
+        accepted_by_human_override: humanOverride && !finalAutoEligible,
+        motion_inspection_id: motionInspection?.id || null,
+        motion_sample_set_hash: motionInspection?.sample_set_hash || null,
+        handoff_frame: handoffSample ? {
+          uri: handoffSample.uri,
+          timestamp_seconds: handoffSample.timestamp_seconds,
+          sha256: handoffSample.sha256 || null
+        } : null,
+        continuity_after: exactSpec?.world_state?.continuity_after || null,
+        camera_axis_after:
+          (exactSpec?.world_state?.continuity_after as any)?.camera_axes ||
+          (exactSpec?.world_state?.continuity_before as any)?.camera_axes ||
+          null,
+        room_topology_after:
+          (exactSpec?.world_state?.continuity_after as any)?.room_topology ||
+          (exactSpec?.world_state?.continuity_before as any)?.room_topology ||
+          null,
+        composition: exactSpec?.composition || null,
+        camera: exactSpec?.camera || null,
+        accepted_at: new Date().toISOString()
+      };
+
+      const handoffRef = await stageProjectArtifact({
+        projectId: attempt.project_id,
+        mutationId: lease.mutation_id,
+        kind: 'render-handoff',
+        artifactId: attempt.story_version + ':' + attempt.scene_id + ':' + attempt.shot_id,
+        value: handoff
+      });
+
+      const acceptedStateKey =
+        'render:accepted:' + attempt.story_version + ':' + attempt.scene_id + ':' + attempt.shot_id;
+      const handoffStateKey =
+        'render:handoff:' + attempt.story_version + ':' + attempt.scene_id + ':' + attempt.shot_id;
+
       const committed = await commitProjectMutation(
         lease,
         {
+          story_version: attempt.story_version,
           scene_id: attempt.scene_id,
           shot_id: attempt.shot_id,
           attempt_id: attempt.id,
@@ -444,16 +497,21 @@ export default async (request: Request) => {
           motion_decision: motionInspection?.decision || null,
           motion_inspection_id: motionInspection?.id || null,
           motion_sample_set_hash: motionInspection?.sample_set_hash || null,
+          handoff_frame_sha256: handoffSample?.sha256 || null,
           human_override: humanOverride && !finalAutoEligible,
           reviewer_note: reviewerNote || null
         },
-        { ['render:accepted:' + attempt.scene_id + ':' + attempt.shot_id]: ref }
+        {
+          [acceptedStateKey]: acceptedRef,
+          [handoffStateKey]: handoffRef
+        }
       );
 
       await saveRenderAttempt(accepted);
       await appendRenderAttemptEvent(accepted, 'accepted', {
         project_revision: committed.revision,
-        authoritative_ref: ref,
+        authoritative_ref: acceptedRef,
+        handoff_ref: handoffRef,
         human_override: humanOverride && !finalAutoEligible,
         reviewer_note: reviewerNote || null,
         motion_inspection_id: motionInspection?.id || null
@@ -465,7 +523,9 @@ export default async (request: Request) => {
         motion_inspection: motionInspection || null,
         project_revision: committed.revision,
         mutation_id: committed.mutation_id,
-        authoritative_ref: ref
+        authoritative_ref: acceptedRef,
+        handoff_ref: handoffRef,
+        handoff
       });
     } catch (error) {
       if (lease) await abortProjectMutation(lease).catch(() => false);
