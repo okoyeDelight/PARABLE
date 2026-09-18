@@ -29,16 +29,9 @@ export const options = {
   }
 };
 
-const endpoints = [
-  '/api/ai-status',
-  '/api/ai-health',
-  '/api/projects?id=proj_the_altar',
-  '/api/projects?id=proj_before_i_said_yes',
-  '/api/projects?id=proj_the_watchman'
-];
+const path = '/api/scale-probe';
 
 export default function () {
-  const path = endpoints[Math.floor(Math.random() * endpoints.length)];
   const response = http.get(base + path, {
     tags: { endpoint: path },
     headers: { 'x-parable-load-test': 'read-tier-v1' },
@@ -48,7 +41,9 @@ export default function () {
   latency.add(response.timings.duration);
   const ok = check(response, {
     'status is successful': (r) => r.status >= 200 && r.status < 400,
-    'body is non-empty': (r) => Boolean(r.body && r.body.length)
+    'probe confirms blob read tier': (r) => {
+      try { return JSON.parse(r.body).ok === true; } catch { return false; }
+    }
   });
   errors.add(!ok);
   sleep(Math.random() * 1.5 + 0.25);
