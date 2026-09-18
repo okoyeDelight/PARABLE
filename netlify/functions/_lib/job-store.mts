@@ -19,6 +19,7 @@ export type JobKind =
   | 'keyframe-generate'
   | 'reference-profile'
   | 'motion-inspect'
+  | 'motion-evidence-extract'
   | 'scale-noop';
 
 export type JobStatus =
