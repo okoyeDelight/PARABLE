@@ -12,6 +12,7 @@ import {
   projectMutationErrorResponse,
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -64,6 +65,14 @@ export default async (request: Request) => {
     const projectId = clean(url.searchParams.get('projectId'), 96);
     if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const raw = await continuityStore.get('project/' + projectId + '/latest', { type: 'json' }) as ContinuitySnapshot | null;
     if (!raw) return json({ error: 'Continuity has not been established for this project.' }, 404);
 
@@ -95,6 +104,15 @@ export default async (request: Request) => {
   const replaceExisting = body.replaceExisting === true;
 
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'project:edit');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   if (!['character', 'location'].includes(entityKind)) return json({ error: 'entityKind must be character or location.' }, 400);
   if (!entityName) return json({ error: 'entityName is required.' }, 400);
   if (!approved) {
