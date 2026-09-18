@@ -3,6 +3,12 @@ import {
   readRenderAttempt,
   saveRenderAttempt
 } from './_lib/render-store.mts';
+import {
+  failProviderTransaction,
+  markProviderProcessing,
+  settleProviderTransaction
+} from './_lib/provider-transactions.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200, extra: Record<string, string> = {}) => new Response(JSON.stringify(data), {
   status,
@@ -129,6 +135,14 @@ export default async (request: Request) => {
   const attempt = await readRenderAttempt(attemptId);
   if (!attempt) return json({ error: 'Render attempt was not found.' }, 404);
 
+  try {
+    await authorizeProject(request, attempt.project_id, 'project:read');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   if (['succeeded', 'accepted', 'rejected', 'superseded', 'failed'].includes(attempt.status)) {
     return json({
       attempt,
@@ -148,6 +162,14 @@ export default async (request: Request) => {
   }
 
   if (!polled.ok) {
+    if (attempt.provider_transaction_id && polled.retryable === false) {
+      await failProviderTransaction({
+        id: attempt.provider_transaction_id,
+        failureClass: 'provider-status-failed',
+        failureDetail: polled.error || 'Provider status/result retrieval failed terminally.'
+      }).catch(() => null);
+    }
+
     return json({
       error: polled.error,
       retryable: polled.retryable,
@@ -162,6 +184,9 @@ export default async (request: Request) => {
       updated_at: new Date().toISOString()
     };
     if (next.status !== attempt.status) {
+      if (attempt.provider_transaction_id && polled.state === 'rendering') {
+        await markProviderProcessing(attempt.provider_transaction_id).catch(() => null);
+      }
       await saveRenderAttempt(next);
       await appendRenderAttemptEvent(next, 'provider-status', {
         provider_status: polled.provider_status,
@@ -186,6 +211,13 @@ export default async (request: Request) => {
     failure_detail: null,
     updated_at: new Date().toISOString()
   };
+
+  if (attempt.provider_transaction_id) {
+    await settleProviderTransaction({
+      id: attempt.provider_transaction_id,
+      actualCostUsd: attempt.actual_cost_usd
+    }).catch(() => null);
+  }
 
   await saveRenderAttempt(succeeded);
   await appendRenderAttemptEvent(succeeded, 'provider-completed', {
