@@ -297,9 +297,12 @@ async function transition(args: {
   fromStates: ProviderTransactionState[];
   toState: ProviderTransactionState;
   providerRequestId?: string | null;
+  statusUrl?: string | null;
+  responseUrl?: string | null;
   failureClass?: string | null;
   failureDetail?: string | null;
   actualCostUsd?: number | null;
+  rightsAssertions?: Array<Record<string, unknown>>;
 }) {
   if (transactionalStateMode() === 'postgres') {
     try {
@@ -310,9 +313,12 @@ async function transition(args: {
           fromStates: args.fromStates,
           toState: args.toState,
           providerRequestId: args.providerRequestId,
+          statusUrl: args.statusUrl,
+          responseUrl: args.responseUrl,
           failureClass: args.failureClass,
           failureDetail: args.failureDetail,
-          actualCostUsd: money(args.actualCostUsd)
+          actualCostUsd: money(args.actualCostUsd),
+          rightsAssertions: args.rightsAssertions || []
         }),
         args.projectId
       );
@@ -338,6 +344,8 @@ async function transition(args: {
       ...current,
       state: args.toState,
       provider_request_id: clean(args.providerRequestId, 400) || current.provider_request_id,
+      provider_status_url: clean(args.statusUrl, 1800) || current.provider_status_url,
+      provider_response_url: clean(args.responseUrl, 1800) || current.provider_response_url,
       failure_class: clean(args.failureClass, 120) || current.failure_class,
       failure_detail: clean(args.failureDetail, 1200) || current.failure_detail,
       actual_cost_usd: money(args.actualCostUsd) ?? current.actual_cost_usd,
@@ -356,11 +364,22 @@ async function transition(args: {
   });
 }
 
-export async function beginProviderSubmission(id: string, projectId: string) {
+export async function beginProviderSubmission(
+  id: string,
+  projectId: string,
+  rightsAssertions: Array<Record<string, unknown>> = []
+) {
   const existing = await readProviderTransaction(id, projectId);
   if (!existing) throw new ProviderTransactionError('PROVIDER_TRANSACTION_NOT_FOUND', 'Provider transaction was not found.');
 
   if (['acknowledged','processing','settled'].includes(existing.state)) return existing;
+  if (existing.state === 'submitting') {
+    throw new ProviderTransactionError(
+      'PROVIDER_SUBMISSION_AMBIGUOUS',
+      'This paid submission is already claimed by another execution. PARABLE will not submit it again automatically.',
+      existing
+    );
+  }
   if (existing.state === 'ambiguous') {
     throw new ProviderTransactionError(
       'PROVIDER_SUBMISSION_AMBIGUOUS',
@@ -380,7 +399,8 @@ export async function beginProviderSubmission(id: string, projectId: string) {
     id,
     projectId,
     fromStates: ['planned'],
-    toState: 'submitting'
+    toState: 'submitting',
+    rightsAssertions
   });
 }
 
@@ -396,21 +416,10 @@ export async function acknowledgeProviderSubmission(args: {
     projectId: args.projectId,
     fromStates: ['submitting','acknowledged'],
     toState: 'acknowledged',
-    providerRequestId: args.providerRequestId
+    providerRequestId: args.providerRequestId,
+    statusUrl: args.statusUrl,
+    responseUrl: args.responseUrl
   });
-
-  if (args.statusUrl || args.responseUrl) {
-    // URLs remain mirrored in the operational record. Provider request identity,
-    // spending and state transitions are authoritative in PostgreSQL.
-    const next = {
-      ...updated,
-      provider_status_url: clean(args.statusUrl, 1800) || updated.provider_status_url,
-      provider_response_url: clean(args.responseUrl, 1800) || updated.provider_response_url,
-      updated_at: new Date().toISOString()
-    };
-    await mirror(next);
-    return next;
-  }
 
   return updated;
 }
