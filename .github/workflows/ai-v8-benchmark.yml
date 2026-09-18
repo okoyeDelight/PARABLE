@@ -29,6 +29,7 @@ jobs:
           const sha = process.env.GITHUB_SHA;
           const token = process.env.GH_TOKEN;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
+          let deployId = null;
 
           for (let attempt = 1; attempt <= 90; attempt++) {
             const response = await fetch(
@@ -57,11 +58,13 @@ jobs:
                 throw new Error('Netlify marked this exact commit deploy as failed.');
               }
 
-              if (status?.state === 'success') {
-                const match = String(status.target_url || '').match(/\/deploys\/([a-zA-Z0-9_-]+)/);
-                if (!match) throw new Error('Could not resolve exact Netlify deploy id.');
-                const base = `https://${match[1]}--parable-studio.netlify.app`;
-                appendFileSync(process.env.GITHUB_ENV, `PREVIEW_BASE=${base}\n`);
+              const pendingMatch = String(status?.target_url || '').match(/\/deploys\/([a-zA-Z0-9_-]+)/);
+            if (pendingMatch) deployId = pendingMatch[1];
+
+            if (status?.state === 'success') {
+                if (!deployId) throw new Error('Netlify succeeded but no exact deploy id was observed while the commit was building.');
+                const base = `https://${deployId}--parable-studio.netlify.app`;
+                appendFileSync(process.env.GITHUB_ENV, `PREVIEW_BASE=${base}\nNETLIFY_DEPLOY_ID=${deployId}\n`);
                 console.log('Exact preview:', base);
                 process.exit(0);
               }
