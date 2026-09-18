@@ -39,6 +39,23 @@ export type CanonReference = {
   source_title?: string;
   source_creator?: string;
   source_url?: string;
+  asset_sha256?: string;
+  immutable_asset_uri?: string;
+  rights_provenance?: {
+    status: RightsStatus;
+    basis: 'owned' | 'licensed' | 'consent' | 'generated' | 'public-domain' | 'unknown';
+    rights_holder: string | null;
+    likeness_permission: boolean;
+    voice_permission: boolean;
+    ai_generation_permission: boolean;
+    commercial_use: boolean;
+    territories: string[];
+    expires_at: string | null;
+    evidence_sha256: string | null;
+    declared_by_actor_id: string;
+    declared_at: string;
+    revoked_at: string | null;
+  };
   notes?: string;
 };
 
@@ -579,7 +596,24 @@ export async function compileShotRenderSpec(args: {
   const references = allReferences.filter((ref) =>
     ref.render_usage !== 'inspiration-only' && ref.render_usage !== 'benchmark-only'
   );
-  const rightsIssues = references.filter((ref) => ref.rights_status !== 'approved');
+  const rightsIssues = references.filter((ref) => {
+    if (ref.rights_status !== 'approved') return true;
+    if (!ref.asset_sha256) return true;
+    if (!ref.rights_provenance || ref.rights_provenance.status !== 'approved') return true;
+    if (!ref.rights_provenance.ai_generation_permission) return true;
+    if (ref.rights_provenance.expires_at && Date.parse(ref.rights_provenance.expires_at) <= Date.now()) return true;
+    if (
+      (ref.render_usage === 'identity' || ref.kind === 'actor-face' || ref.kind === 'actor-visual') &&
+      ref.rights_provenance.basis !== 'generated' &&
+      !ref.rights_provenance.likeness_permission
+    ) return true;
+    if (
+      ref.kind === 'voice' &&
+      ref.rights_provenance.basis !== 'generated' &&
+      !ref.rights_provenance.voice_permission
+    ) return true;
+    return false;
+  });
 
   const dramaticPurpose = clean(shot?.purpose || shot?.dramatic_purpose || shot?.beat, 1000);
   const emotionalIntent = clean(shot?.performance || pkg?.shot_render_notes?.emotional_continuity?.join(' '), 1000);
@@ -661,7 +695,7 @@ export async function compileShotRenderSpec(args: {
     human_review: {
       required_before_final_render: rightsIssues.length > 0 || Boolean(pkg.human_review_recommended),
       reasons: [
-        ...(rightsIssues.length ? ['One or more approved continuity references still have unverified likeness/media rights.'] : []),
+        ...(rightsIssues.length ? ['One or more production references are not immutably vaulted with complete, active AI/likeness/voice rights provenance.'] : []),
         ...(pkg.human_review_recommended ? ['The Continuity Brain recommended human review for this shot.'] : [])
       ]
     },
