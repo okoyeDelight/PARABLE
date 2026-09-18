@@ -13,6 +13,10 @@ on:
       - 'tests/load/k6-scale-canary.js'
       - 'tests/load/k6-queue-canary.js'
       - 'database/job-admission-control-v1.sql'
+      - 'netlify/functions/_lib/job-recovery.mts'
+      - 'netlify/functions/job-reconciler.mts'
+      - 'netlify/functions/job-recovery-self-test.mts'
+      - 'database/durable-job-recovery-v1.sql'
       - '.github/workflows/scale-canary.yml'
   workflow_dispatch:
 
@@ -104,10 +108,11 @@ jobs:
               if (
                 r.ok &&
                 body?.ok === true &&
-                body?.runtime === 'parable-scale-foundation-v4' &&
-                body?.architecture?.state_adapter_version === 'transactional-state-v3' &&
+                body?.runtime === 'parable-scale-foundation-v5' &&
+                body?.architecture?.state_adapter_version === 'transactional-state-v4' &&
                 body?.architecture?.overload_strategy === 'durable-queue-plus-postgres-admission-control' &&
-                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v3'
+                body?.architecture?.stalled_job_recovery === 'scheduled-postgres-reconciler' &&
+                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v4'
               ) process.exit(0);
             }
             await sleep(4000);
