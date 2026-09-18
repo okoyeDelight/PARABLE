@@ -148,11 +148,33 @@ export default async (request: Request) => {
       const uri = clean(body.uri, 1800);
       const rightsStatus = clean(body.rightsStatus || 'unverified', 40) as RightsStatus;
       const source = clean(body.source || 'human-upload', 40);
+      const renderUsage = clean(body.renderUsage || (
+        referenceKind === 'actor-face' || referenceKind === 'actor-visual'
+          ? 'identity'
+          : referenceKind === 'performance' || referenceKind === 'voice'
+            ? 'performance'
+            : referenceKind === 'wardrobe'
+              ? 'wardrobe'
+              : referenceKind.startsWith('location-')
+                ? 'location'
+                : referenceKind === 'prop-visual'
+                  ? 'production-design'
+                  : 'visual-style'
+      ), 40);
+      const origin = clean(body.origin || (
+        source === 'human-upload' ? 'owned' :
+        source === 'generated' ? 'generated' : 'unknown'
+      ), 40);
       const validKinds = new Set([
         'actor-face','actor-visual','voice','wardrobe','performance',
         'location-visual','location-layout','location-lighting','prop-visual','style'
       ]);
       const validSources = new Set(['human-upload','generated','external']);
+      const validRenderUsage = new Set([
+        'identity','performance','wardrobe','location','production-design',
+        'visual-style','inspiration-only','benchmark-only'
+      ]);
+      const validOrigins = new Set(['owned','licensed','generated','official-media','public-domain','unknown']);
 
       if (!validKinds.has(referenceKind) || !uri || !['approved','unverified','restricted','revoked'].includes(rightsStatus)) {
         await abortProjectMutation(lease).catch(() => false);
@@ -161,6 +183,21 @@ export default async (request: Request) => {
       if (!validSources.has(source)) {
         await abortProjectMutation(lease).catch(() => false);
         return json({ error: 'source must be human-upload, generated or external.' }, 400);
+      }
+      if (!validRenderUsage.has(renderUsage) || !validOrigins.has(origin)) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({ error: 'Invalid renderUsage or origin.' }, 400);
+      }
+      if (
+        renderUsage === 'identity' &&
+        ['external','official-media'].includes(source === 'external' ? origin : '') &&
+        rightsStatus !== 'approved'
+      ) {
+        await abortProjectMutation(lease).catch(() => false);
+        return json({
+          error: 'External/official actor likeness references can only enter identity rendering after rights are explicitly approved. Use inspiration-only until permission is secured.',
+          code: 'LIKENESS_RIGHTS_REQUIRED'
+        }, 409);
       }
 
       const entities = [...canon.characters, ...canon.locations, ...canon.props];
@@ -183,11 +220,21 @@ export default async (request: Request) => {
           rights_status: rightsStatus,
           approved_by_human: true,
           source: source as any,
+          render_usage: renderUsage as any,
+          origin: origin as any,
+          source_title: clean(body.sourceTitle, 260) || undefined,
+          source_creator: clean(body.sourceCreator, 260) || undefined,
+          source_url: clean(body.sourceUrl, 1800) || undefined,
           notes: clean(body.notes, 500) || undefined
         });
       } else {
         duplicate.rights_status = rightsStatus;
         duplicate.approved_by_human = true;
+        duplicate.render_usage = renderUsage as any;
+        duplicate.origin = origin as any;
+        duplicate.source_title = clean(body.sourceTitle, 260) || duplicate.source_title;
+        duplicate.source_creator = clean(body.sourceCreator, 260) || duplicate.source_creator;
+        duplicate.source_url = clean(body.sourceUrl, 1800) || duplicate.source_url;
         duplicate.notes = clean(body.notes, 500) || duplicate.notes;
       }
       canon.updated_at = new Date().toISOString();
