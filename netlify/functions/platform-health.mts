@@ -77,7 +77,9 @@ export default async (request: Request) => {
       workload_execution_leases: true,
       telemetry_write_strategy: 'append-only-sharded',
       production_blob_consistency: 'strong',
-      transactional_hot_state: 'schema-prepared-not-provisioned'
+      project_concurrency_guard: 'strong-cas-revision-leases',
+      project_revision_endpoint: '/api/project-revision',
+      transactional_hot_state: 'optimistic-cas-active-postgres-schema-prepared'
     },
     deployment: {
       commit_ref: Netlify.env.get('COMMIT_REF') || null,
