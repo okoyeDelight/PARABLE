@@ -1,0 +1,38 @@
+name: PARABLE 1000 User Scale Gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Target deploy URL
+        required: false
+        default: https://deploy-preview-1--parable-studio.netlify.app
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-manual-scale-gate
+  cancel-in-progress: true
+
+jobs:
+  load-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Verify target
+        env:
+          PARABLE_BASE: ${{ inputs.base_url }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error "${PARABLE_BASE}/api/ai-status" >/dev/null
+
+      - name: Run 1,000 virtual-user read-tier gate
+        env:
+          PARABLE_BASE: ${{ inputs.base_url }}
+        run: k6 run tests/load/k6-1000-users.js
