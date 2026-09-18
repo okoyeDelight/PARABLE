@@ -139,26 +139,23 @@ async function openRouterFree(
   const apiKey = Netlify.env.get('OPENROUTER_API_KEY') || '';
   if (!apiKey) throw new Error('OpenRouter credential is not configured on this Deploy Preview.');
 
-  const configuredModel = clean(
-    Netlify.env.get('PARABLE_BENCHMARK_MODEL') ||
-    Netlify.env.get('PARABLE_OPENROUTER_MODEL') ||
-    '',
-    180
-  );
+  const configuredModel = clean(Netlify.env.get('PARABLE_BENCHMARK_MODEL') || '', 180);
   const candidates = [...new Set([
     configuredModel,
+    'qwen/qwen3.8-27b:free',
     'openrouter/free'
-  ].filter(Boolean))].slice(0, 2);
+  ].filter(Boolean))].slice(0, 3);
 
   const errors: string[] = [];
 
-  // Prefer the explicitly configured Deploy Preview model so benchmark quality
-  // is reproducible when a suitable model is available. Fall back to OpenRouter's
-  // dynamic free router only if the configured model fails. The explicit-model
-  // path requests JSON mode because some high-quality free models support JSON
-  // output without strict JSON-schema enforcement.
+  // Prefer a benchmark-only configured model when present, then a current
+  // structured-output-capable free model, and finally OpenRouter's dynamic free
+  // router. Do not inherit PARABLE_OPENROUTER_MODEL here: that setting belongs
+  // to product inference and can outlive a temporary benchmark model.
   for (const candidate of candidates) {
-    const strictSchema = candidate === 'openrouter/free';
+    const strictSchema =
+      candidate === 'openrouter/free' ||
+      candidate === 'qwen/qwen3.8-27b:free';
     const started = Date.now();
     const timeout = timeoutSignal(12000);
     let providerLease: ProviderGuardLease | null = null;
