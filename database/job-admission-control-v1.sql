@@ -1,7 +1,10 @@
 -- PARABLE Job Admission Control V1
 -- Applied after transactional-hot-state-v2.sql.
--- Durable queues accept bursts while PostgreSQL admission control limits
--- concurrently executing workers globally and per project.
+-- Durable queues accept bursts while PostgreSQL limits concurrently executing
+-- workers globally per deploy/production namespace and fairly per project.
+--
+-- The active worker pool is bounded; excess work stays durable and retries
+-- instead of stampeding AI/render providers or exhausting serverless capacity.
 
 create index if not exists durable_jobs_active_lease_idx
   on public.durable_jobs(status, lease_expires_at)
@@ -44,6 +47,7 @@ declare
   v_project_active integer;
   v_max_global integer;
   v_max_project integer;
+  v_capacity_scope text;
 
   v_existing_rights public.rights_provenance;
   v_action text;
@@ -122,6 +126,17 @@ begin
   end if;
 
   if p_action='job_capacity' then
+    v_project_id:=v_payload->>'scope_project_id';
+    if v_project_id is null or v_project_id !~ '^[A-Za-z0-9_.:-]{1,220}$' then
+      raise exception using errcode='22023',message='RUNTIME_CAPACITY_SCOPE_INVALID';
+    end if;
+
+    v_capacity_scope:=case
+      when v_project_id like 'preview:%:%'
+        then 'preview:'||split_part(v_project_id,':',2)
+      else split_part(v_project_id,':',1)
+    end;
+
     update public.durable_jobs
     set status='retrying',
         lease_token=null,
@@ -130,19 +145,42 @@ begin
         updated_at=clock_timestamp()
     where status='processing'
       and lease_expires_at is not null
-      and lease_expires_at<=clock_timestamp();
+      and lease_expires_at<=clock_timestamp()
+      and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or
+        (v_capacity_scope='prod' and project_id like 'prod:%')
+      );
 
     select count(*) into v_global_active
     from public.durable_jobs
     where status='processing'
-      and lease_expires_at>clock_timestamp();
+      and lease_expires_at>clock_timestamp()
+      and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or
+        (v_capacity_scope='prod' and project_id like 'prod:%')
+      );
 
     return jsonb_build_object(
+      'scope',v_capacity_scope,
       'active_processing',v_global_active,
-      'queued',(select count(*) from public.durable_jobs where status='queued'),
-      'retrying',(select count(*) from public.durable_jobs where status='retrying'),
-      'failed',(select count(*) from public.durable_jobs where status='failed'),
-      'succeeded',(select count(*) from public.durable_jobs where status='succeeded'),
+      'queued',(select count(*) from public.durable_jobs where status='queued' and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or (v_capacity_scope='prod' and project_id like 'prod:%')
+      )),
+      'retrying',(select count(*) from public.durable_jobs where status='retrying' and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or (v_capacity_scope='prod' and project_id like 'prod:%')
+      )),
+      'failed',(select count(*) from public.durable_jobs where status='failed' and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or (v_capacity_scope='prod' and project_id like 'prod:%')
+      )),
+      'succeeded',(select count(*) from public.durable_jobs where status='succeeded' and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or (v_capacity_scope='prod' and project_id like 'prod:%')
+      )),
       'at',clock_timestamp()
     );
   end if;
@@ -171,8 +209,13 @@ begin
       return jsonb_build_object('claimed',false,'job',to_jsonb(v_job),'reason','active-lease');
     end if;
 
-    -- Serialize admission decisions without holding a lock during the work.
-    perform pg_advisory_xact_lock(hashtextextended('parable:jobs:global',0));
+    v_capacity_scope:=case
+      when v_job.project_id like 'preview:%:%'
+        then 'preview:'||split_part(v_job.project_id,':',2)
+      else split_part(v_job.project_id,':',1)
+    end;
+
+    perform pg_advisory_xact_lock(hashtextextended('parable:jobs:global:'||v_capacity_scope,0));
     perform pg_advisory_xact_lock(hashtextextended('parable:jobs:project:'||v_job.project_id,0));
 
     update public.durable_jobs
@@ -183,7 +226,12 @@ begin
         updated_at=clock_timestamp()
     where status='processing'
       and lease_expires_at is not null
-      and lease_expires_at<=clock_timestamp();
+      and lease_expires_at<=clock_timestamp()
+      and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or
+        (v_capacity_scope='prod' and project_id like 'prod:%')
+      );
 
     v_max_global:=greatest(1,least(2000,coalesce((v_payload->>'max_global_active')::integer,250)));
     v_max_project:=greatest(1,least(100,coalesce((v_payload->>'max_project_active')::integer,8)));
@@ -191,7 +239,12 @@ begin
     select count(*) into v_global_active
     from public.durable_jobs
     where status='processing'
-      and lease_expires_at>clock_timestamp();
+      and lease_expires_at>clock_timestamp()
+      and (
+        (v_capacity_scope like 'preview:%' and project_id like v_capacity_scope||':%')
+        or
+        (v_capacity_scope='prod' and project_id like 'prod:%')
+      );
 
     if v_global_active>=v_max_global then
       return jsonb_build_object(
