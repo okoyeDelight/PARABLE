@@ -1,5 +1,5 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
-import { buildRenderContinuityContract, type ContinuitySnapshot } from './_lib/continuity-core.mts';
+import { buildRenderContinuityContract, upgradeContinuitySnapshot, type ContinuitySnapshot } from './_lib/continuity-core.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -18,6 +18,7 @@ function stores() {
   return {
     continuity: make('parable-continuity'),
     sceneStates: make('parable-scene-states'),
+    shotStates: make('parable-shot-states'),
     directions: make('parable-directions'),
     adaptations: make('parable-adaptations')
   };
@@ -51,24 +52,19 @@ export default async (request: Request) => {
   if (shotId && !safeId(shotId)) return json({ error: 'Invalid shotId.' }, 400);
 
   const s = stores();
-  const [continuity, adaptation] = await Promise.all([
+  const [rawContinuity, adaptation] = await Promise.all([
     s.continuity.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<ContinuitySnapshot | null>,
     s.adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>
   ]);
 
-  if (!continuity) {
-    return json({
-      error: 'Continuity has not been established for this project. Run /api/scene-state first.'
-    }, 409);
+  if (!rawContinuity) {
+    return json({ error: 'Continuity has not been established. Run /api/scene-state first.' }, 409);
   }
 
+  const continuity = upgradeContinuitySnapshot(rawContinuity);
   const resolvedStoryVersion = storyVersion || continuity.story_version || adaptation?.story_version || 'story_unknown';
   const resolvedSceneId = sceneId || continuity.last_scene_id || '';
-  if (!resolvedSceneId) {
-    return json({
-      error: 'No scene has passed through the Continuity Brain yet.'
-    }, 409);
-  }
+  if (!resolvedSceneId) return json({ error: 'No scene has passed through Continuity Brain.' }, 409);
 
   const sceneState = await s.sceneStates.get(
     'project/' + projectId + '/' + resolvedStoryVersion + '/' + resolvedSceneId,
@@ -78,50 +74,52 @@ export default async (request: Request) => {
   if (!sceneState) {
     return json({
       error: 'This scene has not been checked by PARABLE Continuity Brain.',
-      project_id: projectId,
-      story_version: resolvedStoryVersion,
-      scene_id: resolvedSceneId,
       can_render: false
     }, 409);
   }
 
-  const continuityContract = buildRenderContinuityContract(continuity, resolvedSceneId);
   const directions = await directionsFor(projectId, resolvedStoryVersion);
   const directionByShot = Object.fromEntries(directions.map((item) => [String(item.shot_id || ''), item]));
-
-  const productionBible = adaptation?.production_bible || {};
-  const shotPlan = Array.isArray(adaptation?.shot_plan)
+  const bible = adaptation?.production_bible || {};
+  const plan = Array.isArray(adaptation?.shot_plan)
     ? adaptation.shot_plan
-    : Array.isArray(productionBible?.shot_plan)
-      ? productionBible.shot_plan
+    : Array.isArray(bible?.shot_plan)
+      ? bible.shot_plan
       : [];
 
   const filteredShots = shotId
-    ? shotPlan.filter((shot: any) => String(shot?.id || '') === shotId)
-    : shotPlan;
+    ? plan.filter((shot: any) => String(shot?.id || '') === shotId)
+    : plan;
 
-  if (shotId && filteredShots.length === 0) {
-    return json({ error: 'The requested shotId does not exist in the latest adaptation.' }, 404);
-  }
+  if (shotId && !filteredShots.length) return json({ error: 'shotId does not exist in the latest shot plan.' }, 404);
 
+  const sceneContract = buildRenderContinuityContract(continuity, resolvedSceneId);
   const sceneBlockers = [
     ...(Array.isArray(sceneState?.warnings) ? sceneState.warnings : []),
-    ...(Array.isArray(continuityContract?.hard_blockers) ? continuityContract.hard_blockers : [])
-  ].filter((warning: any, index: number, all: any[]) =>
-    warning?.severity === 'blocker' &&
-    all.findIndex((other) =>
-      other?.code === warning?.code &&
-      other?.entity_id === warning?.entity_id &&
-      other?.field === warning?.field &&
-      other?.scene_id === warning?.scene_id
-    ) === index
-  );
+    ...(Array.isArray(sceneContract?.hard_blockers) ? sceneContract.hard_blockers : [])
+  ].filter((warning: any) => warning?.severity === 'blocker');
 
-  const packages = filteredShots.map((shot: any) => {
+  const packages = await Promise.all(filteredShots.map(async (shot: any) => {
     const id = String(shot?.id || '');
     const direction = directionByShot[id] || null;
+    const shotState = id
+      ? await s.shotStates.get(
+          'project/' + projectId + '/' + resolvedStoryVersion + '/' + resolvedSceneId + '/' + id,
+          { type: 'json' }
+        ) as Record<string, any> | null
+      : null;
+
+    const shotBlockers = [
+      ...sceneBlockers,
+      ...(Array.isArray(shotState?.warnings) ? shotState.warnings : [])
+    ].filter((warning: any) => warning?.severity === 'blocker');
+
+    const checked = Boolean(shotState);
+    const continuityBefore = shotState?.render_contract_before || sceneContract;
+    const continuityAfter = shotState?.render_contract_after || sceneContract;
+
     return {
-      render_package_version: 'parable-render-handoff-v1',
+      render_package_version: 'parable-render-handoff-v2',
       project_id: projectId,
       story_version: resolvedStoryVersion,
       scene_id: resolvedSceneId,
@@ -136,24 +134,29 @@ export default async (request: Request) => {
           blocking: direction.blocking || shot?.blocking
         } : {})
       },
-      continuity: continuityContract,
+      shot_continuity_status: checked ? 'checked' : 'unchecked',
+      continuity_before: continuityBefore,
+      continuity_after: continuityAfter,
+      shot_transitions: shotState?.extracted_shot_state || null,
       scene_render_notes: sceneState?.render_notes || {},
-      scene_uncertainties: sceneState?.uncertainties || [],
+      shot_render_notes: shotState?.render_notes || {},
       hard_constraints: {
         preserve_identity: true,
         preserve_wardrobe: true,
         preserve_injuries: true,
-        preserve_props: true,
+        preserve_prop_ownership: true,
+        preserve_prop_location: true,
         preserve_screen_geography: true,
         preserve_character_knowledge: true,
         no_unmarked_state_changes: true
       },
-      can_render: sceneBlockers.length === 0 && Boolean(sceneState?.can_render),
-      blockers: sceneBlockers,
-      human_review_recommended: Boolean(sceneState?.requires_human_review)
+      can_render: checked && Boolean(sceneState?.can_render) && Boolean(shotState?.can_render) && shotBlockers.length === 0,
+      blockers: shotBlockers,
+      human_review_recommended: Boolean(sceneState?.requires_human_review || shotState?.requires_human_review)
     };
-  });
+  }));
 
+  const uncheckedShots = packages.filter((item) => item.shot_continuity_status === 'unchecked').map((item) => item.shot_id);
   const noShotPlan = packages.length === 0;
   const canRender = !noShotPlan && packages.every((item) => item.can_render);
 
@@ -161,15 +164,17 @@ export default async (request: Request) => {
     project_id: projectId,
     story_version: resolvedStoryVersion,
     scene_id: resolvedSceneId,
-    continuity_gate: sceneBlockers.length ? 'blocked' : 'passed',
+    continuity_gate: sceneBlockers.length ? 'blocked' : uncheckedShots.length ? 'awaiting-shot-continuity' : 'passed',
     can_render: canRender,
-    human_review_recommended: Boolean(sceneState?.requires_human_review),
     blockers: sceneBlockers,
+    unchecked_shots: uncheckedShots,
     package_count: packages.length,
     packages,
     note: noShotPlan
-      ? 'Continuity is ready, but no shot plan exists in the latest adaptation yet.'
-      : 'These packages are the renderer boundary. A video/image renderer should consume them instead of regenerating scene state from scratch.'
+      ? 'Continuity is ready, but no shot plan exists.'
+      : uncheckedShots.length
+        ? 'Run /api/shot-state in shot order for each unchecked shot before rendering.'
+        : 'Every package now carries pre-shot state, in-shot transitions and post-shot state.'
   });
 };
 
