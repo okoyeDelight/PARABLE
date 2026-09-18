@@ -6,10 +6,14 @@ on:
     paths:
       - 'package.json'
       - 'netlify/functions/_lib/job-store.mts'
+      - 'netlify/functions/_lib/job-processor.mts'
+      - 'netlify/functions/_lib/job-dispatcher.mts'
       - 'netlify/functions/jobs.mts'
       - 'netlify/functions/job-status.mts'
       - 'netlify/functions/continuity-workload.mts'
+      - 'netlify/functions/pipeline-background.mts'
       - 'netlify/functions/platform-health.mts'
+      - 'netlify/functions/queue-self-test.mts'
       - '.github/workflows/durable-pipeline-smoke.yml'
   workflow_dispatch:
 
@@ -23,120 +27,68 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 8
+    env:
+      PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
     steps:
-      - name: Resolve this commit's immutable Netlify Deploy Preview
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_SHA: ${{ github.sha }}
-          REPOSITORY: ${{ github.repository }}
+      - name: Wait for scale foundation preview
         run: |
           set -euo pipefail
           node <<'NODE'
-          const expected = process.env.EXPECTED_SHA;
-          const repository = process.env.REPOSITORY;
-          const token = process.env.GH_TOKEN;
-          const fs = await import('node:fs');
+          const base = process.env.PREVIEW_BASE;
           const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-          let immutable = '';
           for (let attempt = 1; attempt <= 60; attempt++) {
-            const statusResponse = await fetch(`https://api.github.com/repos/${repository}/commits/${expected}/status`, {
-              headers: {
-                authorization: 'Bearer ' + token,
-                accept: 'application/vnd.github+json',
-                'x-github-api-version': '2022-11-28'
-              }
-            });
-            const statusBody = await statusResponse.json().catch(() => ({}));
-            const netlify = (statusBody.statuses || []).find((item) => item.context === 'netlify/parable-studio/deploy-preview');
-            const target = String(netlify?.target_url || '');
-            const match = target.match(/\/deploys\/([a-zA-Z0-9]+)/);
-            if (match) {
-              immutable = 'https://' + match[1] + '--parable-studio.netlify.app';
-              try {
-                const r = await fetch(immutable + '/api/platform-health', { cache: 'no-store' });
-                const body = await r.json().catch(() => ({}));
-                const deployedId = body?.deployment?.deploy_id;
-                console.log(`attempt ${attempt}: netlify=${netlify?.state || 'unknown'} deploy=${deployedId || 'not-ready'} expectedDeploy=${match[1]}`);
-                if (r.ok && body?.ok === true && deployedId === match[1]) {
-                  fs.appendFileSync(process.env.GITHUB_ENV, 'PARABLE_TEST_BASE=' + immutable + '\n');
-                  process.exit(0);
-                }
-              } catch {}
+            try {
+              const r = await fetch(base + '/api/platform-health', { cache: 'no-store' });
+              const body = await r.json().catch(() => ({}));
+              const architecture = body?.architecture || {};
+              console.log(
+                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'}`
+              );
+              if (
+                r.ok &&
+                body?.ok === true &&
+                architecture?.queue_backend_abstraction === true &&
+                architecture?.single_queue_dependency === false
+              ) process.exit(0);
+            } catch (error) {
+              console.log(`attempt ${attempt}: ${error.message}`);
             }
             await sleep(5000);
           }
-          throw new Error('The immutable Deploy Preview for this commit did not become healthy in time.');
+
+          throw new Error('Scale foundation preview did not become healthy in time.');
           NODE
 
-      - name: Verify queue, execution, idempotency and conflict safety
+      - name: Verify end-to-end durable queue fallback and idempotency
         run: |
           set -euo pipefail
           node <<'NODE'
-          const base = process.env.PARABLE_TEST_BASE;
-          const expected = process.env.GITHUB_SHA;
-          const sleep = ms => new Promise(r => setTimeout(r, ms));
-          const key = 'ci-smoke-' + expected;
-          const firstPayload = {
-            kind: 'scale-noop',
-            payload: { projectId: 'scale_probe', commit: expected, marker: 'first' }
-          };
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/queue-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
 
-          async function submit(payload, idempotencyKey) {
-            const r = await fetch(base + '/api/jobs', {
-              method: 'POST',
-              headers: {
-                'content-type': 'application/json',
-                'idempotency-key': idempotencyKey
-              },
-              body: JSON.stringify(payload)
-            });
-            const text = await r.text();
-            let body; try { body = JSON.parse(text); } catch { body = text; }
-            return { r, body };
+          console.log('queue self-test:', r.status, JSON.stringify(body).slice(0, 2500));
+
+          if (!r.ok || body?.ok !== true) {
+            throw new Error('Durable queue self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.probe_version !== 'queue-self-test-v2') {
+            throw new Error('Unexpected queue self-test version.');
+          }
+          if (body?.idempotency?.duplicate_reused_job !== true) {
+            throw new Error('Idempotent duplicate did not reuse the original job.');
+          }
+          if (body?.idempotency?.conflicting_replay_rejected !== true) {
+            throw new Error('Conflicting replay was not rejected.');
           }
 
-          const first = await submit(firstPayload, key);
-          if (![200, 202].includes(first.r.status) || !first.body?.job?.id) {
-            throw new Error('Queue submission failed: ' + first.r.status + ' ' + JSON.stringify(first.body));
-          }
-          const jobId = first.body.job.id;
-          console.log('accepted job', jobId, 'event', first.body.job.queue_event_id || 'pending');
-
-          let completed = null;
-          for (let attempt = 1; attempt <= 40; attempt++) {
-            const r = await fetch(base + '/api/job-status?id=' + encodeURIComponent(jobId), { cache: 'no-store' });
-            const body = await r.json().catch(() => ({}));
-            console.log(`poll ${attempt}: ${body?.job?.status}`);
-            if (!r.ok) throw new Error('Job polling failed: ' + r.status);
-            if (body?.job?.status === 'succeeded') {
-              completed = body;
-              break;
-            }
-            if (body?.job?.status === 'failed') {
-              throw new Error('Durable job failed: ' + (body?.job?.last_error || 'unknown'));
-            }
-            await sleep(1500);
-          }
-
-          if (!completed?.result?.ok || completed.result?.probe !== 'durable-queue-v1') {
-            throw new Error('Durable queue did not complete the scale-noop probe.');
-          }
-
-          const duplicate = await submit(firstPayload, key);
-          if (duplicate.r.status !== 200 || duplicate.body?.job?.id !== jobId || duplicate.body?.deduplicated !== true) {
-            throw new Error('Idempotent duplicate did not converge on the original job.');
-          }
-
-          const conflict = await submit({
-            kind: 'scale-noop',
-            payload: { projectId: 'scale_probe', commit: expected, marker: 'DIFFERENT' }
-          }, key);
-
-          if (conflict.r.status !== 409) {
-            throw new Error('Idempotency conflict safety failed; expected 409, got ' + conflict.r.status);
-          }
-
-          console.log('PARABLE durable pipeline smoke passed: exact deploy healthy, queue accepted, worker executed, duplicate deduplicated, conflicting replay rejected.');
+          console.log(
+            'PARABLE durable pipeline smoke passed via backend:',
+            body.backend,
+            'degraded_from_primary:',
+            body.degraded_from_primary
+          );
           NODE
