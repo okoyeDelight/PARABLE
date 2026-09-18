@@ -31,6 +31,11 @@ export type KeyframeApproval = {
     human_approved: true;
     note: string | null;
   };
+  visual_inspection: {
+    inspection_id: string | null;
+    decision: string | null;
+    overridden_by_human: boolean;
+  };
   approved_at: string;
   revoked_at: string | null;
   revoke_reason: string | null;
