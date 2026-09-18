@@ -1,10 +1,9 @@
 import {
   createDurableJob,
   failJob,
-  markJobQueued,
-  readDurableJob,
   type JobKind
 } from './_lib/job-store.mts';
+import { transactionalStateMode } from './_lib/transactional-state.mts';
 import { dispatchDurableJob } from './_lib/job-dispatcher.mts';
 import {
   authorizeProject,
@@ -93,17 +92,44 @@ export default async (request: Request) => {
     }, 409);
   }
 
-  const shouldDispatch = created.created || created.job.status === 'failed';
+  // A terminal failed job is never implicitly resurrected. A deliberate retry
+  // uses a new idempotency key/operation so paid or stateful work cannot repeat
+  // accidentally.
+  const shouldDispatch = created.created;
   let dispatchBackend: 'async-workloads' | 'netlify-background' | null = null;
   let degradedFromPrimary = false;
 
   if (shouldDispatch) {
     try {
-      const dispatched = await dispatchDurableJob(created.job.id, kind);
+      // The freshly committed row already contains the trusted authorization
+      // context, so dispatch does not need to re-read PostgreSQL before
+      // acknowledging this request.
+      const dispatched = await dispatchDurableJob(created.job.id, kind, created.job);
       dispatchBackend = dispatched.backend;
       degradedFromPrimary = Boolean(dispatched.primary_error);
-      await markJobQueued(created.job.id, dispatched.event_id);
+
+      // queue_event_id is observability metadata, not correctness state. The
+      // authoritative row is already durably queued before dispatch starts.
+      // Avoid another synchronous DB round trip on the user acceptance path.
     } catch (error) {
+      if (transactionalStateMode() === 'postgres') {
+        // In transactional mode the job stays queued. The recovery coordinator
+        // will redispatch it, so a transient router outage cannot lose work.
+        return json({
+          job: publicJob(created.job),
+          accepted: true,
+          deduplicated: false,
+          dispatch_backend: null,
+          degraded_from_primary_queue: true,
+          dispatch_pending_recovery: true,
+          retryable: true,
+          detail: clean(error instanceof Error ? error.message : error, 600),
+          poll: '/api/job-status?id=' + created.job.id
+        }, 202);
+      }
+
+      // Compatibility mode has no authoritative recovery sweeper, so keep the
+      // older fail-closed behavior until PostgreSQL is active there.
       await failJob(created.job.id, error);
       return json({
         error: 'PARABLE could not start this production job.',
@@ -114,14 +140,14 @@ export default async (request: Request) => {
     }
   }
 
-  const current = await readDurableJob(created.job.id) || created.job;
   return json({
-    job: publicJob(current),
+    job: publicJob(created.job),
     accepted: true,
     deduplicated: !created.created,
     dispatch_backend: dispatchBackend,
     degraded_from_primary_queue: degradedFromPrimary,
-    poll: '/api/job-status?id=' + current.id
+    dispatch_pending_recovery: false,
+    poll: '/api/job-status?id=' + created.job.id
   }, created.created ? 202 : 200);
 };
 
