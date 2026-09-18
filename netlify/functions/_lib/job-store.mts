@@ -1,6 +1,6 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 
-export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation';
+export type JobKind = 'scene-state' | 'shot-state' | 'story-understanding' | 'adaptation' | 'film-critic';
 export type JobStatus = 'queued' | 'processing' | 'succeeded' | 'failed';
 
 export type DurableJob = {
