@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS durable_jobs (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
   project_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('queued','processing','succeeded','failed')),
+  status TEXT NOT NULL CHECK (status IN ('queued','processing','retrying','succeeded','failed')),
   payload_hash TEXT NOT NULL,
   idempotency_key TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
@@ -65,7 +65,10 @@ CREATE TABLE IF NOT EXISTS durable_jobs (
   result_ref TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  completed_at TIMESTAMPTZ
+  completed_at TIMESTAMPTZ,
+  lease_token TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  queue_event_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS durable_jobs_project_status_idx
