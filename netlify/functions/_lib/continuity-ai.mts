@@ -119,6 +119,54 @@ const SCENE_STATE_SCHEMA = object({
       transition: { type: 'boolean' }
     })
   },
+  room_topology: object({
+    location: text(180),
+    anchors: {
+      type: 'array',
+      maxItems: 16,
+      items: object({
+        label: text(180),
+        kind: {
+          type: 'string',
+          enum: ['door', 'window', 'furniture', 'altar', 'entry', 'exit', 'landmark', 'other']
+        },
+        locked: { type: 'boolean' },
+        confidence: { type: 'number', minimum: 0, maximum: 1 }
+      })
+    },
+    relations: {
+      type: 'array',
+      maxItems: 20,
+      items: object({
+        subject: text(180),
+        relation: {
+          type: 'string',
+          enum: ['left_of', 'right_of', 'in_front_of', 'behind', 'near', 'against', 'inside', 'outside', 'faces', 'between', 'at']
+        },
+        target: text(180),
+        confidence: { type: 'number', minimum: 0, maximum: 1 },
+        transition: { type: 'boolean' },
+        locked: { type: 'boolean' }
+      })
+    }
+  }),
+  camera_axes: {
+    type: 'array',
+    maxItems: 6,
+    items: object({
+      axis_id: text(120),
+      location: text(180),
+      subject_a: text(160),
+      subject_b: text(160),
+      camera_side: { type: 'string', enum: ['side_a', 'side_b', 'on_axis', 'neutral', 'unknown'] },
+      subject_a_screen_side: { type: 'string', enum: ['left', 'right', 'center', 'unknown'] },
+      subject_b_screen_side: { type: 'string', enum: ['left', 'right', 'center', 'unknown'] },
+      bridge_shot: { type: 'boolean' },
+      intentional_cross: { type: 'boolean' },
+      reset_axis: { type: 'boolean' },
+      reason: text(420)
+    })
+  },
   open_threads_add: { type: 'array', maxItems: 8, items: text(500) },
   open_threads_resolve: { type: 'array', maxItems: 8, items: text(500) },
   theology_flags: { type: 'array', maxItems: 8, items: text(500) },
@@ -150,6 +198,10 @@ const SYSTEM = [
   '- For prop transfer: from/to may be blank. Use location when an object is left somewhere.',
   '- spatial_relations must represent filmable geography only. Do not invent exact left/right unless supplied or strongly implied by blocking.',
   '- screen_left/screen_right are camera-space facts and should change only when camera/blocking explicitly justifies the change.',
+  '- room_topology stores stable physical geography such as doors, windows, furniture, altar positions and landmark relationships. Do not infer room geometry that is not visible or explicit.',
+  '- camera_axes stores the 180-degree coverage axis between two performers. camera_side may be side_a/side_b only when shot direction makes that side clear; otherwise use unknown.',
+  '- bridge_shot=true only for an on-axis/neutral/re-establishing shot that genuinely makes a later side change visually legible.',
+  '- intentional_cross/reset_axis=true only when the camera or performers visibly cross/reorient the line; never use them merely to suppress a continuity warning.',
   '- Do not resolve an open story thread unless the scene truly resolves it.',
   '- Do not create theology flags merely because the work is Christian.',
   '- Preserve Nigerian and other local cultural details without normalizing them into generic Western assumptions.',
@@ -175,6 +227,8 @@ function compactMemory(snapshot: ContinuitySnapshot) {
     character_knowledge: snapshot.character_knowledge || {},
     prop_ownership: snapshot.prop_ownership || {},
     spatial_graph: Array.isArray(snapshot.spatial_graph) ? snapshot.spatial_graph.slice(-60) : [],
+    room_topology: snapshot.room_topology || {},
+    camera_axes: snapshot.camera_axes || {},
     open_threads: snapshot.open_threads || [],
     theology_flags: snapshot.theology_flags || []
   };
@@ -338,6 +392,104 @@ function sanitize(value: Record<string, any>, input: ExtractInput) {
     }];
   });
 
+  const roomValue = value?.room_topology && typeof value.room_topology === 'object'
+    ? value.room_topology
+    : null;
+
+  let roomTopology: any = undefined;
+  if (roomValue) {
+    const location = clean(roomValue.location, 180);
+    const existingRoom = Object.values(input.continuity.room_topology || {}).find((room: any) =>
+      normalize(room?.location_name || '') === normalize(location)
+    ) as any;
+    const locationSupported = Boolean(
+      location &&
+      (
+        supportedEntity(input, 'location', location) ||
+        existingRoom
+      )
+    );
+
+    if (locationSupported) {
+      const priorAnchors = new Set(
+        Object.values(existingRoom?.anchors || {}).map((anchor: any) => normalize(anchor?.label || ''))
+      );
+
+      const anchors = (Array.isArray(roomValue.anchors) ? roomValue.anchors : []).slice(0, 16).flatMap((row: any) => {
+        const label = clean(row?.label, 180);
+        const kind = ['door','window','furniture','altar','entry','exit','landmark','other'].includes(row?.kind)
+          ? row.kind
+          : 'other';
+        if (!label) return [];
+        if (!sourceContains(input.sceneText, label) && !priorAnchors.has(normalize(label))) return [];
+        return [{
+          label,
+          kind,
+          locked: Boolean(row?.locked),
+          confidence: clamp(row?.confidence, 0.76)
+        }];
+      });
+
+      const relationKinds = ['left_of','right_of','in_front_of','behind','near','against','inside','outside','faces','between','at'];
+      const relations = (Array.isArray(roomValue.relations) ? roomValue.relations : []).slice(0, 20).flatMap((row: any) => {
+        const subject = clean(row?.subject, 180);
+        const target = clean(row?.target, 180);
+        const relation = relationKinds.includes(row?.relation) ? row.relation : '';
+        if (!subject || !target || !relation) return [];
+        const subjectKnown = sourceContains(input.sceneText, subject) || priorAnchors.has(normalize(subject));
+        const targetKnown = sourceContains(input.sceneText, target) || priorAnchors.has(normalize(target));
+        if (!subjectKnown || !targetKnown) return [];
+        return [{
+          subject,
+          relation,
+          target,
+          confidence: clamp(row?.confidence, 0.74),
+          transition: Boolean(row?.transition),
+          locked: Boolean(row?.locked)
+        }];
+      });
+
+      roomTopology = { location, anchors, relations };
+    }
+  }
+
+  const cameraAxes = (Array.isArray(value?.camera_axes) ? value.camera_axes : []).slice(0, 6).flatMap((row: any) => {
+    const subjectA = clean(row?.subject_a, 160);
+    const subjectB = clean(row?.subject_b, 160);
+    const location = clean(row?.location, 180);
+    if (
+      !subjectA ||
+      !subjectB ||
+      !supportedEntity(input, 'character', subjectA) ||
+      !supportedEntity(input, 'character', subjectB)
+    ) return [];
+    if (location && !supportedEntity(input, 'location', location)) return [];
+
+    const cameraSide = ['side_a','side_b','on_axis','neutral','unknown'].includes(row?.camera_side)
+      ? row.camera_side
+      : 'unknown';
+    const screenA = ['left','right','center','unknown'].includes(row?.subject_a_screen_side)
+      ? row.subject_a_screen_side
+      : 'unknown';
+    const screenB = ['left','right','center','unknown'].includes(row?.subject_b_screen_side)
+      ? row.subject_b_screen_side
+      : 'unknown';
+
+    return [{
+      axis_id: clean(row?.axis_id, 120).replace(/[^a-zA-Z0-9_.:-]/g, '_'),
+      location,
+      subject_a: subjectA,
+      subject_b: subjectB,
+      camera_side: cameraSide,
+      subject_a_screen_side: screenA,
+      subject_b_screen_side: screenB,
+      bridge_shot: Boolean(row?.bridge_shot),
+      intentional_cross: Boolean(row?.intentional_cross),
+      reset_axis: Boolean(row?.reset_axis),
+      reason: clean(row?.reason, 420)
+    }];
+  });
+
   const list = (name: string, max = 8, size = 500) =>
     (Array.isArray(value?.[name]) ? value[name] : []).slice(0, max).map((x: unknown) => clean(x, size)).filter(Boolean);
 
@@ -352,6 +504,8 @@ function sanitize(value: Record<string, any>, input: ExtractInput) {
     knowledge_requirements: knowledgeRequirements,
     prop_transfers: propTransfers,
     spatial_relations: spatialRelations,
+    room_topology: roomTopology,
+    camera_axes: cameraAxes,
     open_threads_add: list('open_threads_add'),
     open_threads_resolve: list('open_threads_resolve'),
     theology_flags: list('theology_flags'),
@@ -448,6 +602,8 @@ function deterministic(input: ExtractInput): SceneExtractionResult {
       knowledge_requirements: [],
       prop_transfers: propTransfers,
       spatial_relations: spatialRelations,
+      room_topology: undefined,
+      camera_axes: [],
       open_threads_add: [],
       open_threads_resolve: [],
       theology_flags: []
@@ -462,9 +618,9 @@ function deterministic(input: ExtractInput): SceneExtractionResult {
     uncertainties: ['Protected model extraction was unavailable; deterministic physical-world extraction is intentionally conservative.'],
     engine: {
       provider: 'local',
-      model: 'continuity-deterministic-v2',
+      model: 'continuity-deterministic-v3',
       mode: 'deterministic-fallback',
-      version: 'continuity-extractor-v2',
+      version: 'continuity-extractor-v3',
       privacy_mode: 'local-structured-processing'
     }
   };
@@ -553,6 +709,8 @@ export async function runContinuityExtraction(input: ExtractInput): Promise<Scen
         knowledge_requirements: data.knowledge_requirements,
         prop_transfers: data.prop_transfers,
         spatial_relations: data.spatial_relations,
+        room_topology: data.room_topology,
+        camera_axes: data.camera_axes,
         open_threads_add: data.open_threads_add,
         open_threads_resolve: data.open_threads_resolve,
         theology_flags: data.theology_flags
@@ -563,7 +721,7 @@ export async function runContinuityExtraction(input: ExtractInput): Promise<Scen
         provider: 'openrouter',
         model: actualModel,
         mode: 'model',
-        version: 'continuity-extractor-v2',
+        version: 'continuity-extractor-v3',
         privacy_mode: 'zdr-no-training-required'
       }
     };
