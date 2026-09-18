@@ -76,8 +76,14 @@ function screenplayText(adaptation: Record<string, any> | null) {
 
 async function loadOrBootstrap(projectId: string, storyVersion: string, bodyBible?: unknown) {
   const s = stores();
-  const existing = await s.continuity.get('project/' + projectId + '/latest', { type: 'json' }) as ContinuitySnapshot | null;
-  if (existing) return existing;
+  const versionKey = 'project/' + projectId + '/versions/' + storyVersion + '/latest';
+  const [versionSnapshot, latestSnapshot] = await Promise.all([
+    s.continuity.get(versionKey, { type: 'json' }) as Promise<ContinuitySnapshot | null>,
+    s.continuity.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<ContinuitySnapshot | null>
+  ]);
+
+  if (versionSnapshot) return upgradeContinuitySnapshot(versionSnapshot);
+  if (latestSnapshot?.story_version === storyVersion) return upgradeContinuitySnapshot(latestSnapshot);
 
   const bible = bodyBible && typeof bodyBible === 'object'
     ? bodyBible as Record<string, any>
