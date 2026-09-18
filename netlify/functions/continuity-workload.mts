@@ -124,7 +124,7 @@ export default asyncWorkloadFn<ContinuityEvent>(async (event) => {
 });
 
 export const asyncWorkloadConfig: AsyncWorkloadConfig<ContinuityEvent> = {
-  events: ['parable.continuity.process'],
+  events: ['parable.pipeline.process', 'parable.continuity.process'],
   maxRetries: 6,
   backoffSchedule: (attempt) => {
     const seconds = Math.min(300, 5 * Math.pow(3, attempt));
