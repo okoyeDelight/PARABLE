@@ -17,6 +17,7 @@ import {
   appendRenderAttemptEvent,
   listShotAttempts,
   readLatestRenderQA,
+  readLatestMotionInspection,
   readRenderAttempt,
   readRenderSpec,
   saveRenderAttempt
@@ -308,11 +309,16 @@ export default async (request: Request) => {
 
   const providerStateAction = ['queued','provider_started','result','failure'].includes(action);
   const reviewAction = ['accept','reject','supersede'].includes(action);
+  const explicitReviewOverride = reviewAction && body.humanApproved === true;
   try {
     const access = await authorizeProject(
       request,
       attempt.project_id,
-      providerStateAction ? 'render:spend' : reviewAction ? 'review:approve' : 'render:plan'
+      providerStateAction
+        ? 'render:spend'
+        : reviewAction
+          ? (explicitReviewOverride ? 'review:override' : 'review:approve')
+          : 'render:plan'
     );
     if (providerStateAction && !access.actor.internal) {
       return json({
@@ -345,15 +351,54 @@ export default async (request: Request) => {
   }
 
   if (action === 'accept') {
-    const qa = await readLatestRenderQA(attempt.id);
+    const [qa, motionInspection] = await Promise.all([
+      readLatestRenderQA(attempt.id),
+      readLatestMotionInspection(attempt.id)
+    ]);
     const humanOverride = body.humanApproved === true;
-    if (qa?.decision !== 'PASS' && !humanOverride) {
+    const reviewerNote = clean(body.note, 1000);
+
+    const motionBound = Boolean(
+      motionInspection &&
+      motionInspection.attempt_id === attempt.id &&
+      motionInspection.asset_uri === attempt.asset_uri &&
+      motionInspection.spec_hash === attempt.spec_hash
+    );
+    const qaBoundToMotion = Boolean(
+      qa &&
+      (qa as any).evidence_source === 'trusted-motion-inspector' &&
+      (qa as any).motion_inspection_id === motionInspection?.id &&
+      (qa as any).inspected_asset_uri === attempt.asset_uri &&
+      (qa as any).inspected_spec_hash === attempt.spec_hash
+    );
+    const finalAutoEligible =
+      attempt.mode !== 'final' ||
+      (
+        motionBound &&
+        qaBoundToMotion &&
+        motionInspection?.decision === 'CLEAR_FOR_QA' &&
+        qa?.decision === 'PASS'
+      );
+
+    if (!finalAutoEligible && !humanOverride) {
       return json({
-        error: 'Only a QA PASS can be accepted automatically.',
-        code: 'QA_PASS_REQUIRED',
+        error: attempt.mode === 'final'
+          ? 'Final motion must pass a bound full-motion Visual Inspector report before automatic timeline acceptance.'
+          : 'Only a QA PASS can be accepted automatically.',
+        code: attempt.mode === 'final' ? 'MOTION_QA_PASS_REQUIRED' : 'QA_PASS_REQUIRED',
         current_qa_decision: qa?.decision || null,
-        hint: 'Repair/re-evaluate the shot, or use humanApproved=true for an explicit human override.'
+        current_motion_decision: motionInspection?.decision || null,
+        motion_report_bound_to_asset: motionBound,
+        qa_bound_to_motion_report: qaBoundToMotion,
+        hint: 'Repair/re-inspect the shot, or use humanApproved=true with a reviewer note for an explicit authorized override.'
       }, 409);
+    }
+
+    if (humanOverride && !reviewerNote) {
+      return json({
+        error: 'A reviewer note is required for an explicit render acceptance override.',
+        code: 'RENDER_OVERRIDE_NOTE_REQUIRED'
+      }, 400);
     }
 
     let lease: ProjectMutationLease | null = null;
@@ -381,7 +426,9 @@ export default async (request: Request) => {
         value: {
           attempt: accepted,
           qa,
-          accepted_by_human_override: humanOverride && qa?.decision !== 'PASS'
+          motion_inspection: motionInspection || null,
+          accepted_by_human_override: humanOverride && !finalAutoEligible,
+          reviewer_note: reviewerNote || null
         }
       });
 
@@ -394,7 +441,11 @@ export default async (request: Request) => {
           provider: attempt.provider,
           model: attempt.model,
           qa_decision: qa?.decision || null,
-          human_override: humanOverride && qa?.decision !== 'PASS'
+          motion_decision: motionInspection?.decision || null,
+          motion_inspection_id: motionInspection?.id || null,
+          motion_sample_set_hash: motionInspection?.sample_set_hash || null,
+          human_override: humanOverride && !finalAutoEligible,
+          reviewer_note: reviewerNote || null
         },
         { ['render:accepted:' + attempt.scene_id + ':' + attempt.shot_id]: ref }
       );
@@ -403,12 +454,15 @@ export default async (request: Request) => {
       await appendRenderAttemptEvent(accepted, 'accepted', {
         project_revision: committed.revision,
         authoritative_ref: ref,
-        human_override: humanOverride && qa?.decision !== 'PASS'
+        human_override: humanOverride && !finalAutoEligible,
+        reviewer_note: reviewerNote || null,
+        motion_inspection_id: motionInspection?.id || null
       });
 
       return json({
         attempt: accepted,
         qa,
+        motion_inspection: motionInspection || null,
         project_revision: committed.revision,
         mutation_id: committed.mutation_id,
         authoritative_ref: ref
