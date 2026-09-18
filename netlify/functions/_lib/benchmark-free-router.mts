@@ -225,33 +225,61 @@ async function callGroqBenchmark(
     stage,
     operationId: 'benchmark:' + stage + ':groq:' + schemaName,
     run: async (signal) => {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        signal,
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          'content-type': 'application/json'
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.1,
-          max_tokens: stage === 'story-understanding' ? 1200 : 1000,
-          messages,
-          response_format: {
+      const attempts = [
+        {
+          label: 'strict-json-schema',
+          requestMessages: messages,
+          responseFormat: {
             type: 'json_schema',
             json_schema: { name: schemaName, strict: true, schema }
           }
-        })
-      });
-      const body = await response.json().catch(() => ({})) as any;
-      if (!response.ok) throw new Error(body?.error?.message || `HTTP ${response.status}`);
-      return {
-        parsed: parseJson(body?.choices?.[0]?.message?.content),
-        provider: 'groq' as const,
-        model: String(body?.model || model),
-        requested_model: model,
-        finish_reason: body?.choices?.[0]?.finish_reason || null
-      };
+        },
+        {
+          label: 'json-object',
+          requestMessages: messages.map((item, index) =>
+            index === messages.length - 1
+              ? { ...item, content: item.content + jsonInstruction(schema) }
+              : item
+          ),
+          responseFormat: { type: 'json_object' }
+        }
+      ];
+
+      const errors: string[] = [];
+      for (const attempt of attempts) {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          signal,
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0.1,
+            max_tokens: stage === 'story-understanding' ? 1200 : 1000,
+            messages: attempt.requestMessages,
+            response_format: attempt.responseFormat
+          })
+        });
+        const body = await response.json().catch(() => ({})) as any;
+        if (!response.ok) {
+          errors.push(attempt.label + ': ' + clean(body?.error?.message || `HTTP ${response.status}`, 900));
+          continue;
+        }
+        try {
+          return {
+            parsed: parseJson(body?.choices?.[0]?.message?.content),
+            provider: 'groq' as const,
+            model: String(body?.model || model),
+            requested_model: model,
+            finish_reason: body?.choices?.[0]?.finish_reason || null
+          };
+        } catch (error) {
+          errors.push(attempt.label + ': parse failed: ' + (error instanceof Error ? error.message : String(error)));
+        }
+      }
+      throw new Error(errors.join(' | ').slice(0, 1800));
     }
   });
 }
