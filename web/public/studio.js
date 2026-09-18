@@ -205,13 +205,26 @@ async function runDirectorCritic(){
   if(!currentProjectId||!currentResult?.story_version){showToast('Analyze the story first.');return;}
   const buttons=[$('#runCriticBtn'),$('#rerunCriticBtn')].filter(Boolean);
   buttons.forEach(button=>button.disabled=true);
-  if($('#criticState'))$('#criticState').textContent='Film Quality Critic is reviewing the current story version…';
+  if($('#criticState'))$('#criticState').textContent='Film Quality Critic is queued safely…';
   showToast('Director Critic is reviewing the production.');
   try{
-    const r=await fetch('/api/director-critic',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId:currentProjectId,storyVersion:currentResult.story_version})});
-    const body=await r.json();if(!r.ok)throw new Error(body.error||'Film Quality Critic could not complete this pass');
-    renderCritic(body);
-    showToast(body.engine?.mode==='model'?'Model-backed Director Critic complete.':'Structural Director Critic complete.');
+    const payload={projectId:currentProjectId,storyVersion:currentResult.story_version};
+    const key=await stableIdempotencyKey('critic|'+currentProjectId+'|'+currentResult.story_version);
+    const r=await fetch('/api/jobs',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Idempotency-Key':key},
+      body:JSON.stringify({kind:'film-critic',payload})
+    });
+    const body=await r.json();if(!r.ok)throw new Error(body.error||'Film Quality Critic could not be queued');
+    const review=await waitForJob(body.job.id,{
+      onProgress:(status)=>{
+        if($('#criticState'))$('#criticState').textContent=status==='processing'
+          ?'Film Quality Critic is reviewing the current production…'
+          :'Film Quality Critic is waiting in the durable production queue…';
+      }
+    });
+    renderCritic(review);
+    showToast(review.engine?.mode==='model'?'Model-backed Director Critic complete.':'Structural Director Critic complete.');
   }catch(err){
     showToast(err.message||'Director Critic failed.');
     if($('#criticState'))$('#criticState').textContent=err.message||'Director Critic failed.';
