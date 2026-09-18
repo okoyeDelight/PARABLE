@@ -3,6 +3,7 @@ export type Basis = 'explicit' | 'inferred' | 'creative-adaptation' | 'human';
 export type ContinuityFact = {
   value: unknown;
   scene_id: string;
+  shot_id?: string | null;
   basis: Basis;
   confidence: number;
   locked?: boolean;
@@ -16,6 +17,7 @@ export type EntityState = {
   facts: Record<string, ContinuityFact>;
   history: Array<{
     scene_id: string;
+    shot_id?: string | null;
     field: string;
     previous: unknown;
     next: unknown;
@@ -26,15 +28,55 @@ export type EntityState = {
   }>;
 };
 
+export type SpatialRelation = {
+  subject: string;
+  subject_kind: EntityState['kind'];
+  relation:
+    | 'left_of'
+    | 'right_of'
+    | 'in_front_of'
+    | 'behind'
+    | 'inside'
+    | 'outside'
+    | 'near'
+    | 'facing'
+    | 'screen_left'
+    | 'screen_right'
+    | 'foreground'
+    | 'background';
+  target: string;
+  target_kind: EntityState['kind'];
+  scene_id: string;
+  shot_id?: string | null;
+  confidence: number;
+  transition: boolean;
+};
+
+export type PropOwnership = {
+  prop_id: string;
+  prop_name: string;
+  holder_id?: string | null;
+  holder_name?: string | null;
+  location?: string | null;
+  state?: string | null;
+  scene_id: string;
+  shot_id?: string | null;
+  confidence: number;
+};
+
 export type ContinuityWarning = {
   code:
     | 'LOCKED_FACT_CONFLICT'
     | 'UNEXPLAINED_CHANGE'
     | 'KNOWLEDGE_LEAK'
     | 'TIMELINE_REGRESSION'
-    | 'MISSING_ENTITY';
+    | 'MISSING_ENTITY'
+    | 'PROP_OWNERSHIP_CONFLICT'
+    | 'SCREEN_DIRECTION_BREAK'
+    | 'SPATIAL_CONFLICT';
   severity: 'info' | 'warning' | 'blocker';
   scene_id: string;
+  shot_id?: string | null;
   entity_id?: string;
   field?: string;
   message: string;
@@ -43,17 +85,20 @@ export type ContinuityWarning = {
 };
 
 export type ContinuitySnapshot = {
-  schema_version: 'continuity-v2';
+  schema_version: 'continuity-v3';
   project_id: string;
   story_version: string;
   scene_cursor: number;
   last_scene_id: string | null;
+  last_shot_id: string | null;
   entities: Record<string, EntityState>;
   character_knowledge: Record<string, string[]>;
   timeline: {
     order: string[];
     current_label: string | null;
   };
+  spatial_graph: SpatialRelation[];
+  prop_ownership: Record<string, PropOwnership>;
   open_threads: string[];
   theology_flags: string[];
   warnings: ContinuityWarning[];
@@ -85,13 +130,37 @@ export type SceneKnowledgeRequirement = {
   evidence?: string;
 };
 
+export type PropTransferInput = {
+  prop: string;
+  from?: string;
+  to?: string;
+  location?: string;
+  state?: string;
+  confidence?: number;
+  transition?: boolean;
+  evidence?: string;
+};
+
+export type SpatialRelationInput = {
+  subject: string;
+  subject_kind?: EntityState['kind'];
+  relation: SpatialRelation['relation'];
+  target: string;
+  target_kind?: EntityState['kind'];
+  confidence?: number;
+  transition?: boolean;
+};
+
 export type SceneContinuityInput = {
   id?: string;
   index?: number;
+  shot_id?: string;
   time_label?: string;
   facts?: SceneFactInput[];
   knowledge?: SceneKnowledgeInput[];
   knowledge_requirements?: SceneKnowledgeRequirement[];
+  prop_transfers?: PropTransferInput[];
+  spatial_relations?: SpatialRelationInput[];
   open_threads_add?: string[];
   open_threads_resolve?: string[];
   theology_flags?: string[];
@@ -108,7 +177,7 @@ const normalizeFact = (value: unknown) => String(value ?? '')
   .toLocaleLowerCase()
   .replace(/[“”‘’]/g, '"')
   .replace(/[^a-z0-9"']+/g, ' ')
-  .replace(/s+/g, ' ')
+  .replace(/\s+/g, ' ')
   .trim();
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -119,38 +188,28 @@ const clampConfidence = (value: unknown, fallback = 0.8) => {
 };
 
 const statefulFields = new Set([
-  'appearance',
-  'face',
-  'hair',
-  'clothing',
-  'wardrobe',
-  'emotional_state',
-  'emotion',
-  'position',
-  'location',
-  'injury',
-  'injuries',
-  'prop_state',
-  'relationship_state',
-  'time',
-  'time_of_day',
-  'weather',
-  'lighting_state'
+  'appearance', 'face', 'hair', 'clothing', 'wardrobe', 'emotional_state', 'emotion',
+  'position', 'location', 'injury', 'injuries', 'prop_state', 'relationship_state',
+  'time', 'time_of_day', 'weather', 'lighting_state', 'screen_side', 'stance', 'posture'
 ]);
 
 const identityFields = new Set([
-  'identity',
-  'appearance',
-  'face',
-  'skin_tone',
-  'hair',
-  'age',
-  'body',
-  'height',
-  'voice',
-  'accent',
-  'actor_identity'
+  'identity', 'appearance', 'face', 'skin_tone', 'hair', 'age', 'body', 'height',
+  'voice', 'accent', 'actor_identity', 'actor_face_ref', 'voice_ref'
 ]);
+
+const oppositeRelation: Partial<Record<SpatialRelation['relation'], SpatialRelation['relation']>> = {
+  left_of: 'right_of',
+  right_of: 'left_of',
+  in_front_of: 'behind',
+  behind: 'in_front_of',
+  inside: 'outside',
+  outside: 'inside',
+  screen_left: 'screen_right',
+  screen_right: 'screen_left',
+  foreground: 'background',
+  background: 'foreground'
+};
 
 function entityId(kind: EntityState['kind'], name: string, explicit?: string) {
   return explicit && /^[a-zA-Z0-9_-]{1,96}$/.test(explicit)
@@ -174,17 +233,39 @@ function ensureEntity(
 ) {
   const resolved = explicit || resolveEntityId(snapshot, kind, name);
   const id = entityId(kind, name, resolved);
-  if (!snapshot.entities[id]) {
-    snapshot.entities[id] = { id, name, kind, facts: {}, history: [] };
-  }
+  if (!snapshot.entities[id]) snapshot.entities[id] = { id, name, kind, facts: {}, history: [] };
   return snapshot.entities[id];
+}
+
+export function upgradeContinuitySnapshot(input: any): ContinuitySnapshot {
+  const snapshot = structuredClone(input || {}) as ContinuitySnapshot;
+  snapshot.schema_version = 'continuity-v3';
+  snapshot.entities = snapshot.entities || {};
+  snapshot.character_knowledge = snapshot.character_knowledge || {};
+  snapshot.timeline = snapshot.timeline || { order: [], current_label: null };
+  snapshot.timeline.order = Array.isArray(snapshot.timeline.order) ? snapshot.timeline.order : [];
+  snapshot.last_scene_id = snapshot.last_scene_id || null;
+  snapshot.last_shot_id = snapshot.last_shot_id || null;
+  snapshot.scene_cursor = Number(snapshot.scene_cursor || 0);
+  snapshot.spatial_graph = Array.isArray(snapshot.spatial_graph) ? snapshot.spatial_graph : [];
+  snapshot.prop_ownership = snapshot.prop_ownership || {};
+  snapshot.open_threads = Array.isArray(snapshot.open_threads) ? snapshot.open_threads : [];
+  snapshot.theology_flags = Array.isArray(snapshot.theology_flags) ? snapshot.theology_flags : [];
+  snapshot.warnings = Array.isArray(snapshot.warnings) ? snapshot.warnings : [];
+  snapshot.updated_at = snapshot.updated_at || new Date().toISOString();
+  for (const entity of Object.values(snapshot.entities)) {
+    entity.facts = entity.facts || {};
+    entity.history = Array.isArray(entity.history) ? entity.history : [];
+  }
+  return snapshot;
 }
 
 function primitiveFactsFromCharacter(character: Record<string, any>): SceneFactInput[] {
   const fields = [
     'role', 'desire', 'fear', 'wound', 'belief', 'arc', 'knowledge_state',
     'identity', 'appearance', 'face', 'skin_tone', 'hair', 'age', 'body',
-    'height', 'voice', 'accent', 'actor_identity', 'clothing', 'wardrobe'
+    'height', 'voice', 'accent', 'actor_identity', 'actor_face_ref', 'voice_ref',
+    'clothing', 'wardrobe'
   ];
   return fields
     .filter((field) => character[field] !== undefined && character[field] !== null && character[field] !== '')
@@ -206,14 +287,17 @@ export function bootstrapContinuity(args: {
 }): ContinuitySnapshot {
   const now = new Date().toISOString();
   const snapshot: ContinuitySnapshot = {
-    schema_version: 'continuity-v2',
+    schema_version: 'continuity-v3',
     project_id: args.projectId,
     story_version: args.storyVersion || 'story_unknown',
     scene_cursor: 0,
     last_scene_id: null,
+    last_shot_id: null,
     entities: {},
     character_knowledge: {},
     timeline: { order: [], current_label: null },
+    spatial_graph: [],
+    prop_ownership: {},
     open_threads: [],
     theology_flags: [],
     warnings: [],
@@ -235,6 +319,7 @@ export function bootstrapContinuity(args: {
       entity.facts[fact.field] = {
         value: fact.value,
         scene_id: 'bible',
+        shot_id: null,
         basis: fact.basis || 'inferred',
         confidence: clampConfidence(fact.confidence, 0.65),
         locked: fact.locked
@@ -251,6 +336,7 @@ export function bootstrapContinuity(args: {
       entity.facts[field] = {
         value,
         scene_id: 'bible',
+        shot_id: null,
         basis: 'inferred',
         confidence: 0.6
       };
@@ -266,6 +352,7 @@ export function bootstrapContinuity(args: {
     entity.facts[key] = {
       value: fact,
       scene_id: 'bible',
+      shot_id: null,
       basis: (row?.source_basis?.basis || 'explicit') as Basis,
       confidence: clampConfidence(row?.source_basis?.confidence, 0.8)
     };
@@ -289,13 +376,161 @@ function knowledgeContains(known: string[], required: string) {
   });
 }
 
+function applySpatialRelations(
+  snapshot: ContinuitySnapshot,
+  scene: SceneContinuityInput,
+  warnings: ContinuityWarning[],
+  apply: boolean
+) {
+  const sceneId = String(scene.id || 'scene_unknown');
+  const shotId = scene.shot_id || null;
+
+  for (const input of Array.isArray(scene.spatial_relations) ? scene.spatial_relations : []) {
+    const subject = String(input?.subject || '').trim();
+    const target = String(input?.target || '').trim();
+    const relation = input?.relation;
+    if (!subject || !target || !relation) continue;
+
+    const subjectKind = input.subject_kind || 'character';
+    const targetKind = input.target_kind || 'world';
+    ensureEntity(snapshot, subjectKind, subject);
+    ensureEntity(snapshot, targetKind, target);
+
+    const previous = [...snapshot.spatial_graph].reverse().find((row) =>
+      normalizeFact(row.subject) === normalizeFact(subject) &&
+      normalizeFact(row.target) === normalizeFact(target)
+    );
+
+    if (previous && oppositeRelation[previous.relation] === relation && !input.transition) {
+      warnings.push({
+        code: ['screen_left', 'screen_right'].includes(relation) ? 'SCREEN_DIRECTION_BREAK' : 'SPATIAL_CONFLICT',
+        severity: ['screen_left', 'screen_right'].includes(relation) ? 'blocker' : 'warning',
+        scene_id: sceneId,
+        shot_id: shotId,
+        message: `${subject} changed from ${previous.relation} to ${relation} relative to ${target} without an explicit movement transition.`,
+        previous: previous.relation,
+        incoming: relation
+      });
+    }
+
+    if (apply) {
+      snapshot.spatial_graph.push({
+        subject,
+        subject_kind: subjectKind,
+        relation,
+        target,
+        target_kind: targetKind,
+        scene_id: sceneId,
+        shot_id: shotId,
+        confidence: clampConfidence(input.confidence, 0.75),
+        transition: Boolean(input.transition)
+      });
+      snapshot.spatial_graph = snapshot.spatial_graph.slice(-250);
+    }
+  }
+}
+
+function applyPropTransfers(
+  snapshot: ContinuitySnapshot,
+  scene: SceneContinuityInput,
+  warnings: ContinuityWarning[],
+  apply: boolean
+) {
+  const sceneId = String(scene.id || 'scene_unknown');
+  const shotId = scene.shot_id || null;
+
+  for (const input of Array.isArray(scene.prop_transfers) ? scene.prop_transfers : []) {
+    const propName = String(input?.prop || '').trim();
+    if (!propName) continue;
+
+    const prop = ensureEntity(snapshot, 'prop', propName);
+    const current = snapshot.prop_ownership[prop.id];
+    const from = String(input?.from || '').trim();
+    const to = String(input?.to || '').trim();
+    const location = String(input?.location || '').trim();
+    const transition = Boolean(input?.transition);
+
+    if (
+      current?.holder_name &&
+      from &&
+      normalizeFact(current.holder_name) !== normalizeFact(from) &&
+      !transition
+    ) {
+      warnings.push({
+        code: 'PROP_OWNERSHIP_CONFLICT',
+        severity: 'blocker',
+        scene_id: sceneId,
+        shot_id: shotId,
+        entity_id: prop.id,
+        field: 'holder',
+        message: `${propName} is established with ${current.holder_name}, but this update says it comes from ${from} without a transfer.`,
+        previous: current.holder_name,
+        incoming: from
+      });
+    }
+
+    if (!apply) continue;
+
+    let holderId: string | null = current?.holder_id || null;
+    let holderName: string | null = current?.holder_name || null;
+
+    if (to) {
+      const holder = ensureEntity(snapshot, 'character', to);
+      holderId = holder.id;
+      holderName = holder.name;
+    } else if (location || from) {
+      holderId = null;
+      holderName = null;
+    }
+
+    snapshot.prop_ownership[prop.id] = {
+      prop_id: prop.id,
+      prop_name: prop.name,
+      holder_id: holderId,
+      holder_name: holderName,
+      location: location || current?.location || null,
+      state: String(input?.state || '').trim() || current?.state || null,
+      scene_id: sceneId,
+      shot_id: shotId,
+      confidence: clampConfidence(input?.confidence, 0.8)
+    };
+
+    prop.facts.owner = {
+      value: holderName || null,
+      scene_id: sceneId,
+      shot_id: shotId,
+      basis: 'explicit',
+      confidence: clampConfidence(input?.confidence, 0.8)
+    };
+    if (location) {
+      prop.facts.location = {
+        value: location,
+        scene_id: sceneId,
+        shot_id: shotId,
+        basis: 'explicit',
+        confidence: clampConfidence(input?.confidence, 0.8)
+      };
+    }
+    if (input?.state) {
+      prop.facts.prop_state = {
+        value: input.state,
+        scene_id: sceneId,
+        shot_id: shotId,
+        basis: 'explicit',
+        confidence: clampConfidence(input?.confidence, 0.8)
+      };
+    }
+  }
+}
+
 export function evaluateAndApplyScene(
   current: ContinuitySnapshot,
   scene: SceneContinuityInput,
   options: { apply: boolean } = { apply: true }
 ) {
-  const snapshot = structuredClone(current);
+  const snapshot = upgradeContinuitySnapshot(current);
   const sceneId = String(scene.id || `scene_${Number(scene.index || snapshot.scene_cursor + 1)}`);
+  const shotId = scene.shot_id || null;
   const warnings: ContinuityWarning[] = [];
 
   const requestedIndex = Number(scene.index || snapshot.scene_cursor + 1);
@@ -304,6 +539,7 @@ export function evaluateAndApplyScene(
       code: 'TIMELINE_REGRESSION',
       severity: 'warning',
       scene_id: sceneId,
+      shot_id: shotId,
       message: `Scene index ${requestedIndex} is behind the current continuity cursor ${snapshot.scene_cursor}.`
     });
   }
@@ -319,6 +555,7 @@ export function evaluateAndApplyScene(
         code: 'KNOWLEDGE_LEAK',
         severity: 'blocker',
         scene_id: sceneId,
+        shot_id: shotId,
         entity_id: characterId,
         field: 'knowledge',
         message: `${name} acts as if they know "${fact}" before continuity records them learning it.`,
@@ -337,6 +574,7 @@ export function evaluateAndApplyScene(
         code: 'MISSING_ENTITY',
         severity: 'warning',
         scene_id: sceneId,
+        shot_id: shotId,
         message: 'A continuity fact was skipped because its entity or field was missing.'
       });
       continue;
@@ -360,6 +598,7 @@ export function evaluateAndApplyScene(
           code: 'LOCKED_FACT_CONFLICT',
           severity: 'blocker',
           scene_id: sceneId,
+          shot_id: shotId,
           entity_id: entity.id,
           field,
           message: `${entity.name}'s locked ${field} conflicts with established continuity.`,
@@ -371,6 +610,7 @@ export function evaluateAndApplyScene(
           code: 'UNEXPLAINED_CHANGE',
           severity: 'warning',
           scene_id: sceneId,
+          shot_id: shotId,
           entity_id: entity.id,
           field,
           message: `${entity.name}'s ${field} changed without an explicit transition.`,
@@ -383,6 +623,7 @@ export function evaluateAndApplyScene(
     if (options.apply) {
       entity.history.push({
         scene_id: sceneId,
+        shot_id: shotId,
         field,
         previous: previous?.value,
         next: input.value,
@@ -394,6 +635,7 @@ export function evaluateAndApplyScene(
       entity.facts[field] = {
         value: input.value,
         scene_id: sceneId,
+        shot_id: shotId,
         basis,
         confidence,
         locked: Boolean(input.locked ?? previous?.locked ?? autoLockIdentity),
@@ -401,6 +643,9 @@ export function evaluateAndApplyScene(
       };
     }
   }
+
+  applyPropTransfers(snapshot, { ...scene, id: sceneId }, warnings, options.apply);
+  applySpatialRelations(snapshot, { ...scene, id: sceneId }, warnings, options.apply);
 
   for (const row of Array.isArray(scene.knowledge) ? scene.knowledge : []) {
     const name = String(row?.character || '').trim();
@@ -433,19 +678,22 @@ export function evaluateAndApplyScene(
     if (!snapshot.timeline.order.includes(sceneId)) snapshot.timeline.order.push(sceneId);
     snapshot.scene_cursor = Math.max(snapshot.scene_cursor, requestedIndex);
     snapshot.last_scene_id = sceneId;
+    snapshot.last_shot_id = shotId || snapshot.last_shot_id;
     snapshot.updated_at = new Date().toISOString();
-    snapshot.warnings = [...snapshot.warnings.slice(-150), ...warnings].slice(-200);
+    snapshot.warnings = [...snapshot.warnings.slice(-180), ...warnings].slice(-250);
   }
 
   return {
     snapshot,
     scene_id: sceneId,
+    shot_id: shotId,
     warnings,
     can_render: !warnings.some((warning) => warning.severity === 'blocker')
   };
 }
 
-export function compactContinuityContext(snapshot: ContinuitySnapshot) {
+export function compactContinuityContext(snapshotInput: ContinuitySnapshot) {
+  const snapshot = upgradeContinuitySnapshot(snapshotInput);
   const entities = Object.values(snapshot.entities).map((entity) => ({
     id: entity.id,
     name: entity.name,
@@ -458,15 +706,23 @@ export function compactContinuityContext(snapshot: ContinuitySnapshot) {
     story_version: snapshot.story_version,
     scene_cursor: snapshot.scene_cursor,
     last_scene_id: snapshot.last_scene_id,
+    last_shot_id: snapshot.last_shot_id,
     timeline: snapshot.timeline,
     entities,
     character_knowledge: snapshot.character_knowledge,
+    prop_ownership: snapshot.prop_ownership,
+    spatial_graph: snapshot.spatial_graph.slice(-80),
     open_threads: snapshot.open_threads,
     theology_flags: snapshot.theology_flags
   };
 }
 
-export function buildRenderContinuityContract(snapshot: ContinuitySnapshot, sceneId?: string | null) {
+export function buildRenderContinuityContract(
+  snapshotInput: ContinuitySnapshot,
+  sceneId?: string | null,
+  shotId?: string | null
+) {
+  const snapshot = upgradeContinuitySnapshot(snapshotInput);
   const characterStates = Object.values(snapshot.entities)
     .filter((entity) => entity.kind === 'character')
     .map((entity) => {
@@ -488,6 +744,7 @@ export function buildRenderContinuityContract(snapshot: ContinuitySnapshot, scen
     .map((entity) => ({
       id: entity.id,
       name: entity.name,
+      ownership: snapshot.prop_ownership[entity.id] || null,
       state: Object.fromEntries(Object.entries(entity.facts).map(([field, fact]) => [field, fact.value]))
     }));
 
@@ -507,29 +764,40 @@ export function buildRenderContinuityContract(snapshot: ContinuitySnapshot, scen
       state: Object.fromEntries(Object.entries(entity.facts).map(([field, fact]) => [field, fact.value]))
     }));
 
-  const relevantWarnings = snapshot.warnings.filter((warning) => !sceneId || warning.scene_id === sceneId);
+  const relevantWarnings = snapshot.warnings.filter((warning) =>
+    (!sceneId || warning.scene_id === sceneId) &&
+    (!shotId || !warning.shot_id || warning.shot_id === shotId)
+  );
   const blockers = relevantWarnings.filter((warning) => warning.severity === 'blocker');
+  const spatial = snapshot.spatial_graph.filter((row) =>
+    (!sceneId || row.scene_id === sceneId) &&
+    (!shotId || !row.shot_id || row.shot_id === shotId)
+  );
 
   return {
-    contract_version: 'render-continuity-v1',
+    contract_version: 'render-continuity-v2',
     project_id: snapshot.project_id,
     story_version: snapshot.story_version,
     scene_id: sceneId || snapshot.last_scene_id,
+    shot_id: shotId || null,
     scene_cursor: snapshot.scene_cursor,
     timeline: snapshot.timeline,
     characters: characterStates,
     props,
+    prop_ownership: snapshot.prop_ownership,
     locations,
     relationships,
+    spatial_graph: spatial.length ? spatial : snapshot.spatial_graph.slice(-50),
     open_threads: snapshot.open_threads,
     theology_flags: snapshot.theology_flags,
     continuity_warnings: relevantWarnings,
     hard_blockers: blockers,
     hard_rules: [
-      'Do not alter locked character identity facts.',
-      'Do not change wardrobe, injuries, props, location or emotional state unless the scene contains an explicit transition.',
+      'Do not alter locked character identity facts or approved reference IDs.',
+      'Do not change wardrobe, injuries, props, location or emotional state unless the story contains an explicit transition.',
       'Do not let a character react to information they have not learned.',
-      'Preserve established screen geography and object ownership unless the scene changes them.'
+      'Preserve prop holder, prop location and prop state until an explicit transfer or movement occurs.',
+      'Preserve screen side, facing and established geography unless an explicit movement transition justifies the change.'
     ],
     can_render: blockers.length === 0
   };
