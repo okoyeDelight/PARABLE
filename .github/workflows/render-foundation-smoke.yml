@@ -4,6 +4,9 @@ on:
   push:
     branches: [immersive-v2]
     paths:
+      - 'netlify/functions/_lib/spatial-continuity.mts'
+      - 'netlify/functions/spatial-plan.mts'
+      - 'netlify/functions/render-context.mts'
       - 'netlify/functions/_lib/render-foundation.mts'
       - 'netlify/functions/_lib/render-adapters.mts'
       - 'netlify/functions/_lib/render-router.mts'
@@ -60,6 +63,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
       - name: Check Studio JavaScript syntax
         run: node --check web/public/studio.js
 
