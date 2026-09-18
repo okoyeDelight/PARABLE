@@ -681,3 +681,85 @@ export function evaluateRenderQA(attemptId: string, input: RenderQAInput): Rende
     evaluated_at: new Date().toISOString()
   };
 }
+
+
+export type KeyframePlan = {
+  keyframe_plan_version: 'parable-keyframe-plan-v1';
+  project_id: string;
+  story_version: string;
+  scene_id: string;
+  shot_id: string;
+  spec_hash: string;
+  first_frame: {
+    composition: CompositionPlan;
+    camera: ShotRenderSpec['camera'];
+    lighting: ShotRenderSpec['lighting'];
+    performance: ShotRenderSpec['performance'];
+    required_references: CanonReference[];
+    forbidden_changes: string[];
+  };
+  anchors: Array<{
+    position: number;
+    purpose: string;
+    continuity_target: string;
+  }>;
+  acceptance_checklist: string[];
+  final_motion_render_blocked_until_approved: boolean;
+  created_at: string;
+};
+
+export function buildKeyframePlan(spec: ShotRenderSpec): KeyframePlan {
+  const approvedRefs = spec.references.filter((ref) =>
+    ref.approved_by_human && ref.rights_status !== 'revoked' && ref.rights_status !== 'restricted'
+  );
+
+  const acceptance = [
+    'Primary character identity matches the approved Visual Canon.',
+    'Wardrobe and visible injuries match continuity-before state.',
+    'Required props exist in the correct holder/location/state.',
+    'Location and cultural production design match the Visual Canon.',
+    'Composition expresses "' + spec.composition.narrative_intent + '" using ' + spec.composition.grammar + ' without looking mechanically templated.',
+    'Screen direction, gaze and blocking do not contradict established geography.',
+    'Lighting direction matches adjacent coverage.',
+    'No invented characters, signage, props or generic cultural substitutions appear.'
+  ];
+
+  const anchors = [
+    {
+      position: 0,
+      purpose: 'first-frame canon gate',
+      continuity_target: 'Match continuity-before and approved Visual Canon before any motion generation.'
+    },
+    {
+      position: 0.5,
+      purpose: 'mid-shot stability check',
+      continuity_target: 'Identity, props, blocking and composition must remain stable through motion.'
+    },
+    {
+      position: 1,
+      purpose: 'handoff frame',
+      continuity_target: 'Match continuity-after so the next shot can inherit a trustworthy state.'
+    }
+  ];
+
+  return {
+    keyframe_plan_version: 'parable-keyframe-plan-v1',
+    project_id: spec.project_id,
+    story_version: spec.story_version,
+    scene_id: spec.scene_id,
+    shot_id: spec.shot_id,
+    spec_hash: spec.spec_hash,
+    first_frame: {
+      composition: spec.composition,
+      camera: spec.camera,
+      lighting: spec.lighting,
+      performance: spec.performance,
+      required_references: approvedRefs,
+      forbidden_changes: spec.negative_constraints
+    },
+    anchors,
+    acceptance_checklist: acceptance,
+    final_motion_render_blocked_until_approved: true,
+    created_at: new Date().toISOString()
+  };
+}
