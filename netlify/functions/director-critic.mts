@@ -1,6 +1,7 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import { compactCriticPayload, runFilmCritic } from './_lib/critic-ai.mts';
 import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -33,6 +34,13 @@ export default async (request: Request) => {
     const projectId = clean(url.searchParams.get('projectId'), 96);
     const storyVersion = clean(url.searchParams.get('storyVersion'), 96);
     if (!safeId(projectId) || !safeId(storyVersion)) return json({ error: 'A valid project and story version are required.' }, 400);
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
     const review = await reviews.get(`project/${projectId}/versions/${storyVersion}/latest`, { type: 'json' }) as any;
     return review ? json(review) : json({ error: 'No review exists for that story version yet.' }, 404);
   }
@@ -42,6 +50,14 @@ export default async (request: Request) => {
   const projectId = clean(body.projectId, 96);
   const storyVersion = clean(body.storyVersion, 96);
   if (!safeId(projectId) || !safeId(storyVersion)) return json({ error: 'A valid project and story version are required.' }, 400);
+
+  try {
+    await authorizeProject(request, projectId, 'render:plan');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 
   const authoritativeAdaptation = await readAuthoritativeProjectState<any>(projectId, 'adaptation:latest');
   const authoritativeProject = await readAuthoritativeProjectState<any>(projectId, 'project:metadata');
