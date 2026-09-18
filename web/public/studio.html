@@ -8,6 +8,7 @@
   <meta name="description" content="A real PARABLE story-to-screen workflow: write, understand, adapt, direct and review." />
   <link rel="stylesheet" href="/studio.css" />
   <link rel="stylesheet" href="/studio-review.css" />
+  <link rel="stylesheet" href="/studio-render.css" />
 </head>
 <body>
   <header class="studio-nav">
@@ -56,7 +57,7 @@
     </aside>
 
     <section class="workbench" aria-live="polite">
-      <div class="workflow-bar workflow-bar-five">
+      <div class="workflow-bar workflow-bar-six">
         <button class="workflow-step is-active" data-step="write"><span>01</span><b>Write</b></button>
         <i></i>
         <button class="workflow-step" data-step="understand"><span>02</span><b>Understand</b></button>
@@ -66,6 +67,8 @@
         <button class="workflow-step" data-step="direct"><span>04</span><b>Direct</b></button>
         <i></i>
         <button class="workflow-step" data-step="review"><span>05</span><b>Review</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="render"><span>06</span><b>Render</b></button>
       </div>
 
       <div class="empty-state" id="emptyState">
@@ -188,6 +191,66 @@
               <p id="criticState">Review is versioned with this story.</p>
               <button type="button" class="copy-btn" id="rerunCriticBtn">Run again</button>
             </div>
+          </div>
+        </section>
+
+        <section class="result-panel render-panel" data-panel="render" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">06 · RENDER</p><h2>Render Engine</h2></div>
+            <span class="engine-badge" id="renderEngineBadge">foundation ready</span>
+          </div>
+
+          <div class="render-hero">
+            <div>
+              <small>PARABLE VISUAL CANON</small>
+              <h3>Approve the world before generating motion.</h3>
+              <p id="renderIntro">Build the visual canon, continuity-check the selected shot, compile a provider-neutral render specification, then route it to a compatible renderer.</p>
+            </div>
+            <button type="button" class="render-primary" id="prepareRenderBtn"><span>Prepare selected shot</span><b>→</b></button>
+          </div>
+
+          <div class="render-grid">
+            <article class="render-card">
+              <div class="render-card-head"><small>VISUAL CANON</small><span id="canonStatus">not built</span></div>
+              <strong id="canonSummary">Characters, locations and approved references will appear here.</strong>
+              <p id="canonRights">Reference rights are checked separately from visual continuity locks.</p>
+            </article>
+
+            <article class="render-card">
+              <div class="render-card-head"><small>COMPOSITION INTELLIGENCE</small><span id="compositionStatus">waiting</span></div>
+              <strong id="compositionGrammar">—</strong>
+              <p id="compositionReason">PARABLE will choose composition for narrative reasons, not as a decorative preset.</p>
+            </article>
+
+            <article class="render-card">
+              <div class="render-card-head"><small>KEYFRAME GATE</small><span id="keyframeStatus">waiting</span></div>
+              <strong>First frame → motion → handoff frame</strong>
+              <p id="keyframeSummary">Final motion stays blocked until the visual world can be checked against canon.</p>
+            </article>
+
+            <article class="render-card">
+              <div class="render-card-head"><small>RENDER ROUTER</small><span id="routerStatus">waiting</span></div>
+              <strong id="routerSelection">No renderer selected yet.</strong>
+              <p id="routerReason">PARABLE will not weaken identity or continuity requirements just to force a generation.</p>
+            </article>
+          </div>
+
+          <div class="render-contract" id="renderContract" hidden>
+            <div class="render-contract-head">
+              <div><small>SHOT RENDER SPEC</small><strong id="renderShotLabel">—</strong></div>
+              <span id="renderSpecHash">—</span>
+            </div>
+            <div class="render-contract-grid">
+              <div><small>CAMERA</small><strong id="renderCamera">—</strong></div>
+              <div><small>PERFORMANCE</small><strong id="renderPerformance">—</strong></div>
+              <div><small>REFERENCES</small><strong id="renderReferences">—</strong></div>
+              <div><small>CONTINUITY</small><strong id="renderContinuity">—</strong></div>
+            </div>
+          </div>
+
+          <div class="render-actions">
+            <p id="renderState">No media is generated automatically. PARABLE prepares and validates the shot first.</p>
+            <button type="button" class="copy-btn" id="refreshRenderBtn">Refresh selected shot</button>
           </div>
         </section>
       </div>
