@@ -174,7 +174,7 @@ async function rpc<T>(action: string, payload: Record<string, unknown>): Promise
         authorization: 'Bearer ' + key,
         'content-type': 'application/json',
         accept: 'application/json',
-        'x-parable-state-engine': 'postgres-v4'
+        'x-parable-state-engine': 'postgres-v5'
       },
       body: JSON.stringify({
         p_action: action,
@@ -495,6 +495,61 @@ export async function transitionTransactionalJob(args: {
     last_error: clean(args.lastError, 1200) || null,
     result_ref: args.resultRef || null,
     queue_event_id: args.queueEventId || null
+  });
+}
+
+export function providerGuardScopeKey() {
+  const scope = runtimeScope();
+  return scope.production ? 'prod' : 'preview:' + scope.deploy_id;
+}
+
+export async function acquireTransactionalProviderGuard(args: {
+  providerKey: string;
+  leaseId: string;
+  operationId?: string | null;
+  maxActive?: number | null;
+  leaseMs?: number | null;
+}) {
+  return rpc<{
+    acquired: boolean;
+    reason: string;
+    lease_id?: string;
+    retry_after_ms?: number;
+    active?: number;
+    limit?: number;
+    state?: string;
+    open_until?: string | null;
+    error_class?: string | null;
+  }>('provider_guard_acquire', {
+    scope_key: providerGuardScopeKey(),
+    provider_key: clean(args.providerKey, 240),
+    lease_id: clean(args.leaseId, 180),
+    operation_id: clean(args.operationId, 220) || null,
+    max_active: Math.max(1, Math.min(500, Math.floor(Number(args.maxActive) || 20))),
+    lease_ms: Math.max(5000, Math.min(300000, Math.floor(Number(args.leaseMs) || 45000)))
+  });
+}
+
+export async function releaseTransactionalProviderGuard(args: {
+  leaseId: string;
+  outcome: 'success' | 'failure' | 'neutral';
+  errorClass?: string | null;
+  errorDetail?: string | null;
+  cooldownMs?: number | null;
+}) {
+  return rpc<Record<string, any>>('provider_guard_release', {
+    lease_id: clean(args.leaseId, 180),
+    outcome: args.outcome,
+    error_class: clean(args.errorClass, 120) || null,
+    error_detail: clean(args.errorDetail, 800) || null,
+    cooldown_ms: Math.max(1000, Math.min(3600000, Math.floor(Number(args.cooldownMs) || 60000)))
+  });
+}
+
+export async function readTransactionalProviderGuardStatus(providerKey: string) {
+  return rpc<Record<string, any>>('provider_guard_status', {
+    scope_key: providerGuardScopeKey(),
+    provider_key: clean(providerKey, 240)
   });
 }
 
