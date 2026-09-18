@@ -361,12 +361,27 @@ export async function markJobQueued(jobId: string, eventId?: string | null) {
     // dispatcher stores its queue event. Never reset a processing lease.
     if (current.status !== 'queued') return current;
 
-    const next = normalizeTransactionalJob(await transitionTransactionalJob({
-      id: jobId,
-      toStatus: 'queued',
-      queueEventId: clean(eventId, 180) || null
-    }));
-    return mirrorAndRecord(next);
+    try {
+      const next = normalizeTransactionalJob(await transitionTransactionalJob({
+        id: jobId,
+        toStatus: 'queued',
+        queueEventId: clean(eventId, 180) || null
+      }));
+      return mirrorAndRecord(next);
+    } catch (error) {
+      // The background worker is allowed to claim a newly dispatched job before
+      // this request stores the queue event id. If that happens, the worker's
+      // processing lease is authoritative: never reset it back to queued and
+      // never surface a false queue failure to the Studio.
+      if (
+        error instanceof TransactionalStateError &&
+        (error.code === 'JOB_LEASE_MISMATCH' || error.code === 'JOB_STATE_CONFLICT')
+      ) {
+        const raced = await readDurableJob(jobId);
+        if (raced && raced.status !== 'queued') return raced;
+      }
+      throw error;
+    }
   }
 
   const { jobs } = stores();
