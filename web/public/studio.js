@@ -113,7 +113,7 @@ function renderDirect(data){
   $('#projectBadge').textContent=currentProjectId?`PROJECT · ${currentProjectId.slice(-6).toUpperCase()}`:'LIVE PROJECT';
   const shots=data.shot_plan||[];
   $('#shotBrowser').innerHTML=shots.map((shot,index)=>`<button type="button" class="shot-item${index===0?' is-active':''}" data-shot="${escapeHtml(shot.id)}"><small>${escapeHtml(shot.id.replace('_',' ').toUpperCase())}</small><b>${escapeHtml(shot.shot_size)}</b></button>`).join('');
-  $('.shot-item').forEach(btn=>btn.addEventListener('click',()=>{
+  $$('.shot-item').forEach(btn=>btn.addEventListener('click',()=>{
     const shot=shots.find(s=>s.id===btn.dataset.shot);if(shot)selectShot(shot);
   }));
   // Production starts at Shot 1. Later shots may require an accepted previous-shot
@@ -722,7 +722,7 @@ function renderKeyframeApproval(approval){
     $('#keyframeAssetSource').value=approval.asset?.source||'generated';
     $('#keyframeContentSha').value=approval.asset?.content_sha256||'';
     $('#keyframeImmutable').checked=Boolean(approval.asset?.immutable_binding);
-    $('[data-keyframe-check]').forEach(box=>{
+    $$('[data-keyframe-check]').forEach(box=>{
       box.checked=Boolean(approval.checks?.[box.dataset.keyframeCheck]);
     });
     setKeyframePreview(approval.asset?.uri||'');
@@ -751,7 +751,7 @@ async function loadKeyframeApproval(){
 }
 
 function keyframeChecksPayload(){
-  return Object.fromEntries($('[data-keyframe-check]').map(box=>[
+  return Object.fromEntries($$('[data-keyframe-check]').map(box=>[
     box.dataset.keyframeCheck,
     Boolean(box.checked)
   ]));
