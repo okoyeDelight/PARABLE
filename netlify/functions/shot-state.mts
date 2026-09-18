@@ -7,7 +7,10 @@ import {
   type ContinuitySnapshot
 } from './_lib/continuity-core.mts';
 import { runContinuityExtraction } from './_lib/continuity-ai.mts';
-import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
+import {
+  readAuthoritativeProjectState,
+  stageProjectArtifact
+} from './_lib/project-artifacts.mts';
 import {
   acquireProjectMutation,
   abortProjectMutation,
@@ -95,13 +98,21 @@ export default async (request: Request) => {
       throw error;
     }
 
-    const value = await s.shotStates.get(
+    const authoritative = await readAuthoritativeProjectState<Record<string, any>>(
+      projectId,
+      'shot-state:' + storyVersion + ':' + sceneId + ':' + shotId
+    );
+
+    const value = authoritative?.value || await s.shotStates.get(
       'project/' + projectId + '/' + storyVersion + '/' + sceneId + '/' + shotId,
       { type: 'json' }
     ) as Record<string, any> | null;
 
     if (!value) return json({ error: 'Shot continuity state was not found.' }, 404);
-    return json(value);
+    return json({
+      ...value,
+      authoritative_revision: authoritative?.revision ?? value.project_revision ?? null
+    });
   }
 
   const body = await request.json().catch(() => ({})) as Record<string, any>;
@@ -137,12 +148,18 @@ export default async (request: Request) => {
     }, 409);
   }
 
-  const [sceneState, authoritativeAdaptation, cachedVersionAdaptation, direction] = await Promise.all([
+  const [authoritativeSceneState, cachedSceneState, authoritativeAdaptation, cachedVersionAdaptation, direction] = await Promise.all([
+    readAuthoritativeProjectState<Record<string, any>>(
+      projectId,
+      'scene-state:' + storyVersion + ':' + sceneId
+    ),
     s.sceneStates.get('project/' + projectId + '/' + storyVersion + '/' + sceneId, { type: 'json' }) as Promise<Record<string, any> | null>,
     readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest'),
     s.adaptations.get('project/' + projectId + '/versions/' + storyVersion, { type: 'json' }) as Promise<Record<string, any> | null>,
     getDirection(projectId, storyVersion, shotId)
   ]);
+
+  const sceneState = authoritativeSceneState?.value || cachedSceneState;
 
   const adaptation = authoritativeAdaptation?.value?.story_version === storyVersion
     ? authoritativeAdaptation.value
@@ -166,7 +183,11 @@ export default async (request: Request) => {
     continuityBefore = sceneState.continuity_before_snapshot as ContinuitySnapshot | null;
   } else {
     previousShotId = String(shots[shotIndex - 1]?.id || '');
-    const previous = await s.shotStates.get(
+    const previousAuthoritative = await readAuthoritativeProjectState<Record<string, any>>(
+      projectId,
+      'shot-state:' + storyVersion + ':' + sceneId + ':' + previousShotId
+    );
+    const previous = previousAuthoritative?.value || await s.shotStates.get(
       'project/' + projectId + '/' + storyVersion + '/' + sceneId + '/' + previousShotId,
       { type: 'json' }
     ) as Record<string, any> | null;
@@ -256,23 +277,42 @@ export default async (request: Request) => {
   };
 
   try {
-    await s.shotStates.setJSON(
-      'project/' + projectId + '/' + storyVersion + '/' + sceneId + '/' + shotId,
-      result
-    );
-
     if (!lease) throw new Error('Shot continuity mutation lease was not acquired.');
-    const committed = await commitProjectMutation(lease, {
-      story_version: storyVersion,
-      scene_id: sceneId,
-      shot_id: shotId,
-      shot_index: shotIndex + 1,
-      can_render: evaluated.can_render,
-      warning_count: evaluated.warnings.length
+
+    const shotStateRef = await stageProjectArtifact({
+      projectId,
+      mutationId: lease.mutation_id,
+      kind: 'shot-state',
+      artifactId: storyVersion + ':' + sceneId + ':' + shotId,
+      value: result
     });
+
+    const committed = await commitProjectMutation(
+      lease,
+      {
+        story_version: storyVersion,
+        scene_id: sceneId,
+        shot_id: shotId,
+        shot_index: shotIndex + 1,
+        can_render: evaluated.can_render,
+        warning_count: evaluated.warnings.length
+      },
+      {
+        ['shot-state:' + storyVersion + ':' + sceneId + ':' + shotId]: shotStateRef
+      }
+    );
 
     (result as any).project_revision = committed.revision;
     (result as any).mutation_id = committed.mutation_id;
+    (result as any).state_backend = committed.backend || 'blobs';
+
+    await Promise.allSettled([
+      s.shotStates.setJSON(
+        'project/' + projectId + '/' + storyVersion + '/' + sceneId + '/' + shotId,
+        result
+      )
+    ]);
+
     return json(result, 201);
   } catch (error) {
     if (lease) await abortProjectMutation(lease).catch(() => false);
