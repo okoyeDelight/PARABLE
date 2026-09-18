@@ -23,7 +23,7 @@ PARABLE should not simply generate *for* a place or audience. It should understa
 
 ## Current checkpoint
 
-**Story Intelligence V8 + Continuity Brain V3 + Scale Foundation V1 — September 18, 2026**
+**Story Intelligence V8 + Continuity Brain V3 + Scale Foundation V1 + Render Engine Foundation V1 — September 18, 2026**
 
 The `immersive-v2` branch now includes:
 
@@ -56,13 +56,24 @@ The `immersive-v2` branch now includes:
 - manual 1,000-virtual-user read-tier and durable-queue load gates
 - PostgreSQL transactional hot-state schema prepared for multi-editor optimistic revision control
 - provider-neutral scale strategy so queue, database, AI and render infrastructure can be replaced or expanded without rewriting PARABLE's production contracts
+- authoritative project revision head + compare-and-swap commit boundary + immutable project artifacts for safer concurrent editing
+- Visual Canon for character/location/prop identity and human-approved references
+- separate reference-rights status so continuity approval is not confused with likeness/media permission
+- Composition Intelligence that chooses framing for narrative reasons rather than cycling visual presets
+- provider-neutral ShotRenderSpec with stable hashes and renderer capability requirements
+- keyframe-first planning so PARABLE approves the visual world before expensive motion generation
+- Render Router that prioritizes continuity/identity over speed
+- versioned fal Seedance 2 reference-to-video adapter based on its live input schema
+- immutable Render Attempt Ledger with provider/model/request/cost/failure history
+- Render QA contracts with PASS / REPAIR / HUMAN_REVIEW / REJECT outcomes and targeted repair plans
+- Studio stage 06 · RENDER wired through canon, scene continuity, sequential shot continuity, compilation, keyframe planning and renderer routing
 
 The production path is now:
 
-`Story -> Story Understanding -> Production Bible -> Scene State -> Shot State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
+`Story -> Story Understanding -> Production Bible -> Scene State -> Shot State -> Continuity Gate -> Director -> Visual Canon -> Shot Compiler -> Keyframe Gate -> Render Router -> Render Attempt -> QA -> Repair / Accept -> Sequence Assembly`
 
-The next Continuity milestone is camera-axis / 180-degree memory, room topology, entrances/exits, pose and eyeline continuity, continuity-aware renderer seeds, and advisory repair proposals.
+The next film-system milestone is automated frame/video Visual Inspection, camera-axis / 180-degree memory, room topology, sequence-level QA, editable audio stems and FFmpeg/Remotion sequence assembly.
 
-The current **scale target** is 1,000 simultaneous active users. The architecture is now designed around stateless horizontal request handling plus durable asynchronous AI work, but this target is not treated as a guarantee until the manual 1,000-user load gate passes on the intended production plan and third-party AI quotas are verified. For multiple people editing the exact same project concurrently, the prepared PostgreSQL transactional state tier must be activated before claiming ACID-safe collaboration.
+The current **scale target** is 1,000 simultaneous active users. The architecture is now designed around stateless horizontal request handling plus durable asynchronous AI work, but this target is not treated as a guarantee until the manual 1,000-user load gate passes on the intended production plan and third-party AI quotas are verified. Same-project mutations now use optimistic project revisions, short leases, conditional compare-and-swap writes and immutable staged artifacts to prevent ordinary silent overwrites. A relational PostgreSQL tier is still appropriate later for complex multi-row collaboration, workspace membership, billing and other relational workloads; PARABLE does not pretend the current commit boundary is a general-purpose SQL transaction engine.
 
 `main` remains unchanged until the `immersive-v2` checkpoint is deliberately approved and merged.
