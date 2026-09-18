@@ -530,6 +530,249 @@ function applySpatialRelations(
   }
 }
 
+function topologyAnchorId(locationId: string, label: string) {
+  return locationId + ':anchor:' + slug(label);
+}
+
+function axisIdFor(sceneId: string, input: CameraAxisInput) {
+  const explicit = String(input.axis_id || '').trim();
+  if (/^[a-zA-Z0-9_.:-]{1,120}$/.test(explicit)) return explicit;
+
+  const pair = [slug(String(input.subject_a || 'a')), slug(String(input.subject_b || 'b'))]
+    .sort()
+    .join('__');
+  return 'axis_' + slug(sceneId) + '__' + pair;
+}
+
+function applyRoomTopology(
+  snapshot: ContinuitySnapshot,
+  scene: SceneContinuityInput,
+  warnings: ContinuityWarning[],
+  apply: boolean
+) {
+  const input = scene.room_topology;
+  if (!input) return;
+
+  const sceneId = String(scene.id || 'scene_unknown');
+  const shotId = scene.shot_id || null;
+  const locationName = String(input.location || '').trim();
+  if (!locationName) return;
+
+  const location = ensureEntity(snapshot, 'location', locationName);
+  const existing = snapshot.room_topology[location.id] || {
+    location_id: location.id,
+    location_name: location.name,
+    anchors: {},
+    relations: [],
+    established_scene_id: sceneId,
+    updated_at: new Date().toISOString()
+  } satisfies RoomTopology;
+
+  for (const anchorInput of Array.isArray(input.anchors) ? input.anchors : []) {
+    const label = String(anchorInput?.label || '').trim();
+    if (!label) continue;
+    const id = topologyAnchorId(location.id, label);
+    const previous = existing.anchors[id];
+    const kind = anchorInput.kind || previous?.kind || 'other';
+    const locked = Boolean(anchorInput.locked ?? previous?.locked ?? false);
+
+    if (previous && previous.kind !== kind && previous.locked) {
+      warnings.push({
+        code: 'ROOM_TOPOLOGY_CONFLICT',
+        severity: 'blocker',
+        scene_id: sceneId,
+        shot_id: shotId,
+        entity_id: location.id,
+        field: 'room_anchor',
+        message: `${label} changed from a locked ${previous.kind} anchor to ${kind} without rebuilding the room topology.`,
+        previous: previous.kind,
+        incoming: kind
+      });
+    }
+
+    if (apply) {
+      existing.anchors[id] = {
+        id,
+        label,
+        kind,
+        locked,
+        scene_id: sceneId,
+        shot_id: shotId,
+        confidence: clampConfidence(anchorInput.confidence, previous?.confidence ?? 0.78)
+      };
+    }
+  }
+
+  const topologyOpposites: Partial<Record<RoomTopologyRelation['relation'], RoomTopologyRelation['relation']>> = {
+    left_of: 'right_of',
+    right_of: 'left_of',
+    in_front_of: 'behind',
+    behind: 'in_front_of',
+    inside: 'outside',
+    outside: 'inside'
+  };
+
+  for (const relationInput of Array.isArray(input.relations) ? input.relations : []) {
+    const subject = String(relationInput?.subject || '').trim();
+    const target = String(relationInput?.target || '').trim();
+    const relation = relationInput?.relation;
+    if (!subject || !target || !relation) continue;
+
+    const previous = [...existing.relations].reverse().find((row) =>
+      normalizeFact(row.subject) === normalizeFact(subject) &&
+      normalizeFact(row.target) === normalizeFact(target)
+    );
+
+    const reversed = previous && topologyOpposites[previous.relation] === relation;
+    if (reversed && !relationInput.transition) {
+      warnings.push({
+        code: 'ROOM_TOPOLOGY_CONFLICT',
+        severity: previous.locked || relationInput.locked ? 'blocker' : 'warning',
+        scene_id: sceneId,
+        shot_id: shotId,
+        entity_id: location.id,
+        field: 'room_topology',
+        message: `${subject} changed from ${previous.relation} to ${relation} relative to ${target} without an explicit physical movement or set change.`,
+        previous: previous.relation,
+        incoming: relation
+      });
+    }
+
+    if (apply) {
+      existing.relations.push({
+        subject,
+        relation,
+        target,
+        scene_id: sceneId,
+        shot_id: shotId,
+        confidence: clampConfidence(relationInput.confidence, 0.78),
+        transition: Boolean(relationInput.transition),
+        locked: Boolean(relationInput.locked ?? previous?.locked ?? false)
+      });
+      existing.relations = existing.relations.slice(-160);
+    }
+  }
+
+  if (apply) {
+    existing.updated_at = new Date().toISOString();
+    snapshot.room_topology[location.id] = existing;
+  }
+}
+
+function applyCameraAxes(
+  snapshot: ContinuitySnapshot,
+  scene: SceneContinuityInput,
+  warnings: ContinuityWarning[],
+  apply: boolean
+) {
+  const sceneId = String(scene.id || 'scene_unknown');
+  const shotId = scene.shot_id || null;
+
+  for (const input of Array.isArray(scene.camera_axes) ? scene.camera_axes : []) {
+    const subjectA = String(input?.subject_a || '').trim();
+    const subjectB = String(input?.subject_b || '').trim();
+    if (!subjectA || !subjectB) continue;
+
+    ensureEntity(snapshot, 'character', subjectA);
+    ensureEntity(snapshot, 'character', subjectB);
+
+    const id = axisIdFor(sceneId, input);
+    const locationName = String(input.location || '').trim();
+    const location = locationName ? ensureEntity(snapshot, 'location', locationName) : null;
+    const previous = snapshot.camera_axes[id];
+
+    const cameraSide = input.camera_side || 'unknown';
+    const sideA = input.subject_a_screen_side || 'unknown';
+    const sideB = input.subject_b_screen_side || 'unknown';
+    const bridge = Boolean(input.bridge_shot) || cameraSide === 'neutral' || cameraSide === 'on_axis';
+    const deliberate = Boolean(input.intentional_cross || input.reset_axis);
+    const previousHardSide = previous?.last_camera_side;
+    const oppositeCameraSide =
+      (previousHardSide === 'side_a' && cameraSide === 'side_b') ||
+      (previousHardSide === 'side_b' && cameraSide === 'side_a');
+
+    const bridgeAllowsCross = Boolean(previous?.bridge_shot_seen || bridge);
+    if (previous && oppositeCameraSide && !deliberate && !bridgeAllowsCross) {
+      warnings.push({
+        code: 'CAMERA_AXIS_CROSS',
+        severity: 'blocker',
+        scene_id: sceneId,
+        shot_id: shotId,
+        field: 'camera_axis',
+        message: `Camera coverage crossed the established 180-degree axis between ${subjectA} and ${subjectB} without an intentional cross, neutral bridge, or axis reset.`,
+        previous: previous.last_camera_side,
+        incoming: cameraSide
+      });
+    }
+
+    const screenFlip =
+      previous &&
+      previous.subject_a_screen_side !== 'unknown' &&
+      previous.subject_b_screen_side !== 'unknown' &&
+      sideA !== 'unknown' &&
+      sideB !== 'unknown' &&
+      previous.subject_a_screen_side !== sideA &&
+      previous.subject_b_screen_side !== sideB;
+
+    if (screenFlip && !deliberate && !bridgeAllowsCross && !oppositeCameraSide) {
+      warnings.push({
+        code: 'EYELINE_DIRECTION_BREAK',
+        severity: 'blocker',
+        scene_id: sceneId,
+        shot_id: shotId,
+        field: 'screen_direction',
+        message: `${subjectA} and ${subjectB} swapped established screen sides without a justified camera-axis transition.`,
+        previous: {
+          subject_a: previous.subject_a_screen_side,
+          subject_b: previous.subject_b_screen_side
+        },
+        incoming: {
+          subject_a: sideA,
+          subject_b: sideB
+        }
+      });
+    }
+
+    if (!apply) continue;
+
+    const nextHardSide =
+      cameraSide === 'side_a' || cameraSide === 'side_b'
+        ? cameraSide
+        : previous?.last_camera_side || cameraSide;
+
+    snapshot.camera_axes[id] = {
+      id,
+      scene_id: sceneId,
+      location_id: location?.id || previous?.location_id || null,
+      subject_a: subjectA,
+      subject_b: subjectB,
+      established_shot_id:
+        input.reset_axis || !previous
+          ? shotId
+          : previous.established_shot_id,
+      established_camera_side:
+        input.reset_axis || !previous
+          ? cameraSide
+          : previous.established_camera_side,
+      last_camera_side: nextHardSide,
+      subject_a_screen_side:
+        sideA !== 'unknown' ? sideA : previous?.subject_a_screen_side || 'unknown',
+      subject_b_screen_side:
+        sideB !== 'unknown' ? sideB : previous?.subject_b_screen_side || 'unknown',
+      last_shot_id: shotId,
+      bridge_shot_seen: bridge
+        ? true
+        : deliberate || oppositeCameraSide
+          ? false
+          : Boolean(previous?.bridge_shot_seen),
+      last_cross_reason:
+        deliberate
+          ? String(input.reason || (input.reset_axis ? 'axis reset' : 'intentional cross')).trim() || null
+          : previous?.last_cross_reason || null
+    };
+  }
+}
+
 function applyPropTransfers(
   snapshot: ContinuitySnapshot,
   scene: SceneContinuityInput,
@@ -746,6 +989,8 @@ export function evaluateAndApplyScene(
 
   applyPropTransfers(snapshot, { ...scene, id: sceneId }, warnings, options.apply);
   applySpatialRelations(snapshot, { ...scene, id: sceneId }, warnings, options.apply);
+  applyRoomTopology(snapshot, { ...scene, id: sceneId }, warnings, options.apply);
+  applyCameraAxes(snapshot, { ...scene, id: sceneId }, warnings, options.apply);
 
   for (const row of Array.isArray(scene.knowledge) ? scene.knowledge : []) {
     const name = String(row?.character || '').trim();
@@ -812,6 +1057,8 @@ export function compactContinuityContext(snapshotInput: ContinuitySnapshot) {
     character_knowledge: snapshot.character_knowledge,
     prop_ownership: snapshot.prop_ownership,
     spatial_graph: snapshot.spatial_graph.slice(-80),
+    room_topology: snapshot.room_topology,
+    camera_axes: snapshot.camera_axes,
     open_threads: snapshot.open_threads,
     theology_flags: snapshot.theology_flags
   };
@@ -875,7 +1122,7 @@ export function buildRenderContinuityContract(
   );
 
   return {
-    contract_version: 'render-continuity-v2',
+    contract_version: 'render-continuity-v3',
     project_id: snapshot.project_id,
     story_version: snapshot.story_version,
     scene_id: sceneId || snapshot.last_scene_id,
@@ -888,6 +1135,10 @@ export function buildRenderContinuityContract(
     locations,
     relationships,
     spatial_graph: spatial.length ? spatial : snapshot.spatial_graph.slice(-50),
+    room_topology: snapshot.room_topology,
+    camera_axes: Object.fromEntries(
+      Object.entries(snapshot.camera_axes).filter(([, axis]) => !sceneId || axis.scene_id === sceneId)
+    ),
     open_threads: snapshot.open_threads,
     theology_flags: snapshot.theology_flags,
     continuity_warnings: relevantWarnings,
@@ -897,7 +1148,9 @@ export function buildRenderContinuityContract(
       'Do not change wardrobe, injuries, props, location or emotional state unless the story contains an explicit transition.',
       'Do not let a character react to information they have not learned.',
       'Preserve prop holder, prop location and prop state until an explicit transfer or movement occurs.',
-      'Preserve screen side, facing and established geography unless an explicit movement transition justifies the change.'
+      'Preserve screen side, facing and established geography unless an explicit movement transition justifies the change.',
+      'Preserve locked room anchors and physical topology unless the scene explicitly moves or rebuilds them.',
+      'Do not cross an established camera axis unless an intentional cross, neutral bridge shot or explicit axis reset is recorded.'
     ],
     can_render: blockers.length === 0
   };
