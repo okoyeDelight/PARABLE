@@ -6,6 +6,11 @@ import {
   type JobKind
 } from './_lib/job-store.mts';
 import { dispatchDurableJob } from './_lib/job-dispatcher.mts';
+import {
+  authorizeProject,
+  securityErrorResponse,
+  type ProjectAction
+} from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -18,6 +23,18 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 const clean = (value: unknown, max = 300) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 const supported = new Set<JobKind>(['scene-state', 'shot-state', 'story-understanding', 'adaptation', 'film-critic', 'keyframe-generate', 'reference-profile', 'scale-noop']);
+
+function actionFor(kind: JobKind): ProjectAction {
+  if (kind === 'keyframe-generate') return 'render:spend';
+  if (kind === 'film-critic' || kind === 'scale-noop') return 'render:plan';
+  return 'project:edit';
+}
+
+function publicJob(job: any) {
+  if (!job) return job;
+  const { authorization, ...safe } = job;
+  return safe;
+}
 
 export default async (request: Request) => {
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
@@ -36,6 +53,15 @@ export default async (request: Request) => {
   }
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required inside payload.' }, 400);
 
+  let access;
+  try {
+    access = await authorizeProject(request, projectId, actionFor(kind));
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   const payloadBytes = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
   if (payloadBytes > 450_000) {
     return json({
@@ -49,13 +75,21 @@ export default async (request: Request) => {
     kind,
     projectId,
     payload,
-    idempotencyKey: idempotencyKey || null
+    idempotencyKey: idempotencyKey || null,
+    authorization: {
+      actor_id: access.actor.actor_id,
+      provider: access.actor.provider,
+      subject: access.actor.subject,
+      workspace_id: access.workspace_id,
+      role: access.role,
+      action: access.action
+    }
   });
 
   if (created.conflict) {
     return json({
       error: created.conflict_reason,
-      job: created.job
+      job: publicJob(created.job)
     }, 409);
   }
 
@@ -82,7 +116,7 @@ export default async (request: Request) => {
 
   const current = await readDurableJob(created.job.id) || created.job;
   return json({
-    job: current,
+    job: publicJob(current),
     accepted: true,
     deduplicated: !created.created,
     dispatch_backend: dispatchBackend,
