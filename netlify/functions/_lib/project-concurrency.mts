@@ -1,5 +1,12 @@
 import { getStore } from '@netlify/blobs';
 import { getContext } from '@netlify/functions';
+import {
+  bootstrapTransactionalProjectState,
+  commitTransactionalProjectMutation,
+  readTransactionalProjectState,
+  transactionalStateMode,
+  TransactionalStateError
+} from './transactional-state.mts';
 
 type LeaseState = {
   mutation_id: string;
@@ -25,6 +32,7 @@ export type ProjectMutationLease = {
   mutation_type: string;
   base_revision: number;
   expires_at: string;
+  backend: 'postgres' | 'blobs';
 };
 
 export class ProjectRevisionConflict extends Error {
@@ -111,16 +119,84 @@ async function ensureHead(projectId: string) {
   return current;
 }
 
-export async function readProjectRevision(projectId: string) {
-  if (!safeId(projectId)) throw new Error('Invalid project id.');
+async function readBlobRevision(projectId: string) {
   const current = await ensureHead(projectId);
   return {
     project_id: projectId,
     revision: Number(current.data.revision || 0),
     active_lease: current.data.active_lease,
     state_refs: current.data.state_refs || {},
-    updated_at: current.data.updated_at
+    updated_at: current.data.updated_at,
+    backend: 'blobs' as const,
+    degraded_read: false
   };
+}
+
+function parseConflictDetail(error: TransactionalStateError) {
+  const body = error.detail as any;
+  const raw = body?.details || body?.detail || '';
+  if (typeof raw === 'object' && raw) return raw;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch {}
+  }
+  return {};
+}
+
+async function readPostgresRevision(projectId: string) {
+  const remote = await readTransactionalProjectState(projectId);
+
+  if (!remote.exists) {
+    // Lazy migration: the immutable Blob head remains the migration source only
+    // until the transactional row exists. The first writer/read initializes it
+    // once; PostgreSQL is authoritative after that point.
+    const blob = await readBlobRevision(projectId);
+    const bootstrapped = await bootstrapTransactionalProjectState({
+      projectId,
+      revision: blob.revision,
+      stateRefs: blob.state_refs
+    });
+    return {
+      project_id: projectId,
+      revision: Number(bootstrapped.revision || 0),
+      active_lease: null,
+      state_refs: bootstrapped.state_refs || {},
+      updated_at: new Date().toISOString(),
+      backend: 'postgres' as const,
+      degraded_read: false
+    };
+  }
+
+  return {
+    project_id: projectId,
+    revision: Number(remote.revision || 0),
+    active_lease: null,
+    state_refs: remote.state_refs || {},
+    updated_at: remote.updated_at || new Date().toISOString(),
+    backend: 'postgres' as const,
+    degraded_read: false
+  };
+}
+
+export async function readProjectRevision(projectId: string) {
+  if (!safeId(projectId)) throw new Error('Invalid project id.');
+
+  if (transactionalStateMode() !== 'postgres') {
+    return readBlobRevision(projectId);
+  }
+
+  try {
+    return await readPostgresRevision(projectId);
+  } catch (error) {
+    const readFallback = String(Netlify.env.get('PARABLE_STATE_READ_FALLBACK') || '')
+      .trim().toLowerCase() === 'blobs';
+
+    if (readFallback) {
+      const blob = await readBlobRevision(projectId);
+      return { ...blob, degraded_read: true };
+    }
+
+    throw error;
+  }
 }
 
 export async function acquireProjectMutation(args: {
@@ -129,10 +205,37 @@ export async function acquireProjectMutation(args: {
   expectedRevision?: number | null;
   ttlMs?: number;
 }) {
-  const { heads } = state();
   const projectId = args.projectId;
   if (!safeId(projectId)) throw new Error('Invalid project id.');
 
+  if (transactionalStateMode() === 'postgres') {
+    const current = await readPostgresRevision(projectId);
+    const revision = Number(current.revision || 0);
+
+    if (
+      args.expectedRevision !== undefined &&
+      args.expectedRevision !== null &&
+      revision !== args.expectedRevision
+    ) {
+      throw new ProjectRevisionConflict(
+        'The project changed while this operation was being prepared.',
+        revision,
+        args.expectedRevision
+      );
+    }
+
+    const now = new Date();
+    return {
+      project_id: projectId,
+      mutation_id: 'mut_' + crypto.randomUUID().replaceAll('-', ''),
+      mutation_type: String(args.mutationType || 'mutation').slice(0, 80),
+      base_revision: revision,
+      expires_at: new Date(now.getTime() + Math.max(5000, Math.min(120000, Math.floor(args.ttlMs || 30000)))).toISOString(),
+      backend: 'postgres' as const
+    } satisfies ProjectMutationLease;
+  }
+
+  const { heads } = state();
   const mutationId = 'mut_' + crypto.randomUUID().replaceAll('-', '');
   const ttlMs = Math.max(5000, Math.min(120000, Math.floor(args.ttlMs || 30000)));
 
@@ -177,14 +280,14 @@ export async function acquireProjectMutation(args: {
 
     const claimed = await readHead(projectId);
     if (claimed?.data.active_lease?.mutation_id === mutationId) {
-      const token: ProjectMutationLease = {
+      return {
         project_id: projectId,
         mutation_id: mutationId,
         mutation_type: lease.mutation_type,
         base_revision: revision,
-        expires_at: lease.expires_at
-      };
-      return token;
+        expires_at: lease.expires_at,
+        backend: 'blobs' as const
+      } satisfies ProjectMutationLease;
     }
   }
 
@@ -214,7 +317,38 @@ async function appendEvent(head: ProjectHead, metadata: Record<string, unknown>)
       { onlyIfNew: true } as any
     );
   } catch {
-    // Revision safety must not depend on observability/event archival.
+    // PostgreSQL/Blob revision safety must not depend on observability archival.
+  }
+}
+
+async function mirrorPostgresHead(args: {
+  projectId: string;
+  revision: number;
+  mutationId: string;
+  mutationType: string;
+  stateRefs: Record<string, string>;
+  metadata: Record<string, unknown>;
+}) {
+  try {
+    const next: ProjectHead = {
+      version: 'parable-project-head-v2',
+      project_id: args.projectId,
+      revision: args.revision,
+      active_lease: null,
+      last_mutation_id: args.mutationId,
+      last_mutation_type: args.mutationType,
+      state_refs: args.stateRefs,
+      updated_at: new Date().toISOString()
+    };
+    await state().heads.setJSON(key(args.projectId), next);
+    await appendEvent(next, {
+      ...args.metadata,
+      authoritative_backend: 'postgres',
+      mirror_only: true
+    });
+  } catch {
+    // PostgreSQL remains authoritative. A failed archive mirror must never roll
+    // back or falsify the already-committed database transaction.
   }
 }
 
@@ -223,6 +357,50 @@ export async function commitProjectMutation(
   metadata: Record<string, unknown> = {},
   statePatch: Record<string, string | null> = {}
 ) {
+  if (lease.backend === 'postgres' || transactionalStateMode() === 'postgres') {
+    try {
+      const committed = await commitTransactionalProjectMutation({
+        projectId: lease.project_id,
+        expectedRevision: lease.base_revision,
+        eventId: lease.mutation_id,
+        mutationType: lease.mutation_type,
+        actorUserId: typeof metadata.actor_id === 'string' ? metadata.actor_id : null,
+        metadata,
+        statePatch
+      });
+
+      const stateRefs = committed.state_refs || {};
+      await mirrorPostgresHead({
+        projectId: lease.project_id,
+        revision: Number(committed.revision || lease.base_revision + 1),
+        mutationId: lease.mutation_id,
+        mutationType: lease.mutation_type,
+        stateRefs,
+        metadata
+      });
+
+      return {
+        project_id: lease.project_id,
+        previous_revision: lease.base_revision,
+        revision: Number(committed.revision || lease.base_revision + 1),
+        mutation_id: lease.mutation_id,
+        mutation_type: lease.mutation_type,
+        state_refs: stateRefs,
+        backend: 'postgres' as const
+      };
+    } catch (error) {
+      if (error instanceof TransactionalStateError && error.code === 'PROJECT_REVISION_CONFLICT') {
+        const detail = parseConflictDetail(error);
+        throw new ProjectRevisionConflict(
+          'The project changed before this mutation could commit.',
+          Number(detail.current_revision ?? lease.base_revision + 1),
+          Number(detail.expected_revision ?? lease.base_revision)
+        );
+      }
+      throw error;
+    }
+  }
+
   const { heads } = state();
   const current = await readHead(lease.project_id);
   if (!current) throw new Error('Project revision head disappeared.');
@@ -270,11 +448,18 @@ export async function commitProjectMutation(
     revision: next.revision,
     mutation_id: lease.mutation_id,
     mutation_type: lease.mutation_type,
-    state_refs: next.state_refs
+    state_refs: next.state_refs,
+    backend: 'blobs' as const
   };
 }
 
 export async function abortProjectMutation(lease: ProjectMutationLease) {
+  if (lease.backend === 'postgres' || transactionalStateMode() === 'postgres') {
+    // PostgreSQL uses compare-and-swap at commit time. There is no long-lived
+    // database lease to release and therefore no stale lock to strand.
+    return true;
+  }
+
   const { heads } = state();
   const current = await readHead(lease.project_id);
   if (!current || current.data.active_lease?.mutation_id !== lease.mutation_id) return false;
@@ -308,6 +493,18 @@ export function projectMutationErrorResponse(error: unknown) {
         code: error.code,
         current_revision: error.currentRevision,
         expected_revision: error.expectedRevision
+      }
+    };
+  }
+
+  if (error instanceof TransactionalStateError) {
+    return {
+      status: error.status,
+      body: {
+        error: error.message,
+        code: error.code,
+        retryable: error.retryable,
+        state_backend: 'postgres'
       }
     };
   }
