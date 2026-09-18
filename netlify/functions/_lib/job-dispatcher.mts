@@ -1,6 +1,11 @@
 import { getContext } from '@netlify/functions';
 import { AsyncWorkloadsClient } from '@netlify/async-workloads';
-import type { JobKind } from './job-store.mts';
+import { readDurableJob, type JobKind } from './job-store.mts';
+import {
+  signInternalAuthorization,
+  type ProjectAction,
+  type SecurityActor
+} from './security.mts';
 
 export type DispatchResult = {
   backend: 'async-workloads' | 'netlify-background';
@@ -31,11 +36,32 @@ async function dispatchBackground(jobId: string, kind: JobKind, primaryError: st
   const base = origin();
   if (!base) throw new Error('No deployment origin is available for the background queue fallback.');
 
+  const job = await readDurableJob(jobId);
+  if (!job?.authorization) throw new Error('Durable job has no trusted authorization context.');
+
+  const actor: SecurityActor = {
+    actor_id: job.authorization.actor_id,
+    provider: job.authorization.provider,
+    subject: job.authorization.subject,
+    email: null,
+    display_name: null,
+    auth_mode: 'internal',
+    internal: true
+  };
+
+  const internalAuth = await signInternalAuthorization({
+    actor,
+    projectId: job.project_id,
+    action: job.authorization.action as ProjectAction,
+    ttlSeconds: 300
+  });
+
   const response = await fetch(base + '/.netlify/functions/pipeline-background', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-parable-dispatch': 'background-fallback'
+      'x-parable-dispatch': 'background-fallback',
+      'x-parable-internal-auth': internalAuth
     },
     body: JSON.stringify({ jobId, kind })
   });
