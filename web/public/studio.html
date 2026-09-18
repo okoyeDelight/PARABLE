@@ -314,6 +314,16 @@
                   <label><input type="checkbox" data-keyframe-check="unwanted_text_or_artifacts" /><span>No unwanted text / AI artifacts</span></label>
                 </div>
 
+                <label>
+                  <span>Reviewer note</span>
+                  <input id="keyframeReviewerNote" type="text" placeholder="Optional unless overriding an inspector blocker" autocomplete="off" />
+                </label>
+
+                <label class="keyframe-immutable keyframe-override" id="keyframeOverrideRow" hidden>
+                  <input id="keyframeOverrideInspector" type="checkbox" />
+                  <span>Override the Visual Inspector blocker after manual review.</span>
+                </label>
+
                 <div class="keyframe-buttons">
                   <button type="button" class="render-primary keyframe-approve" id="approveKeyframeBtn"><span>Approve first frame</span><b>✓</b></button>
                   <button type="button" class="copy-btn" id="revokeKeyframeBtn" hidden>Revoke approval</button>
