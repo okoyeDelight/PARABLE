@@ -70,16 +70,27 @@ function getStores() {
 }
 
 async function seedIfNeeded(projectsStore: ReturnType<typeof getStore>) {
-  const { blobs } = await projectsStore.list({ prefix: 'project/' });
-  if (blobs.length) return;
-  await Promise.all(starterProjects.map((project) => projectsStore.setJSON(`project/${project.id}`, project)));
+  const seeded = await projectsStore.get('system/seed-v1', { type: 'json' }) as { ready?: boolean } | null;
+  if (seeded?.ready) return;
+  await Promise.all([
+    ...starterProjects.map((project) => projectsStore.setJSON(`project/${project.id}`, project)),
+    projectsStore.setJSON('system/seed-v1', { ready: true, seeded_at: new Date().toISOString() })
+  ]);
 }
 
-async function listProjects(projectsStore: ReturnType<typeof getStore>) {
+async function listProjects(projectsStore: ReturnType<typeof getStore>, limit = 50) {
   await seedIfNeeded(projectsStore);
-  const { blobs } = await projectsStore.list({ prefix: 'project/' });
+  const keys: string[] = [];
+  const pages = projectsStore.list({ prefix: 'project/', paginate: true });
+  for await (const page of pages as AsyncIterable<{ blobs: { key: string }[] }>) {
+    for (const blob of page.blobs) {
+      keys.push(blob.key);
+      if (keys.length >= limit) break;
+    }
+    if (keys.length >= limit) break;
+  }
   const projects = (await Promise.all(
-    blobs.slice(0, 200).map(({ key }) => projectsStore.get(key, { type: 'json' }))
+    keys.map((key) => projectsStore.get(key, { type: 'json' }))
   )).filter(Boolean) as typeof starterProjects;
   return projects.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
@@ -99,7 +110,8 @@ export default async (request: Request) => {
       return starter ? json(starter) : json({ error: 'Project not found.' }, 404);
     }
 
-    return json(await listProjects(projects));
+    const requestedLimit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 50) || 50));
+    return json(await listProjects(projects, requestedLimit));
   }
 
   if (request.method === 'POST') {
