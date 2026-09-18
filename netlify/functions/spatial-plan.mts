@@ -16,6 +16,7 @@ import {
   type SceneSpatialPlan
 } from './_lib/spatial-continuity.mts';
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
+import { transactionalStateMode } from './_lib/transactional-state.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -32,7 +33,8 @@ function stores() {
     : getDeployStore(name);
   return {
     adaptations: make('parable-adaptations'),
-    sceneStates: make('parable-scene-states')
+    sceneStates: make('parable-scene-states'),
+    shotStates: make('parable-shot-states')
   };
 }
 
@@ -92,24 +94,56 @@ async function sourceFor(projectId: string, storyVersion: string, sceneId: strin
       ? adaptation.production_bible.shot_plan
       : [];
 
-  const sceneState = authoritativeScene?.value || await s.sceneStates.get(
+  const cachedScene = await s.sceneStates.get(
     'project/' + projectId + '/' + storyVersion + '/' + sceneId,
     { type: 'json' }
   ) as Record<string, any> | null;
+  const sceneState = authoritativeScene?.value || (
+    transactionalStateMode() === 'postgres' ? null : cachedScene
+  );
 
   if (!sceneState) {
-    throw Object.assign(new Error('Scene continuity must be processed before spatial planning.'), {
-      code: 'SCENE_CONTINUITY_REQUIRED',
+    throw Object.assign(new Error(
+      transactionalStateMode() === 'postgres'
+        ? 'Authoritative scene continuity is missing; cached Blob state cannot authorize a spatial plan.'
+        : 'Scene continuity must be processed before spatial planning.'
+    ), {
+      code: transactionalStateMode() === 'postgres'
+        ? 'AUTHORITATIVE_SCENE_CONTINUITY_REQUIRED'
+        : 'SCENE_CONTINUITY_REQUIRED',
       status: 409
     });
   }
 
   const sceneContract = sceneState.render_contract || sceneState.continuity_context || null;
 
+  const shotStates: Record<string, Record<string, any> | null> = {};
+  await Promise.all(shots.map(async (shot: any) => {
+    const shotId = clean(shot?.id, 96);
+    if (!shotId || !safeId(shotId)) return;
+    const authoritative = await readAuthoritativeProjectState<Record<string, any>>(
+      projectId,
+      'shot-state:' + storyVersion + ':' + sceneId + ':' + shotId
+    );
+    if (authoritative?.value) {
+      shotStates[shotId] = authoritative.value;
+      return;
+    }
+    if (transactionalStateMode() !== 'postgres') {
+      shotStates[shotId] = await s.shotStates.get(
+        'project/' + projectId + '/' + storyVersion + '/' + sceneId + '/' + shotId,
+        { type: 'json' }
+      ) as Record<string, any> | null;
+    } else {
+      shotStates[shotId] = null;
+    }
+  }));
+
   return {
     shots,
     sceneState,
-    sceneContract
+    sceneContract,
+    shotStates
   };
 }
 
@@ -204,6 +238,7 @@ export default async (request: Request) => {
       sceneId,
       shots: source.shots,
       continuityContract: source.sceneContract,
+      shotStates: source.shotStates,
       existing: existingState?.value || null,
       overrides
     });
