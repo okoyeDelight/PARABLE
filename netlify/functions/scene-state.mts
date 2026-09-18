@@ -1,5 +1,8 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
-import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
+import {
+  readAuthoritativeProjectState,
+  stageProjectArtifact
+} from './_lib/project-artifacts.mts';
 import {
   bootstrapContinuity,
   buildRenderContinuityContract,
@@ -98,6 +101,12 @@ function screenplayText(adaptation: Record<string, any> | null) {
 
 async function loadOrBootstrap(projectId: string, storyVersion: string, bodyBible?: unknown) {
   const s = stores();
+  const authoritative = await readAuthoritativeProjectState<ContinuitySnapshot>(
+    projectId,
+    'continuity:' + storyVersion + ':latest'
+  );
+  if (authoritative?.value) return upgradeContinuitySnapshot(authoritative.value);
+
   const versionKey = 'project/' + projectId + '/versions/' + storyVersion + '/latest';
   const [versionSnapshot, latestSnapshot] = await Promise.all([
     s.continuity.get(versionKey, { type: 'json' }) as Promise<ContinuitySnapshot | null>,
@@ -150,9 +159,19 @@ export default async (request: Request) => {
       ? 'project/' + projectId + '/' + storyVersion + '/' + sceneId
       : 'project/' + projectId + '/latest/' + sceneId;
 
-    const value = await stores().sceneStates.get(key, { type: 'json' }) as Record<string, any> | null;
+    const authoritative = storyVersion && safeId(storyVersion)
+      ? await readAuthoritativeProjectState<Record<string, any>>(
+          projectId,
+          'scene-state:' + storyVersion + ':' + sceneId
+        )
+      : null;
+
+    const value = authoritative?.value || await stores().sceneStates.get(key, { type: 'json' }) as Record<string, any> | null;
     if (!value) return json({ error: 'Scene continuity state was not found.' }, 404);
-    return json(value);
+    return json({
+      ...value,
+      authoritative_revision: authoritative?.revision ?? value.project_revision ?? null
+    });
   }
 
   if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
@@ -304,41 +323,71 @@ export default async (request: Request) => {
 
   if (mode === 'apply') {
     try {
-      await Promise.all([
-        saveContinuity(snapshot),
-        s.sceneStates.setJSON('project/' + projectId + '/' + storyVersion + '/' + sceneId, result),
-        s.sceneStates.setJSON('project/' + projectId + '/latest/' + sceneId, result)
+      if (!lease) throw new Error('Scene continuity mutation lease was not acquired.');
+
+      // Stage immutable artifacts first. They are invisible to authoritative
+      // readers until the PostgreSQL compare-and-swap head commits their refs.
+      const [continuityRef, sceneStateRef] = await Promise.all([
+        stageProjectArtifact({
+          projectId,
+          mutationId: lease.mutation_id,
+          kind: 'continuity',
+          artifactId: storyVersion + ':' + sceneId,
+          value: snapshot
+        }),
+        stageProjectArtifact({
+          projectId,
+          mutationId: lease.mutation_id,
+          kind: 'scene-state',
+          artifactId: storyVersion + ':' + sceneId,
+          value: result
+        })
       ]);
 
-      const latestProject = await s.projects.get('project/' + projectId, {
-        type: 'json',
-        consistency: 'strong'
-      } as any) as Record<string, any> | null;
+      const committed = await commitProjectMutation(
+        lease,
+        {
+          story_version: storyVersion,
+          scene_id: sceneId,
+          scene_index: sceneIndex,
+          can_render: evaluated.can_render,
+          warning_count: evaluated.warnings.length
+        },
+        {
+          ['continuity:' + storyVersion + ':latest']: continuityRef,
+          ['scene-state:' + storyVersion + ':' + sceneId]: sceneStateRef
+        }
+      );
 
-      if (latestProject) {
-        await s.projects.setJSON('project/' + projectId, {
-          ...latestProject,
-          continuity_version: snapshot.schema_version,
-          continuity_scene_cursor: snapshot.scene_cursor,
-          continuity_last_scene_id: snapshot.last_scene_id,
-          continuity_last_shot_id: snapshot.last_shot_id,
-          continuity_warning_count: snapshot.warnings.length,
-          status: evaluated.can_render ? 'continuity_ready' : 'continuity_review',
-          progress: Math.max(Number(latestProject.progress || 0), evaluated.can_render ? 54 : 50),
-          updated_at: new Date().toISOString()
-        });
-      }
-
-      if (!lease) throw new Error('Scene continuity mutation lease was not acquired.');
-      const committed = await commitProjectMutation(lease, {
-        story_version: storyVersion,
-        scene_id: sceneId,
-        scene_index: sceneIndex,
-        can_render: evaluated.can_render,
-        warning_count: evaluated.warnings.length
-      });
       (result as any).project_revision = committed.revision;
       (result as any).mutation_id = committed.mutation_id;
+      (result as any).state_backend = committed.backend || 'blobs';
+
+      // Blob "latest" keys are caches/archives only after the authoritative
+      // revision commits. A mirror failure cannot falsify or roll back the DB.
+      await Promise.allSettled([
+        saveContinuity(snapshot),
+        s.sceneStates.setJSON('project/' + projectId + '/' + storyVersion + '/' + sceneId, result),
+        s.sceneStates.setJSON('project/' + projectId + '/latest/' + sceneId, result),
+        (async () => {
+          const latestProject = await s.projects.get('project/' + projectId, {
+            type: 'json',
+            consistency: 'strong'
+          } as any) as Record<string, any> | null;
+          if (!latestProject) return;
+          await s.projects.setJSON('project/' + projectId, {
+            ...latestProject,
+            continuity_version: snapshot.schema_version,
+            continuity_scene_cursor: snapshot.scene_cursor,
+            continuity_last_scene_id: snapshot.last_scene_id,
+            continuity_last_shot_id: snapshot.last_shot_id,
+            continuity_warning_count: snapshot.warnings.length,
+            status: evaluated.can_render ? 'continuity_ready' : 'continuity_review',
+            progress: Math.max(Number(latestProject.progress || 0), evaluated.can_render ? 54 : 50),
+            updated_at: new Date().toISOString()
+          });
+        })()
+      ]);
     } catch (error) {
       if (lease) await abortProjectMutation(lease).catch(() => false);
       const handled = projectMutationErrorResponse(error);
