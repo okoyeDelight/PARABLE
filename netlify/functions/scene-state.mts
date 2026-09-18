@@ -4,6 +4,7 @@ import {
   buildRenderContinuityContract,
   compactContinuityContext,
   evaluateAndApplyScene,
+  upgradeContinuitySnapshot,
   type ContinuitySnapshot
 } from './_lib/continuity-core.mts';
 import { runContinuityExtraction } from './_lib/continuity-ai.mts';
@@ -158,7 +159,8 @@ export default async (request: Request) => {
   const mode = oneLine(body.mode || 'apply', 20).toLowerCase();
   if (!['apply', 'check'].includes(mode)) return json({ error: 'mode must be apply or check.' }, 400);
 
-  const evaluated = evaluateAndApplyScene(continuity, extraction.scene, { apply: mode === 'apply' });
+  const continuityBefore = upgradeContinuitySnapshot(continuity);
+  const evaluated = evaluateAndApplyScene(continuityBefore, extraction.scene, { apply: mode === 'apply' });
   const snapshot = evaluated.snapshot;
   const renderContract = buildRenderContinuityContract(snapshot, sceneId);
 
@@ -178,6 +180,8 @@ export default async (request: Request) => {
     warnings: evaluated.warnings,
     can_render: evaluated.can_render,
     requires_human_review: extraction.engine.mode !== 'model' || extraction.uncertainties.length > 0,
+    continuity_before_snapshot: continuityBefore,
+    continuity_after_snapshot: snapshot,
     continuity_context: compactContinuityContext(snapshot),
     render_contract: renderContract,
     created_at: new Date().toISOString()
@@ -196,6 +200,7 @@ export default async (request: Request) => {
         continuity_version: snapshot.schema_version,
         continuity_scene_cursor: snapshot.scene_cursor,
         continuity_last_scene_id: snapshot.last_scene_id,
+        continuity_last_shot_id: snapshot.last_shot_id,
         continuity_warning_count: snapshot.warnings.length,
         status: evaluated.can_render ? 'continuity_ready' : 'continuity_review',
         progress: Math.max(Number(project.progress || 0), evaluated.can_render ? 54 : 50),
