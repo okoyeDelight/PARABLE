@@ -6,6 +6,8 @@ import {
   evaluateRenderQA
 } from '../netlify/functions/_lib/render-foundation.mts';
 import { prepareRendererRequest } from '../netlify/functions/_lib/render-adapters.mts';
+import { evaluateKeyframeGate } from '../netlify/functions/_lib/keyframe-approval-core.mts';
+import { routeRenderSpec } from '../netlify/functions/_lib/render-router.mts';
 import {
   defaultRenderBudgetPolicy,
   evaluateRenderBudget,
@@ -113,18 +115,117 @@ assert.equal(keyframe.first_frame.composition.grammar, 'negative_space');
 assert.equal(keyframe.final_motion_render_blocked_until_approved, true);
 assert.ok(keyframe.acceptance_checklist.length >= 6);
 
+const keyframeApproval = {
+  approval_version: 'parable-keyframe-approval-v1' as const,
+  status: 'approved' as const,
+  project_id: spec.project_id,
+  story_version: spec.story_version,
+  scene_id: spec.scene_id,
+  shot_id: spec.shot_id,
+  spec_hash: spec.spec_hash,
+  keyframe_plan_hash: 'plan_hash_smoke',
+  asset: {
+    uri: 'https://example.com/approved-first-frame.jpg',
+    source: 'generated' as const,
+    provider: 'fal',
+    model: 'test-image-model',
+    content_sha256: 'a'.repeat(64),
+    immutable_binding: true
+  },
+  checks: {
+    identity: true,
+    wardrobe_and_injuries: true,
+    props: true,
+    spatial_geography: true,
+    composition: true,
+    lighting: true,
+    cultural_grounding: true,
+    unwanted_text_or_artifacts: true
+  },
+  reviewer: {
+    human_approved: true as const,
+    note: 'Smoke-test approval.'
+  },
+  approved_at: '2026-09-18T10:00:00.000Z',
+  revoked_at: null,
+  revoke_reason: null
+};
+
+assert.equal(evaluateKeyframeGate(null, spec.spec_hash).code, 'KEYFRAME_APPROVAL_REQUIRED');
+assert.equal(evaluateKeyframeGate(keyframeApproval, spec.spec_hash).allowed, true);
+assert.equal(
+  evaluateKeyframeGate({ ...keyframeApproval, spec_hash: 'different_spec' }, spec.spec_hash).code,
+  'KEYFRAME_SPEC_MISMATCH'
+);
+
+assert.throws(() => prepareRendererRequest({
+  spec,
+  provider: 'fal',
+  model: 'bytedance/seedance-2.0/us/image-to-video',
+  mode: 'final'
+}), /approved first-frame/i);
+
 const prepared = prepareRendererRequest({
   spec,
   provider: 'fal',
-  model: 'bytedance/seedance-2.0/us/reference-to-video',
-  mode: 'final'
+  model: 'bytedance/seedance-2.0/us/image-to-video',
+  mode: 'final',
+  approvedKeyframe: keyframeApproval
 });
 
 assert.equal(prepared.provider, 'fal');
 assert.equal(prepared.body.generate_audio, false);
-assert.equal(Array.isArray(prepared.body.image_urls), true);
-assert.equal((prepared.body.image_urls as string[]).length, 2);
-assert.match(String(prepared.body.prompt), /negative_space/);
+assert.equal(prepared.body.image_url, keyframeApproval.asset.uri);
+assert.equal(prepared.reference_map[0].kind, 'approved-first-frame');
+assert.match(String(prepared.body.prompt), /approved-first-frame/i);
+
+const badRoute = routeRenderSpec(spec, [{
+  provider: 'fal',
+  model: 'reference-only',
+  configured: true,
+  supports: {
+    text_to_video: true,
+    image_to_video: true,
+    reference_video: true,
+    multi_reference: true,
+    native_audio: false,
+    first_frame_conditioning: false,
+    max_reference_slots: 12
+  },
+  operating: {
+    quality_score: 0.9,
+    continuity_score: 0.9,
+    reliability_score: 0.9,
+    latency_score: 0.9,
+    cost_score: 0.9
+  },
+  notes: []
+}]);
+assert.equal(badRoute.selected, null);
+
+const goodRoute = routeRenderSpec(spec, [{
+  provider: 'fal',
+  model: 'bytedance/seedance-2.0/us/image-to-video',
+  configured: true,
+  supports: {
+    text_to_video: false,
+    image_to_video: true,
+    reference_video: false,
+    multi_reference: false,
+    native_audio: false,
+    first_frame_conditioning: true,
+    max_reference_slots: 1
+  },
+  operating: {
+    quality_score: 0.5,
+    continuity_score: 0.5,
+    reliability_score: 0.5,
+    latency_score: 0.5,
+    cost_score: 0.5
+  },
+  notes: []
+}]);
+assert.equal(goodRoute.selected?.model, 'bytedance/seedance-2.0/us/image-to-video');
 
 const budgetEvents = [
   {
@@ -237,6 +338,8 @@ console.log(JSON.stringify({
   spec_hash: spec.spec_hash.slice(0, 16),
   final_reference_count: prepared.reference_map.length,
   keyframe_gate: keyframe.final_motion_render_blocked_until_approved,
+  persisted_keyframe_gate: evaluateKeyframeGate(keyframeApproval, spec.spec_hash).code,
+  first_frame_route: goodRoute.selected?.model,
   budget_attempts_observed: budgetSummary.attempts_observed,
   budget_guard: missingEstimate.code,
   qa_pass: pass.decision,
