@@ -17,7 +17,7 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
 
 const clean = (value: unknown, max = 300) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
-const supported = new Set<JobKind>(['scene-state', 'shot-state']);
+const supported = new Set<JobKind>(['scene-state', 'shot-state', 'story-understanding', 'adaptation']);
 
 export default async (request: Request) => {
   if (request.method === 'GET') {
@@ -42,7 +42,7 @@ export default async (request: Request) => {
   const idempotencyKey = clean(request.headers.get('idempotency-key') || body.idempotencyKey, 240);
 
   if (!supported.has(kind)) {
-    return json({ error: 'kind must be scene-state or shot-state.' }, 400);
+    return json({ error: 'Unsupported job kind.' }, 400);
   }
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required inside payload.' }, 400);
 
