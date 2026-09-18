@@ -104,7 +104,7 @@ jobs:
               throw new Error('Netlify succeeded but did not provide a usable preview URL.');
             }
 
-            const identity = await readJson(alias + '/api/deploy-identity');
+            const identity = await readJson(alias + '/.parable-deploy.json?sha=' + encodeURIComponent(sha));
             const observedCommit = normalizeSha(identity.body?.commit_ref);
             const deployId = String(identity.body?.deploy_id || '').trim();
 
@@ -124,7 +124,7 @@ jobs:
               identity.body?.immutable_url || `https://${deployId}--parable-studio.netlify.app`
             ).replace(/\/$/, '');
 
-            const immutableIdentity = await readJson(immutableBase + '/api/deploy-identity');
+            const immutableIdentity = await readJson(immutableBase + '/.parable-deploy.json?sha=' + encodeURIComponent(sha));
             if (
               !immutableIdentity.response.ok ||
               normalizeSha(immutableIdentity.body?.commit_ref) !== normalizeSha(sha) ||

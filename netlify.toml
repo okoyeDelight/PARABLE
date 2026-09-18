@@ -1,4 +1,5 @@
 [build]
+  command = "node tools/write_deploy_identity.mjs"
   publish = "web/public"
   functions = "netlify/functions"
 
