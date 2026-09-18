@@ -15,7 +15,7 @@ The first working build establishes:
 - a replaceable model-router architecture rather than dependence on one generation model
 - human review, consent and rights-aware design principles
 
-The live development build currently runs in Floot. This repository is the source/checkpoint mirror used after each completed build day.
+The current engineering preview is deployed from this repository through Netlify. `immersive-v2` remains isolated from `main` while infrastructure and production-engine gates are still being hardened.
 
 ## Product principle
 
@@ -46,7 +46,7 @@ The `immersive-v2` branch now includes:
 - human-approved actor/voice/location reference locks
 - human director overrides layered onto the shot plan without bypassing continuity
 - renderer hard constraints for identity, wardrobe, injury, prop ownership, screen geography and character knowledge
-- durable Async Workloads queue for Story Intelligence, Film Critic and continuity work
+- redundant durable queue routing for Story Intelligence, Film Critic and continuity work: Async Workloads when healthy, Netlify Background Functions as claim-check fallback
 - idempotent job submission so retries do not automatically duplicate expensive AI work
 - retry/backoff and execution leases for transient provider/network failures and duplicate queue delivery
 - refresh-safe Studio production jobs that can be restored after the browser reloads
@@ -55,6 +55,7 @@ The `immersive-v2` branch now includes:
 - Deploy Preview platform-health and isolated scale-probe endpoints
 - manual 1,000-virtual-user read-tier and durable-queue load gates
 - PostgreSQL transactional hot-state schema prepared for multi-editor optimistic revision control
+- provider-neutral scale strategy so queue, database, AI and render infrastructure can be replaced or expanded without rewriting PARABLE's production contracts
 
 The production path is now:
 
