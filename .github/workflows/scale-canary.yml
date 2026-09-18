@@ -1,0 +1,165 @@
+name: PARABLE Scale Canary
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/transactional-state.mts'
+      - 'netlify/functions/_lib/job-store.mts'
+      - 'netlify/functions/_lib/job-processor.mts'
+      - 'netlify/functions/jobs.mts'
+      - 'netlify/functions/platform-health.mts'
+      - 'netlify/functions/scale-probe.mts'
+      - 'tests/load/k6-scale-canary.js'
+      - 'tests/load/k6-queue-canary.js'
+      - 'database/job-admission-control-v1.sql'
+      - '.github/workflows/scale-canary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: read
+
+concurrency:
+  group: parable-scale-canary
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve exact Netlify deploy for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { appendFileSync } = await import('node:fs');
+          const repo = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const token = process.env.GH_TOKEN;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          let deployId = null;
+
+          for (let attempt = 1; attempt <= 90; attempt++) {
+            const response = await fetch(
+              `https://api.github.com/repos/${repo}/commits/${sha}/status`,
+              {
+                headers: {
+                  authorization: `Bearer ${token}`,
+                  accept: 'application/vnd.github+json',
+                  'x-github-api-version': '2022-11-28'
+                },
+                cache: 'no-store'
+              }
+            );
+
+            if (response.ok) {
+              const body = await response.json();
+              const status = (body.statuses || []).find(
+                item => item.context === 'netlify/parable-studio/deploy-preview'
+              );
+
+              console.log(`attempt ${attempt}: netlify=${status?.state || 'missing'} target=${status?.target_url || 'none'}`);
+
+              if (status?.state === 'failure' || status?.state === 'error') {
+                throw new Error('Netlify marked this exact commit deploy as failed.');
+              }
+
+              const pendingMatch = String(status?.target_url || '').match(/\/deploys\/([a-zA-Z0-9_-]+)/);
+              if (pendingMatch) deployId = pendingMatch[1];
+
+              if (status?.state === 'success') {
+                if (!deployId) throw new Error('Netlify succeeded but no exact deploy id was captured.');
+                const base = `https://${deployId}--parable-studio.netlify.app`;
+                appendFileSync(process.env.GITHUB_ENV, `PARABLE_BASE=${base}\nNETLIFY_DEPLOY_ID=${deployId}\n`);
+                console.log('Exact preview:', base);
+                process.exit(0);
+              }
+            }
+
+            await sleep(4000);
+          }
+
+          throw new Error('Timed out waiting for the exact Netlify deploy.');
+          NODE
+
+      - name: Verify admission-controlled preview
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PARABLE_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          for (let attempt = 1; attempt <= 60; attempt++) {
+            const r = await fetch(base + '/api/platform-health', { cache:'no-store' }).catch(() => null);
+            if (r) {
+              const body = await r.json().catch(() => ({}));
+              console.log(
+                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} overload=${body?.architecture?.overload_strategy || 'unknown'}`
+              );
+              if (
+                r.ok &&
+                body?.ok === true &&
+                body?.runtime === 'parable-scale-foundation-v4' &&
+                body?.architecture?.state_adapter_version === 'transactional-state-v3' &&
+                body?.architecture?.overload_strategy === 'durable-queue-plus-postgres-admission-control' &&
+                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v3'
+              ) process.exit(0);
+            }
+            await sleep(4000);
+          }
+
+          throw new Error('Admission-controlled preview did not become ready.');
+          NODE
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run bounded read-tier concurrency canary
+        env:
+          PARABLE_READ_VUS: '120'
+          PARABLE_READ_ITERATIONS: '1200'
+        run: k6 run tests/load/k6-scale-canary.js
+
+      - name: Run bounded durable-queue concurrency canary
+        env:
+          PARABLE_QUEUE_VUS: '20'
+          PARABLE_QUEUE_ITERATIONS: '80'
+        run: k6 run tests/load/k6-queue-canary.js
+
+      - name: Verify service remains healthy after burst
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PARABLE_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          let last = null;
+          for (let attempt = 1; attempt <= 30; attempt++) {
+            const r = await fetch(base + '/api/platform-health', { cache:'no-store' });
+            const body = await r.json().catch(() => ({}));
+            last = body;
+            const capacity = body?.checks?.worker_capacity || {};
+            const snapshot = capacity?.snapshot || {};
+
+            console.log(
+              `post-burst ${attempt}: status=${r.status} active=${snapshot?.active_processing ?? 'unknown'} queued=${snapshot?.queued ?? 'unknown'} retrying=${snapshot?.retrying ?? 'unknown'}`
+            );
+
+            if (
+              r.ok &&
+              body?.ok === true &&
+              Number(snapshot?.active_processing || 0) <= Number(capacity?.configured_global_limit || 250)
+            ) {
+              process.exit(0);
+            }
+
+            await sleep(2000);
+          }
+
+          throw new Error('PARABLE did not return to a healthy bounded-capacity state: ' + JSON.stringify(last));
+          NODE
