@@ -12,6 +12,7 @@ export type RendererCapability = {
     reference_video: boolean;
     multi_reference: boolean;
     native_audio: boolean;
+    first_frame_conditioning: boolean;
     max_reference_slots: number;
   };
   operating: {
@@ -50,7 +51,11 @@ const clamp = (value: unknown, fallback = 0.5) => {
 function defaultCapabilities(): RendererCapability[] {
   const falModel = String(Netlify.env.get('FAL_VIDEO_MODEL') || '').trim();
   const runwayModel = String(Netlify.env.get('RUNWAY_VIDEO_MODEL') || '').trim();
-  const falAdapterRegistered = falModel === 'bytedance/seedance-2.0/us/reference-to-video';
+  const falAdapterRegistered = new Set([
+    'bytedance/seedance-2.0/us/image-to-video',
+    'bytedance/seedance-2.0/us/reference-to-video'
+  ]).has(falModel);
+  const falFirstFrameConditioning = falModel === 'bytedance/seedance-2.0/us/image-to-video';
   const runwayAdapterRegistered = false;
 
   return [
@@ -64,6 +69,7 @@ function defaultCapabilities(): RendererCapability[] {
         reference_video: true,
         multi_reference: true,
         native_audio: false,
+        first_frame_conditioning: falFirstFrameConditioning,
         max_reference_slots: Math.max(1, Math.min(12, Number(Netlify.env.get('FAL_RENDER_REFERENCE_SLOTS') || 6)))
       },
       operating: {
@@ -90,6 +96,7 @@ function defaultCapabilities(): RendererCapability[] {
         reference_video: true,
         multi_reference: true,
         native_audio: true,
+        first_frame_conditioning: false,
         max_reference_slots: Math.max(1, Math.min(8, Number(Netlify.env.get('RUNWAY_RENDER_REFERENCE_SLOTS') || 3)))
       },
       operating: {
@@ -117,20 +124,28 @@ function eligibility(spec: ShotRenderSpec, capability: RendererCapability) {
   const rejection_reasons: string[] = [];
   if (!capability.configured) rejection_reasons.push('Provider/model is not configured in the deployed PARABLE runtime.');
 
-  if (spec.provider_requirements.reference_images && !capability.supports.image_to_video) {
-    rejection_reasons.push('Shot requires canonical image references but this route lacks image-to-video/reference support.');
+  if (spec.output.first_frame_required && !capability.supports.first_frame_conditioning) {
+    rejection_reasons.push('Final motion requires exact approved-first-frame conditioning, but this route cannot accept a starting frame.');
   }
 
-  if (spec.provider_requirements.reference_video && !capability.supports.reference_video) {
+  if (spec.provider_requirements.reference_images && !capability.supports.image_to_video) {
+    rejection_reasons.push('Shot requires visual conditioning but this route lacks image-to-video/reference support.');
+  }
+
+  if (spec.provider_requirements.reference_video && !capability.supports.reference_video && !capability.supports.first_frame_conditioning) {
     rejection_reasons.push('Shot requires performance/video reference support.');
   }
 
-  if (spec.provider_requirements.multi_reference && !capability.supports.multi_reference) {
-    rejection_reasons.push('Shot requires more than one canonical reference.');
+  if (
+    spec.provider_requirements.multi_reference &&
+    !capability.supports.multi_reference &&
+    !capability.supports.first_frame_conditioning
+  ) {
+    rejection_reasons.push('Shot requires more than one canonical reference and no approved-first-frame synthesis path is available.');
   }
 
   const refs = requiredVisualReferences(spec);
-  if (refs > capability.supports.max_reference_slots) {
+  if (!capability.supports.first_frame_conditioning && refs > capability.supports.max_reference_slots) {
     rejection_reasons.push(
       'Shot needs ' + refs + ' visual references but route supports ' + capability.supports.max_reference_slots + '.'
     );
