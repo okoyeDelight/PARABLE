@@ -1,5 +1,6 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
 import {
+import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
   bootstrapContinuity,
   buildRenderContinuityContract,
   compactContinuityContext,
@@ -54,6 +55,8 @@ async function latestProductionBible(projectId: string) {
 }
 
 async function latestAdaptation(projectId: string) {
+  const authoritative = await readAuthoritativeProjectState<Record<string, any>>(projectId, 'adaptation:latest');
+  if (authoritative?.value) return authoritative.value;
   return stores().adaptations.get('project/' + projectId + '/latest', { type: 'json' }) as Promise<Record<string, any> | null>;
 }
 
