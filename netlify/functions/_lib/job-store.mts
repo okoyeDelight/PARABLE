@@ -18,6 +18,7 @@ export type JobKind =
   | 'film-critic'
   | 'keyframe-generate'
   | 'reference-profile'
+  | 'motion-inspect'
   | 'scale-noop';
 
 export type JobStatus =
