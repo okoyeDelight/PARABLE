@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           node <<'NODE'
-          const fs = require('fs');
+          const { appendFileSync } = await import('node:fs');
           const repo = process.env.GITHUB_REPOSITORY;
           const sha = process.env.GITHUB_SHA;
           const token = process.env.GH_TOKEN;
@@ -105,7 +105,7 @@ jobs:
               if (!match) throw new Error('Could not resolve Netlify deploy id from commit status.');
 
               const base = `https://${match[1]}--parable-studio.netlify.app`;
-              fs.appendFileSync(process.env.GITHUB_ENV, `PREVIEW_BASE=${base}\nNETLIFY_DEPLOY_ID=${match[1]}\n`);
+              appendFileSync(process.env.GITHUB_ENV, `PREVIEW_BASE=${base}\nNETLIFY_DEPLOY_ID=${match[1]}\n`);
               console.log('Exact preview:', base);
               process.exit(0);
             }
