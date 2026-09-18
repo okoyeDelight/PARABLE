@@ -110,7 +110,7 @@ export async function processDurableJob(args: {
 
   if (!claimed.authorization) {
     const message = 'Durable job has no trusted authorization context.';
-    await failJob(jobId, message);
+    await failJob(jobId, message, leaseToken);
     return { status: 'terminal', message };
   }
 
@@ -134,7 +134,7 @@ export async function processDurableJob(args: {
     });
   } catch (error) {
     const message = clean(error instanceof Error ? error.message : error, 1000) || 'Internal authorization signing failed.';
-    await failJob(jobId, message);
+    await failJob(jobId, message, leaseToken);
     return { status: 'terminal', message };
   }
 
@@ -207,6 +207,6 @@ export async function processDurableJob(args: {
     };
   }
 
-  await failJob(jobId, message);
+  await failJob(jobId, message, leaseToken);
   return { status: 'terminal', message };
 }
