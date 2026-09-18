@@ -5,6 +5,13 @@ import {
   type ContinuitySnapshot,
   type EntityState
 } from './_lib/continuity-core.mts';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -97,12 +104,35 @@ export default async (request: Request) => {
     }, 400);
   }
 
-  const raw = await continuityStore.get('project/' + projectId + '/latest', { type: 'json' }) as ContinuitySnapshot | null;
-  if (!raw) return json({ error: 'Continuity has not been established for this project.' }, 409);
+  let lease: ProjectMutationLease | null = null;
+  try {
+    lease = await acquireProjectMutation({
+      projectId,
+      mutationType: 'reference-lock',
+      expectedRevision: Number.isFinite(Number(body.expectedProjectRevision))
+        ? Number(body.expectedProjectRevision)
+        : null,
+      ttlMs: 30000
+    });
+  } catch (error) {
+    const handled = projectMutationErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
+  const raw = await continuityStore.get('project/' + projectId + '/latest', {
+    type: 'json',
+    consistency: 'strong'
+  } as any) as ContinuitySnapshot | null;
+  if (!raw) {
+    await abortProjectMutation(lease).catch(() => false);
+    return json({ error: 'Continuity has not been established for this project.' }, 409);
+  }
 
   const snapshot = upgradeContinuitySnapshot(raw);
   const entity = findEntity(snapshot, entityKind, entityName);
   if (!entity) {
+    await abortProjectMutation(lease).catch(() => false);
     return json({
       error: 'Reference locks can only be attached to an entity already established by the Production Bible or continuity.',
       entity: entityName
@@ -114,6 +144,7 @@ export default async (request: Request) => {
     .filter(([field, value]) => allowed[entityKind]?.has(field) && value);
 
   if (!accepted.length) {
+    await abortProjectMutation(lease).catch(() => false);
     return json({
       error: 'No supported reference fields were supplied.',
       supported_fields: [...(allowed[entityKind] || [])]
@@ -139,6 +170,7 @@ export default async (request: Request) => {
   const checked = evaluateAndApplyScene(snapshot, scene, { apply: false });
   const blockers = checked.warnings.filter((warning) => warning.severity === 'blocker');
   if (blockers.length && !replaceExisting) {
+    await abortProjectMutation(lease).catch(() => false);
     return json({
       error: 'A locked reference already conflicts with this update.',
       blockers,
@@ -147,23 +179,39 @@ export default async (request: Request) => {
   }
 
   const applied = evaluateAndApplyScene(snapshot, scene, { apply: true });
-  await Promise.all([
-    continuityStore.setJSON('project/' + projectId + '/latest', applied.snapshot),
-    continuityStore.setJSON(
-      'project/' + projectId + '/versions/' + applied.snapshot.story_version + '/latest',
-      applied.snapshot
-    )
-  ]);
+  try {
+    await Promise.all([
+      continuityStore.setJSON('project/' + projectId + '/latest', applied.snapshot),
+      continuityStore.setJSON(
+        'project/' + projectId + '/versions/' + applied.snapshot.story_version + '/latest',
+        applied.snapshot
+      )
+    ]);
 
-  return json({
-    project_id: projectId,
-    entity: entity.name,
-    entity_kind: entityKind,
-    references: Object.fromEntries(accepted),
-    replaced_existing: replaceExisting,
-    locked: true,
-    continuity_version: applied.snapshot.schema_version
-  }, 201);
+    const committed = await commitProjectMutation(lease, {
+      entity: entity.name,
+      entity_kind: entityKind,
+      reference_fields: accepted.map(([field]) => field),
+      replaced_existing: replaceExisting
+    });
+
+    return json({
+      project_id: projectId,
+      entity: entity.name,
+      entity_kind: entityKind,
+      references: Object.fromEntries(accepted),
+      replaced_existing: replaceExisting,
+      locked: true,
+      continuity_version: applied.snapshot.schema_version,
+      project_revision: committed.revision,
+      mutation_id: committed.mutation_id
+    }, 201);
+  } catch (error) {
+    await abortProjectMutation(lease).catch(() => false);
+    const handled = projectMutationErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
 };
 
 export const config = {
