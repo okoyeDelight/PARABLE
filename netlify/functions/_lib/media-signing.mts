@@ -71,11 +71,14 @@ export async function createSignedMediaUrl(args: {
   projectId: string;
   purpose: string;
   ttlSeconds?: number;
+  origin?: string;
 }) {
   const state = signingSecret();
   if (!state.secret) throw new Error('PARABLE media signing is not configured.');
 
-  const { origin } = runtime();
+  const runtimeOrigin = runtime().origin;
+  const requestedOrigin = clean(args.origin, 2000).replace(/\/$/, '');
+  const origin = /^https?:\/\//i.test(requestedOrigin) ? requestedOrigin : runtimeOrigin;
   if (!origin) throw new Error('PARABLE deployment origin is unavailable for signed media URLs.');
 
   const exp = Math.floor(Date.now()/1000) + Math.max(60, Math.min(3600, Math.floor(args.ttlSeconds || 900)));
