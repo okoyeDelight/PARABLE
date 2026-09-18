@@ -1,16 +1,16 @@
-# PARABLE Production Bible / Continuity Brain — V1
+# PARABLE Production Bible / Continuity Brain — V2
 
-PARABLE must remember a film as a world, not regenerate each scene as an isolated prompt.
+PARABLE remembers a film as a world instead of treating every scene as a fresh prompt.
 
-This checkpoint adds a provider-independent continuity layer before video rendering. It is deliberately separate from model routing so continuity remains durable even when AI providers change.
+V2 moves the Continuity Brain beyond manual structured updates. PARABLE can now extract scene state automatically, compare it with the established Production Bible and prior scenes, block serious continuity contradictions, then generate a continuity-gated render package for every shot.
 
 ## What the Continuity Brain remembers
 
-The current V1 snapshot tracks:
+The current snapshot tracks:
 
-- character identity and established facts;
+- character identity and locked visual / performance facts;
 - appearance, clothing / wardrobe and emotional state;
-- character position and location;
+- character position and current location;
 - injuries and other stateful physical changes;
 - props and prop state;
 - relationship state;
@@ -18,91 +18,138 @@ The current V1 snapshot tracks:
 - scene order and current time label;
 - unresolved story threads;
 - Scripture / theology review flags;
-- a history of state transitions and continuity warnings.
+- every accepted state transition and continuity warning.
 
-The compact continuity context is designed to be injected into later screenplay, directing, image, video, voice and editing stages without sending the entire raw manuscript again.
+Durable character identity facts can be locked. Stateful changes such as wardrobe, injury, location or emotion are allowed when the scene explicitly establishes a transition.
 
-## API
+## Automatic scene-state extraction
 
-### Bootstrap from the Production Bible
+`POST /api/scene-state`
 
-`POST /api/continuity`
-
-```json
-{
-  "action": "bootstrap",
-  "projectId": "project_123",
-  "storyVersion": "story_abc"
-}
-```
-
-If `productionBible` is omitted, PARABLE loads the latest adaptation first, then the latest Story Understanding for that project.
-
-### Check a scene without changing memory
-
-`POST /api/continuity`
+Example:
 
 ```json
 {
-  "action": "check_scene",
   "projectId": "project_123",
+  "storyVersion": "story_abc",
+  "mode": "apply",
   "scene": {
     "id": "scene_17",
     "index": 17,
-    "facts": [
-      {
-        "entity": "Daniel",
-        "kind": "character",
-        "field": "clothing",
-        "value": "blue shirt",
-        "transition": false
-      }
-    ]
+    "heading": "INT. KITCHEN - NIGHT",
+    "text": "Daniel stands in the doorway..."
   }
 }
 ```
 
-The response includes `can_render` plus warnings such as:
+If scene text is omitted, PARABLE attempts to derive the current scene from the latest adaptation.
 
-- `LOCKED_FACT_CONFLICT` — a protected identity fact was contradicted;
-- `UNEXPLAINED_CHANGE` — a stateful fact changed without a declared transition;
-- `TIMELINE_REGRESSION` — a scene attempts to move behind the current scene cursor;
-- `MISSING_ENTITY` — the scene submitted an unusable continuity fact.
+The protected Continuity Intelligence lane requests Zero Data Retention / no-training routing through OpenRouter. If a compliant provider is unavailable, PARABLE falls back to conservative local extraction rather than weakening manuscript privacy.
 
-### Apply a scene and advance the world
+The extraction stage produces:
 
-Use the same payload with `"action": "apply_scene"`.
+- scene facts;
+- explicit state transitions;
+- character knowledge gained or forgotten;
+- knowledge requirements that may expose information leaks;
+- unresolved / resolved story threads;
+- theology review flags;
+- renderer notes for identity, wardrobe, props, spatial relationships and emotional continuity;
+- uncertainties and model/fallback provenance.
 
-A legitimate change should be marked with `"transition": true`. That means PARABLE remembers both the old state and the new state rather than treating the new value as an accidental continuity error.
+## Knowledge-leak detection
 
-### Read current continuity
+A scene can now be blocked if a character acts on information continuity does not record them learning.
+
+Example:
+
+Scene 8 records that only Miriam sees the letter.
+
+If Scene 9 makes Daniel confront someone about the letter before learning about it, the Continuity Brain can emit:
+
+`KNOWLEDGE_LEAK`
+
+with blocker severity.
+
+This is deliberately evaluated before new knowledge from the scene is applied.
+
+## Identity and state locks
+
+V2 distinguishes durable identity from legitimate story change.
+
+A locked identity contradiction can produce:
+
+`LOCKED_FACT_CONFLICT`
+
+while an unexplained wardrobe, injury, emotional, location or prop-state change can produce:
+
+`UNEXPLAINED_CHANGE`.
+
+Explicit transitions are recorded in history rather than treated as errors.
+
+## Render handoff
+
+`GET /api/render-context?projectId=project_123&sceneId=scene_17`
+
+Optional query parameters:
+
+- `storyVersion`
+- `shotId`
+
+The render endpoint refuses to treat an unchecked scene as render-ready.
+
+For a checked scene it returns one package per shot containing:
+
+- the shot plan;
+- human director overrides where present;
+- the current continuity contract;
+- locked character identity;
+- wardrobe, injury, prop and location state;
+- character knowledge;
+- unresolved story threads;
+- theology flags;
+- scene-specific render notes;
+- hard continuity blockers;
+- a final `can_render` gate.
+
+The renderer boundary therefore becomes:
+
+`Story -> Production Bible -> Scene State -> Continuity Gate -> Director Controls -> Render Package -> Renderer`
+
+not:
+
+`Scene text -> random new video prompt`.
+
+## Manual continuity API
+
+The lower-level `/api/continuity` endpoint still exists for human/editorial control.
+
+It supports:
+
+- `bootstrap`
+- `check_scene`
+- `apply_scene`
+
+and current continuity can be read with:
 
 `GET /api/continuity?projectId=project_123`
 
-For a renderer-friendly payload:
+or compacted for downstream engines with:
 
 `GET /api/continuity?projectId=project_123&compact=1`
 
-## Character knowledge
+## Current limitations
 
-Scene updates can explicitly advance or remove knowledge:
+V2 is scene-level, not yet frame-level.
 
-```json
-{
-  "knowledge": [
-    {
-      "character": "Daniel",
-      "learns": ["The letter was written by Miriam"],
-      "forgets": []
-    }
-  ]
-}
-```
+The next layer should add:
 
-Later dialogue/directing stages should consult this state so a character cannot react to information they have not yet learned.
+- automatic prop ownership and hand-to-hand transfers;
+- richer spatial graph / screen-direction memory;
+- per-shot state transitions inside a scene;
+- actor face / voice reference IDs after casting;
+- location visual reference IDs;
+- continuity-aware image/video seed management;
+- automatic repair suggestions that never overwrite writer/director choices without approval.
 
-## Why this comes before rendering
-
-By Scene 17, the renderer should not invent a different Daniel, room, wardrobe, prop position or emotional state because Scene 17 is not a fresh generation request. It is the next moment inside an already-established world.
-
-V1 is the deterministic memory and conflict layer. The next Continuity Brain stage is automatic scene-state extraction from the screenplay / shot package plus stronger knowledge-leak checks, identity locks, prop ownership, spatial relationships and render handoff.
+By Scene 17, PARABLE now has an enforceable memory of Scenes 1–16. The next milestone is making every renderer consume that memory automatically.
