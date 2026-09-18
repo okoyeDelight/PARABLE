@@ -10,6 +10,7 @@ import {
   type ProjectMutationLease
 } from './_lib/project-concurrency.mts';
 import { stageProjectArtifact } from './_lib/project-artifacts.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 type Shot = {
   id: string;
@@ -274,6 +275,15 @@ export default async (request: Request) => {
   const projectId = cleanMetadata(body.projectId);
 
   if (projectId && !safeId(projectId)) return json({ error: 'Invalid project identifier.' }, 400);
+  if (projectId) {
+    try {
+      await authorizeProject(request, projectId, 'project:edit');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+  }
   if (input.sourceText.length < 20) return json({ error: 'Give PARABLE at least a few sentences to understand.' }, 400);
   if (input.sourceText.length > 120000) {
     return json({ error: 'This pass accepts up to 120,000 characters. Long-form chapter orchestration is a separate production stage.' }, 413);
