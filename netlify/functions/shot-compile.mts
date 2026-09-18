@@ -2,6 +2,11 @@ import { readAuthoritativeProjectState } from './_lib/project-artifacts.mts';
 import { readProjectRevision } from './_lib/project-concurrency.mts';
 import { compileShotRenderSpec, type VisualCanon } from './_lib/render-foundation.mts';
 import { readRenderSpec, saveRenderSpec } from './_lib/render-store.mts';
+import {
+  authorizeProject,
+  securityErrorResponse,
+  signInternalAuthorization
+} from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -29,6 +34,14 @@ export default async (request: Request) => {
       return json({ error: 'Valid projectId, storyVersion, sceneId and shotId are required.' }, 400);
     }
 
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const spec = await readRenderSpec({
       projectId,
       storyVersion,
@@ -52,6 +65,15 @@ export default async (request: Request) => {
     return json({ error: 'Valid projectId, sceneId and shotId are required.' }, 400);
   }
 
+  let access;
+  try {
+    access = await authorizeProject(request, projectId, 'render:plan');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   const canonState = await readAuthoritativeProjectState<VisualCanon>(projectId, 'visual-canon:latest');
   if (!canonState?.value) {
     return json({
@@ -70,10 +92,18 @@ export default async (request: Request) => {
   contextUrl.searchParams.set('sceneId', sceneId);
   contextUrl.searchParams.set('shotId', shotId);
 
+  const internalAuth = await signInternalAuthorization({
+    actor: access.actor,
+    projectId,
+    action: 'project:read',
+    ttlSeconds: 120
+  });
+
   const contextResponse = await fetch(contextUrl, {
     headers: {
       'accept': 'application/json',
-      'x-parable-internal': 'shot-compiler'
+      'x-parable-internal': 'shot-compiler',
+      'x-parable-internal-auth': internalAuth
     }
   });
 
