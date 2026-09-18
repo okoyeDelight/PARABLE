@@ -2,6 +2,7 @@ import { getContext } from '@netlify/functions';
 import { readJobHealth } from './_lib/job-store.mts';
 import { getDeployStore, getStore } from '@netlify/blobs';
 import {
+  readTransactionalJobCapacity,
   transactionalStateConfigured,
   transactionalStateHealth,
   transactionalStateMode
@@ -52,12 +53,16 @@ export default async (request: Request) => {
   let transactionalStateLatency = 0;
   let transactionalStateError: string | null = null;
   let transactionalStateUpstream: Record<string, unknown> | null = null;
+  let jobCapacity: Record<string, unknown> | null = null;
 
   if (stateMode === 'postgres') {
     const t = Date.now();
     try {
       transactionalStateUpstream = await transactionalStateHealth();
       transactionalStateOk = transactionalStateUpstream?.ok === true;
+      if (transactionalStateOk) {
+        jobCapacity = await readTransactionalJobCapacity().catch(() => null);
+      }
     } catch (error) {
       transactionalStateOk = false;
       transactionalStateError = error instanceof Error ? error.message : String(error);
@@ -69,7 +74,7 @@ export default async (request: Request) => {
   const healthy = storageOk && transactionalStateOk;
   return json({
     ok: healthy,
-    runtime: 'parable-scale-foundation-v3',
+    runtime: 'parable-scale-foundation-v4',
     deploy_context: deployContext,
     checks: {
       blob_state_layer: {
@@ -90,6 +95,12 @@ export default async (request: Request) => {
         fallback_available: true
       },
       durable_job_health: jobHealth,
+      worker_capacity: {
+        authority: stateMode === 'postgres' ? 'postgres' : 'blob-compatibility',
+        configured_global_limit: Math.max(1, Math.min(2000, Math.floor(Number(Netlify.env.get('PARABLE_JOB_MAX_ACTIVE')) || 250))),
+        configured_project_limit: Math.max(1, Math.min(100, Math.floor(Number(Netlify.env.get('PARABLE_JOB_MAX_PROJECT_ACTIVE')) || 8))),
+        snapshot: jobCapacity
+      },
       transactional_state: {
         mode: stateMode,
         configured: transactionalStateConfigured(),
@@ -118,9 +129,11 @@ export default async (request: Request) => {
         : 'blob-cas-compatibility-mode',
       immutable_state_archive: 'netlify-blobs',
       split_brain_write_fallback: false,
-      state_adapter_version: 'transactional-state-v2',
+      state_adapter_version: 'transactional-state-v3',
       rights_authority: stateMode === 'postgres' ? 'postgres-versioned' : 'blob-compatibility',
-      durable_job_lease_authority: stateMode === 'postgres' ? 'postgres-row-locks' : 'blob-cas-compatibility'
+      durable_job_lease_authority: stateMode === 'postgres' ? 'postgres-row-locks' : 'blob-cas-compatibility',
+      overload_strategy: stateMode === 'postgres' ? 'durable-queue-plus-postgres-admission-control' : 'durable-queue-only',
+      per_project_worker_fairness: stateMode === 'postgres'
     },
     deployment: {
       commit_ref: Netlify.env.get('COMMIT_REF') || null,
