@@ -1,4 +1,9 @@
 import { recordAIHealth } from './ai-health-store.mts';
+import {
+  acquireProviderGuard,
+  releaseProviderGuard,
+  type ProviderGuardLease
+} from './provider-resilience.mts';
 import type {
   Basis,
   ContinuitySnapshot,
@@ -472,8 +477,17 @@ export async function runContinuityExtraction(input: ExtractInput): Promise<Scen
   const model = String(env('PARABLE_PROTECTED_CONTINUITY_MODEL') || 'openrouter/free').trim() || 'openrouter/free';
   const started = Date.now();
   const timeout = timeoutSignal(input.shotId ? 9000 : 11000);
+  let providerLease: ProviderGuardLease | null = null;
 
   try {
+    providerLease = await acquireProviderGuard({
+      service: 'ai',
+      provider: 'openrouter',
+      model,
+      operationId: (input.shotId ? 'shot-continuity:' : 'scene-continuity:') + input.sceneId,
+      leaseMs: 25000
+    });
+
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       signal: timeout.signal,
@@ -517,6 +531,8 @@ export async function runContinuityExtraction(input: ExtractInput): Promise<Scen
 
     const data = sanitize(parseJson(body?.choices?.[0]?.message?.content), input);
     const actualModel = String(body?.model || model);
+    await releaseProviderGuard(providerLease, { outcome: 'success' }).catch(() => null);
+    providerLease = null;
     await recordAIHealth({
       stage: input.shotId ? 'shot-continuity-extraction' : 'continuity-extraction',
       lane: 'protected',
@@ -552,6 +568,10 @@ export async function runContinuityExtraction(input: ExtractInput): Promise<Scen
       }
     };
   } catch (error) {
+    if (providerLease) {
+      await releaseProviderGuard(providerLease, { outcome: 'failure', error }).catch(() => null);
+      providerLease = null;
+    }
     const reason = error instanceof Error ? error.message : String(error);
     await recordAIHealth({
       stage: input.shotId ? 'shot-continuity-extraction' : 'continuity-extraction',
