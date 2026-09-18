@@ -226,6 +226,10 @@ export type RenderAttempt = {
   provider_transaction_id: string | null;
   provider_request_id: string | null;
   asset_uri: string | null;
+  asset_sha256: string | null;
+  asset_media_type: string | null;
+  asset_byte_length: number | null;
+  asset_storage: 'parable-blobs-v1' | null;
   poster_uri: string | null;
   estimated_cost_usd: number | null;
   actual_cost_usd: number | null;
