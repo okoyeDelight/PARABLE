@@ -3,6 +3,7 @@ import {
   saveInspirationProfile,
   type InspirationProfile
 } from './_lib/inspiration-profile-ai.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -44,6 +45,21 @@ export default async (request: Request) => {
   const rightsStatus = clean(body.rightsStatus || 'unverified', 40) as InspirationProfile['source']['rights_status'];
 
   if (!projectId || !safeId(projectId)) return json({ error: 'A valid projectId is required.' }, 400);
+
+  try {
+    const access = await authorizeProject(request, projectId, 'project:edit');
+    if (!access.actor.internal) {
+      return json({
+        error: 'Cinematic reference profiling must execute through a trusted durable worker.',
+        code: 'INTERNAL_REFERENCE_WORKER_REQUIRED'
+      }, 403);
+    }
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
   if (storyVersion && !safeId(storyVersion)) return json({ error: 'Invalid storyVersion.' }, 400);
   if (!imageUri || !safeHttpUrl(imageUri)) return json({ error: 'A valid public http(s) imageUri is required.' }, 400);
   if (!['official-media','licensed','owned','public-domain','unknown'].includes(origin)) {
