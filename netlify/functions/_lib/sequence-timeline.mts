@@ -69,13 +69,20 @@ export async function buildSequenceTimeline(args: {
   sceneId: string;
   shots: Array<Record<string, any>>;
   adaptationRef?: string | null;
-  spatialPlanHash?: string | null;
+  spatialPlan?: {
+    hash: string | null;
+    axisCritical: boolean;
+    approvalStatus: string | null;
+  } | null;
   accepted: Record<string, { ref: string; value: Record<string, any> } | null>;
   handoffs: Record<string, { ref: string; value: Record<string, any> } | null>;
   existing?: SequenceTimeline | null;
 }) {
   const blockers: string[] = [];
   const manualExceptions: string[] = [];
+  if (args.spatialPlan?.axisCritical && args.spatialPlan.approvalStatus !== 'approved') {
+    blockers.push('The current camera-axis spatial plan is not human-approved.');
+  }
   const ids = args.shots.map((shot, index) => clean(shot?.id || ('shot_' + (index + 1)), 96));
   const duplicateIds = ids.filter((id, index) => ids.indexOf(id) !== index);
   if (duplicateIds.length) blockers.push('Shot plan contains duplicate shot ids: ' + [...new Set(duplicateIds)].join(', ') + '.');
@@ -178,7 +185,8 @@ export async function buildSequenceTimeline(args: {
     story_version: args.storyVersion,
     scene_id: args.sceneId,
     adaptation_ref: args.adaptationRef || null,
-    spatial_plan_hash: args.spatialPlanHash || null,
+    spatial_plan_hash: args.spatialPlan?.hash || null,
+    spatial_plan_approval_status: args.spatialPlan?.approvalStatus || null,
     shot_count: args.shots.length,
     entries,
     readiness: {
