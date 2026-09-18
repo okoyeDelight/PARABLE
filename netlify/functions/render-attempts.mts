@@ -408,6 +408,31 @@ export default async (request: Request) => {
       }, 400);
     }
 
+    const finalManualReviewOverride = attempt.mode === 'final' && humanOverride && !finalAutoEligible;
+    if (finalManualReviewOverride && body.motionReviewConfirmed !== true) {
+      return json({
+        error: 'A final-motion override requires explicit confirmation that the reviewer watched the completed video, not only the first frame or QA summary.',
+        code: 'FULL_MOTION_REVIEW_CONFIRMATION_REQUIRED',
+        required_field: 'motionReviewConfirmed'
+      }, 400);
+    }
+
+    const knownMotionDefects = Boolean(
+      motionInspection &&
+      ['REPAIR','REJECT'].includes(String(motionInspection.decision || ''))
+    ) || Boolean(qa && ['REPAIR','REJECT'].includes(String(qa.decision || '')));
+
+    if (finalManualReviewOverride && knownMotionDefects && body.acceptKnownDefects !== true) {
+      return json({
+        error: 'The motion inspector/QA recorded known defects. Acceptance requires an explicit acknowledgement of those defects.',
+        code: 'KNOWN_MOTION_DEFECTS_ACKNOWLEDGEMENT_REQUIRED',
+        required_field: 'acceptKnownDefects',
+        motion_decision: motionInspection?.decision || null,
+        qa_decision: qa?.decision || null,
+        blockers: motionInspection?.blockers || qa?.blockers || []
+      }, 400);
+    }
+
     let lease: ProjectMutationLease | null = null;
     try {
       lease = await acquireProjectMutation({
@@ -435,6 +460,8 @@ export default async (request: Request) => {
           qa,
           motion_inspection: motionInspection || null,
           accepted_by_human_override: humanOverride && !finalAutoEligible,
+          full_motion_review_confirmed: finalManualReviewOverride ? true : null,
+          known_motion_defects_acknowledged: finalManualReviewOverride && knownMotionDefects ? true : null,
           reviewer_note: reviewerNote || null
         }
       });
@@ -499,6 +526,8 @@ export default async (request: Request) => {
           motion_sample_set_hash: motionInspection?.sample_set_hash || null,
           handoff_frame_sha256: handoffSample?.sha256 || null,
           human_override: humanOverride && !finalAutoEligible,
+          full_motion_review_confirmed: finalManualReviewOverride ? true : null,
+          known_motion_defects_acknowledged: finalManualReviewOverride && knownMotionDefects ? true : null,
           reviewer_note: reviewerNote || null
         },
         {
@@ -513,6 +542,8 @@ export default async (request: Request) => {
         authoritative_ref: acceptedRef,
         handoff_ref: handoffRef,
         human_override: humanOverride && !finalAutoEligible,
+        full_motion_review_confirmed: finalManualReviewOverride ? true : null,
+        known_motion_defects_acknowledged: finalManualReviewOverride && knownMotionDefects ? true : null,
         reviewer_note: reviewerNote || null,
         motion_inspection_id: motionInspection?.id || null
       });
