@@ -1,6 +1,11 @@
 import { getContext } from '@netlify/functions';
 import { readJobHealth } from './_lib/job-store.mts';
 import { getDeployStore, getStore } from '@netlify/blobs';
+import {
+  transactionalStateConfigured,
+  transactionalStateHealth,
+  transactionalStateMode
+} from './_lib/transactional-state.mts';
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
   status,
@@ -42,7 +47,26 @@ export default async (request: Request) => {
   const queueMode = Netlify.env.get('PARABLE_QUEUE_MODE') || (deployContext === 'deploy-preview' ? 'background' : 'auto');
   const jobHealth = await readJobHealth();
 
-  const healthy = storageOk;
+  const stateMode = transactionalStateMode();
+  let transactionalStateOk = stateMode !== 'postgres';
+  let transactionalStateLatency = 0;
+  let transactionalStateError: string | null = null;
+  let transactionalStateUpstream: Record<string, unknown> | null = null;
+
+  if (stateMode === 'postgres') {
+    const t = Date.now();
+    try {
+      transactionalStateUpstream = await transactionalStateHealth();
+      transactionalStateOk = transactionalStateUpstream?.ok === true;
+    } catch (error) {
+      transactionalStateOk = false;
+      transactionalStateError = error instanceof Error ? error.message : String(error);
+    } finally {
+      transactionalStateLatency = Date.now() - t;
+    }
+  }
+
+  const healthy = storageOk && transactionalStateOk;
   return json({
     ok: healthy,
     runtime: 'parable-scale-foundation-v1',
@@ -65,7 +89,15 @@ export default async (request: Request) => {
         configured: openrouter,
         fallback_available: true
       },
-      durable_job_health: jobHealth
+      durable_job_health: jobHealth,
+      transactional_state: {
+        mode: stateMode,
+        configured: transactionalStateConfigured(),
+        ok: transactionalStateOk,
+        latency_ms: transactionalStateLatency,
+        error: transactionalStateError,
+        upstream: transactionalStateUpstream
+      }
     },
     architecture: {
       target_concurrent_active_users: 1000,
@@ -77,9 +109,15 @@ export default async (request: Request) => {
       workload_execution_leases: true,
       telemetry_write_strategy: 'append-only-sharded',
       production_blob_consistency: 'strong',
-      project_concurrency_guard: 'strong-cas-revision-leases',
+      project_concurrency_guard: stateMode === 'postgres'
+        ? 'postgres-row-lock-plus-expected-revision-cas'
+        : 'strong-blob-cas-revision-leases',
       project_revision_endpoint: '/api/project-revision',
-      transactional_hot_state: 'optimistic-cas-active-postgres-schema-prepared'
+      transactional_hot_state: stateMode === 'postgres'
+        ? 'postgres-authoritative-cas'
+        : 'blob-cas-compatibility-mode',
+      immutable_state_archive: 'netlify-blobs',
+      split_brain_write_fallback: false
     },
     deployment: {
       commit_ref: Netlify.env.get('COMMIT_REF') || null,
