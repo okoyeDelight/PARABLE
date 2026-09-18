@@ -34,6 +34,20 @@ function stores() {
 const clean = (value: unknown, max = 240) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
 
+function shotContinuityBreak(shot: Record<string, any>) {
+  if (shot?.continuity_break === true || shot?.sequence_reset === true) return true;
+  const text = [
+    shot?.beat,
+    shot?.purpose,
+    shot?.dramatic_purpose,
+    shot?.blocking,
+    shot?.continuity_notes,
+    shot?.transition
+  ].map((value) => clean(value, 500).toLowerCase()).join(' ');
+
+  return /\b(cutaway|insert shot|time jump|later that|earlier that|meanwhile|elsewhere|new location|montage|flashback|flash forward|dream sequence)\b/.test(text);
+}
+
 async function directionsFor(projectId: string, storyVersion: string) {
   const directions = stores().directions;
   const prefix = 'project/' + projectId + '/' + storyVersion + '/';
@@ -164,6 +178,17 @@ export default async (request: Request) => {
   const packages = await Promise.all(filteredShots.map(async (shot: any) => {
     const id = String(shot?.id || '');
     const direction = directionByShot[id] || null;
+    const planIndex = plan.findIndex((candidate: any) => String(candidate?.id || '') === id);
+    const previousShot = planIndex > 0 ? plan[planIndex - 1] : null;
+    const previousShotId = previousShot ? String(previousShot?.id || '') : '';
+    const continuityBreak = shotContinuityBreak(shot);
+    const previousHandoffState = previousShotId && !continuityBreak
+      ? await readAuthoritativeProjectState<Record<string, any>>(
+          projectId,
+          'render:handoff:' + resolvedStoryVersion + ':' + resolvedSceneId + ':' + previousShotId
+        )
+      : null;
+    const previousHandoff = previousHandoffState?.value || null;
     const shotState = id
       ? await s.shotStates.get(
           'project/' + projectId + '/' + resolvedStoryVersion + '/' + resolvedSceneId + '/' + id,
@@ -186,10 +211,28 @@ export default async (request: Request) => {
       }] : [])
     ];
 
+    const sequenceWarnings = [
+      ...(previousShotId && !continuityBreak && !previousHandoff ? [{
+        severity: 'blocker',
+        code: 'PREVIOUS_RENDER_HANDOFF_REQUIRED',
+        message:
+          'Shot ' + id + ' continues directly from ' + previousShotId +
+          ', but the previous shot has not been accepted into the authoritative sequence yet.'
+      }] : []),
+      ...(previousShotId && !continuityBreak && previousHandoff && !previousHandoff?.handoff_frame ? [{
+        severity: 'blocker',
+        code: 'PREVIOUS_HANDOFF_FRAME_REQUIRED',
+        message:
+          'The previous accepted shot has no trusted final-frame handoff evidence. ' +
+          'Automatic pixel-continuity rendering is blocked until it is re-inspected or this shot is explicitly marked as a continuity break.'
+      }] : [])
+    ];
+
     const shotBlockers = [
       ...sceneBlockers,
       ...(Array.isArray(shotState?.warnings) ? shotState.warnings : []),
-      ...spatialWarnings
+      ...spatialWarnings,
+      ...sequenceWarnings
     ].filter((warning: any) => warning?.severity === 'blocker');
 
     const checked = Boolean(shotState);
@@ -197,7 +240,7 @@ export default async (request: Request) => {
     const continuityAfter = shotState?.render_contract_after || sceneContract;
 
     return {
-      render_package_version: 'parable-render-handoff-v2',
+      render_package_version: 'parable-render-handoff-v3',
       project_id: projectId,
       story_version: resolvedStoryVersion,
       scene_id: resolvedSceneId,
@@ -219,6 +262,19 @@ export default async (request: Request) => {
       scene_render_notes: sceneState?.render_notes || {},
       shot_render_notes: shotState?.render_notes || {},
       spatial_continuity: spatial,
+      previous_accepted_handoff: previousHandoff,
+      sequence_handoff: {
+        previous_shot_id: previousShotId || null,
+        continuity_break: continuityBreak,
+        status: continuityBreak || !previousShotId
+          ? 'not-required'
+          : previousHandoff?.handoff_frame
+            ? 'ready'
+            : previousHandoff
+              ? 'missing-trusted-frame'
+              : 'awaiting-previous-acceptance',
+        authoritative_ref: previousHandoffState?.ref || null
+      },
       hard_constraints: {
         preserve_identity: true,
         preserve_wardrobe: true,
@@ -229,6 +285,8 @@ export default async (request: Request) => {
         preserve_camera_axis: true,
         preserve_room_topology: true,
         preserve_character_knowledge: true,
+        match_previous_accepted_handoff:
+          Boolean(previousShotId && !continuityBreak && previousHandoff?.handoff_frame),
         no_unmarked_state_changes: true
       },
       can_render: checked && Boolean(sceneState?.can_render) && Boolean(shotState?.can_render) && shotBlockers.length === 0,
@@ -237,7 +295,8 @@ export default async (request: Request) => {
         sceneState?.requires_human_review ||
         shotState?.requires_human_review ||
         spatialApprovalRequired ||
-        (spatial?.overridden_blockers || []).length
+        (spatial?.overridden_blockers || []).length ||
+        (previousShotId && !continuityBreak && !previousHandoff?.handoff_frame)
       )
     };
   }));
