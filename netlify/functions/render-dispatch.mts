@@ -1,6 +1,7 @@
 import { prepareRendererRequest } from './_lib/render-adapters.mts';
 import { routeRenderSpec } from './_lib/render-router.mts';
 import { evaluateProviderSpend } from './_lib/render-commerce.mts';
+import { readHiggsfieldCredentials } from './_lib/higgsfield-credentials.mts';
 import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
 import {
   acknowledgeProviderSubmission,
@@ -191,7 +192,7 @@ async function dispatchFal(attempt: any, spec: any, approvedKeyframe: any = null
 
 
 async function dispatchHiggsfield(attempt: any, spec: any, approvedKeyframe: any = null) {
-  const credentials = Netlify.env.get('HF_CREDENTIALS') || '';
+  const credentials = readHiggsfieldCredentials();
   if (!credentials) {
     return {
       ok: false,

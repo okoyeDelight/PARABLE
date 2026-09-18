@@ -1,4 +1,5 @@
 import type { ShotRenderSpec } from './render-foundation.mts';
+import { readHiggsfieldCredentials } from './higgsfield-credentials.mts';
 
 export type RendererProvider = 'fal' | 'higgsfield' | 'runway' | 'external';
 
@@ -104,7 +105,7 @@ function defaultCapabilities(mode: 'draft' | 'final' = 'final'): RendererCapabil
       provider: 'higgsfield',
       model: higgsfieldModel || 'unconfigured',
       configured: Boolean(
-        Netlify.env.get('HF_CREDENTIALS') &&
+        readHiggsfieldCredentials() &&
         higgsfieldModel &&
         higgsfieldAdapterRegistered &&
         globalBillableEnabled &&
