@@ -62,6 +62,26 @@ export async function ingestRenderMedia(args:{
   provider:string;
   providerRequestId?:string|null;
 }){
+  const previousOrigin=await stores().origins.get(
+    originKey(args.projectId,args.attemptId),
+    {type:'json'}
+  ) as Record<string,any>|null;
+  if(previousOrigin?.sha256&&validRenderMediaHash(previousOrigin.sha256)){
+    const existingAsset=await readRenderMedia(args.projectId,String(previousOrigin.sha256));
+    if(existingAsset){
+      return {
+        ...existingAsset.metadata,
+        sha256:String(previousOrigin.sha256).toLowerCase(),
+        media_type:String(existingAsset.metadata.media_type||'video/mp4'),
+        byte_length:Number(existingAsset.metadata.byte_length||existingAsset.bytes.size),
+        storage:'parable-blobs-v1' as const,
+        canonical_uri:canonicalRenderMediaUri(String(previousOrigin.sha256)),
+        origin:previousOrigin,
+        deduplicated:true
+      };
+    }
+  }
+
   const sourceUrl=validateProviderAssetUrl(args.sourceUrl);
   let response:Response;
   try{
