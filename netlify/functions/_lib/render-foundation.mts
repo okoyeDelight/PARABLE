@@ -223,6 +223,7 @@ export type RenderAttempt = {
   mode: 'draft' | 'final';
   keyframe_approval_ref: string | null;
   keyframe_asset_uri: string | null;
+  keyframe_asset_sha256?: string | null;
   keyframe_plan_hash: string | null;
   provider_transaction_id: string | null;
   provider_request_id: string | null;
