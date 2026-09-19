@@ -1,0 +1,41 @@
+name: PARABLE Immutable Render Media Smoke
+
+on:
+  push:
+    branches: [immersive-v2, main]
+    paths:
+      - 'netlify/functions/_lib/render-media-ingest-core.mts'
+      - 'netlify/functions/_lib/render-media-assets.mts'
+      - 'netlify/functions/render-media-asset.mts'
+      - 'netlify/functions/render-provider-status.mts'
+      - 'netlify/functions/_lib/motion-frame-extractor.mts'
+      - 'netlify/functions/render-motion-inspect.mts'
+      - 'netlify/functions/_lib/sequence-timeline.mts'
+      - 'netlify/functions/_lib/render-foundation.mts'
+      - 'tools/render_media_ingest_smoke.mts'
+      - 'tools/render_foundation_smoke.mts'
+      - '.github/workflows/render-media-ingest-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-immutable-render-media-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Prove bounded immutable media ingestion primitives
+        run: node tools/render_media_ingest_smoke.mts
+      - name: Prove locked sequence still passes render foundation
+        run: node tools/render_foundation_smoke.mts
