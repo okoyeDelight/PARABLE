@@ -16,6 +16,7 @@ import {
 } from './provider-transactions.mts';
 import type { RenderAttempt, ShotRenderSpec } from './render-foundation.mts';
 import type { MotionFrameEvidence } from './motion-inspector-ai.mts';
+import { resolveRenderMediaUrl } from './render-media-assets.mts';
 
 export type MotionFrameSet = {
   frame_set_version: 'parable-motion-frame-set-v1';
@@ -231,17 +232,18 @@ export async function extractMotionFrames(args: {
   attempt: RenderAttempt;
   spec: ShotRenderSpec;
 }) {
-  if (!args.attempt.asset_uri || !safeHttpUrl(args.attempt.asset_uri)) {
-    throw new Error('Completed render has no valid video asset URI.');
+  if (!args.attempt.asset_uri) {
+    throw new Error('Completed render has no immutable video asset reference.');
   }
 
   const cached = await readCached(args.attempt);
   if (cached) return { frameSet: cached, deduplicated: true };
 
+  const sourceVideoUrl = await resolveRenderMediaUrl(args.attempt, 'motion-frame-extractor');
   const endpoint = 'fal-ai/workflow-utilities/extract-nth-frame';
   const plan = extractionPlan(args.spec);
   const body = {
-    video_url: args.attempt.asset_uri,
+    video_url: sourceVideoUrl,
     frame_interval: plan.frameInterval,
     output_format: 'jpg',
     max_frames: plan.target,
