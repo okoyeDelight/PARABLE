@@ -559,7 +559,7 @@ const acceptedFor = (shotId:string) => ({
     motion_inspection: {
       id: 'motion_' + shotId,
       attempt_id: 'attempt_' + shotId,
-      asset_uri: 'https://example.com/' + shotId + '.mp4',
+      asset_uri: 'parable://render/' + 'c'.repeat(64),
       spec_hash: 'spec_' + shotId,
       decision: 'CLEAR_FOR_QA',
       sample_set_hash: 'samples_' + shotId
