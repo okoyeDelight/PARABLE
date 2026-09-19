@@ -4,7 +4,34 @@ const engines = [
   { engine_key: 'culture', display_name: 'Cultural Intelligence', engine_type: 'context', status: 'foundation', version: '0.1.0' },
   { engine_key: 'location', display_name: 'Location Grounding', engine_type: 'context', status: 'foundation', version: '0.1.0' },
   { engine_key: 'performance', display_name: 'Performance & Audio', engine_type: 'production', status: 'foundation', version: '0.1.0' },
-  { engine_key: 'rendering', display_name: 'Rendering Router', engine_type: 'production', status: 'foundation', version: '0.1.0' },
+  {
+    engine_key: 'rendering',
+    display_name: 'PARABLE Render Engine',
+    engine_type: 'production',
+    status: 'active-foundation',
+    version: '1.2.0',
+    capabilities: [
+      'visual-canon',
+      'composition-intelligence',
+      'provider-neutral-shot-spec',
+      'keyframe-first-planning',
+      'persisted-human-keyframe-approval',
+      'durable-first-frame-generation',
+      'protected-visual-inspector',
+      'protected-full-motion-visual-inspector',
+      'trusted-motion-frame-extraction',
+      'immutable-motion-frame-evidence',
+      'bound-motion-qa-acceptance',
+      'accepted-shot-sequence-handoffs',
+      'room-topology-memory',
+      'camera-axis-180-degree-memory',
+      'rights-aware-cinematic-inspiration',
+      'renderer-routing',
+      'render-attempt-ledger',
+      'qa-repair-contracts',
+      'fal-seedance2-runtime-adapter'
+    ]
+  },
   { engine_key: 'learning', display_name: 'Continual Learning', engine_type: 'learning', status: 'foundation', version: '0.1.0' }
 ];
 

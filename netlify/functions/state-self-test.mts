@@ -1,0 +1,336 @@
+import {
+  claimTransactionalJob,
+  ensureTransactionalJob,
+  revokeTransactionalRights,
+  transactionalRequestFingerprint,
+  transactionalStateMode,
+  transitionTransactionalJob,
+  upsertTransactionalRights,
+  TransactionalStateError
+} from './_lib/transactional-state.mts';
+import {
+  beginProviderSubmission,
+  ensureProviderTransaction,
+  markProviderSubmissionAmbiguous,
+  ProviderTransactionError
+} from './_lib/provider-transactions.mts';
+
+const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+  status,
+  headers: {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store'
+  }
+});
+
+export default async (request: Request) => {
+  if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+  if (Netlify.context?.deploy?.context !== 'deploy-preview') return json({ error: 'Not found' }, 404);
+  if (transactionalStateMode() !== 'postgres') {
+    return json({ ok: false, error: 'PostgreSQL transactional state is not active.' }, 503);
+  }
+
+  const token = crypto.randomUUID().replaceAll('-', '').slice(0, 20);
+  const projectId = 'tx_probe_' + token;
+  const errorCode = (error: unknown) => String((error as any)?.code || '');
+
+  try {
+
+    const ensured = await ensureProviderTransaction({
+      projectId,
+      operationType: 'probe-render',
+      operationId: 'attempt_' + token,
+      provider: 'probe-provider',
+      model: 'probe-model',
+      requestBody: { prompt: 'probe', token },
+      estimatedCostUsd: 0.01
+    });
+
+    const submitting = await beginProviderSubmission(ensured.transaction.id, projectId);
+
+    let duplicateSubmissionBlocked = false;
+    try {
+      await beginProviderSubmission(ensured.transaction.id, projectId);
+    } catch (error) {
+      duplicateSubmissionBlocked =
+        error instanceof ProviderTransactionError &&
+        error.code === 'PROVIDER_SUBMISSION_AMBIGUOUS';
+    }
+
+    const ambiguous = await markProviderSubmissionAmbiguous({
+      id: ensured.transaction.id,
+      projectId,
+      detail: 'Synthetic ambiguous provider response.'
+    });
+
+    let ambiguousRetryBlocked = false;
+    try {
+      await beginProviderSubmission(ensured.transaction.id, projectId);
+    } catch (error) {
+      ambiguousRetryBlocked =
+        error instanceof ProviderTransactionError &&
+        error.code === 'PROVIDER_SUBMISSION_AMBIGUOUS';
+    }
+
+    // Rights are versioned in PostgreSQL and revalidated when a paid provider
+    // submission is claimed.
+    const assetHash = await transactionalRequestFingerprint('rights:' + token);
+    const rights = await upsertTransactionalRights({
+      projectId,
+      assetSha256: assetHash,
+      rights: {
+        status: 'approved',
+        basis: 'generated',
+        rights_holder: 'PARABLE synthetic self-test',
+        likeness_permission: true,
+        voice_permission: true,
+        ai_generation_permission: true,
+        commercial_use: false,
+        territories: ['self-test'],
+        expires_at: null,
+        evidence_sha256: null,
+        evidence_note: 'Synthetic deploy-preview rights probe.',
+        declared_by_actor_id: 'usr_preview_owner',
+        declared_at: new Date().toISOString()
+      }
+    });
+
+    const rightsAttempt = await ensureProviderTransaction({
+      projectId,
+      operationType: 'rights-probe-render',
+      operationId: 'rights_attempt_' + token,
+      provider: 'probe-provider',
+      model: 'probe-model',
+      requestBody: { prompt: 'rights-probe', token },
+      estimatedCostUsd: 0.01
+    });
+
+    await revokeTransactionalRights({
+      projectId,
+      assetSha256: assetHash,
+      actorId: 'usr_preview_owner',
+      reason: 'Synthetic revocation before submission.'
+    });
+
+    let revokedRightsBlockedSpend = false;
+    try {
+      await beginProviderSubmission(
+        rightsAttempt.transaction.id,
+        projectId,
+        [{
+          asset_sha256: assetHash,
+          rights_revision: Number(rights.rights_revision || 1),
+          require_likeness: true,
+          require_voice: false,
+          require_commercial: false
+        }]
+      );
+    } catch (error) {
+      revokedRightsBlockedSpend = errorCode(error) === 'RIGHTS_ASSERTION_FAILED';
+    }
+
+    // Durable worker ownership is atomic in PostgreSQL.
+    const jobId = 'job_probe_' + token;
+    const payloadHash = await transactionalRequestFingerprint({ token, kind: 'scale-noop' });
+    const job = await ensureTransactionalJob({
+      id: jobId,
+      kind: 'scale-noop',
+      projectId,
+      workspaceId: 'ws_probe',
+      actorUserId: 'usr_preview_owner',
+      authContext: {
+        actor_id: 'usr_preview_owner',
+        provider: 'parable-preview',
+        subject: 'preview-owner',
+        workspace_id: 'ws_probe',
+        role: 'owner',
+        action: 'project:edit'
+      },
+      payloadHash,
+      idempotencyKey: 'probe-' + token
+    });
+
+    const leaseA = 'lease_a_' + token;
+    const leaseB = 'lease_b_' + token;
+    const claimA = await claimTransactionalJob({
+      id: jobId,
+      leaseToken: leaseA,
+      attempt: 1,
+      leaseMs: 30000
+    });
+    const claimB = await claimTransactionalJob({
+      id: jobId,
+      leaseToken: leaseB,
+      attempt: 1,
+      leaseMs: 30000
+    });
+
+    let staleLeaseRejected = false;
+    try {
+      await transitionTransactionalJob({
+        id: jobId,
+        toStatus: 'succeeded',
+        leaseToken: leaseB,
+        resultRef: 'synthetic://wrong-worker'
+      });
+    } catch (error) {
+      staleLeaseRejected = errorCode(error) === 'JOB_LEASE_MISMATCH';
+    }
+
+    const completed = await transitionTransactionalJob({
+      id: jobId,
+      toStatus: 'succeeded',
+      leaseToken: leaseA,
+      resultRef: 'synthetic://self-test'
+    });
+
+    // Backpressure must preserve work instead of dropping it. Two jobs in the
+    // same project compete under a one-worker project limit: the first runs,
+    // the second is refused temporarily, then succeeds after capacity frees.
+    const capacityProjectId = projectId + '_capacity';
+    const capacityJobA = 'job_capacity_a_' + token;
+    const capacityJobB = 'job_capacity_b_' + token;
+    const capacityPayloadHashA = await transactionalRequestFingerprint({ token, slot: 'a' });
+    const capacityPayloadHashB = await transactionalRequestFingerprint({ token, slot: 'b' });
+
+    await ensureTransactionalJob({
+      id: capacityJobA,
+      kind: 'scale-noop',
+      projectId: capacityProjectId,
+      workspaceId: 'ws_probe',
+      actorUserId: 'usr_preview_owner',
+      authContext: {
+        actor_id: 'usr_preview_owner',
+        provider: 'parable-preview',
+        subject: 'preview-owner',
+        workspace_id: 'ws_probe',
+        role: 'owner',
+        action: 'project:edit'
+      },
+      payloadHash: capacityPayloadHashA,
+      idempotencyKey: 'capacity-a-' + token
+    });
+
+    await ensureTransactionalJob({
+      id: capacityJobB,
+      kind: 'scale-noop',
+      projectId: capacityProjectId,
+      workspaceId: 'ws_probe',
+      actorUserId: 'usr_preview_owner',
+      authContext: {
+        actor_id: 'usr_preview_owner',
+        provider: 'parable-preview',
+        subject: 'preview-owner',
+        workspace_id: 'ws_probe',
+        role: 'owner',
+        action: 'project:edit'
+      },
+      payloadHash: capacityPayloadHashB,
+      idempotencyKey: 'capacity-b-' + token
+    });
+
+    const capacityLeaseA = 'capacity_lease_a_' + token;
+    const capacityLeaseB = 'capacity_lease_b_' + token;
+
+    const capacityClaimA = await claimTransactionalJob({
+      id: capacityJobA,
+      leaseToken: capacityLeaseA,
+      attempt: 1,
+      leaseMs: 30000,
+      maxGlobalActive: 2000,
+      maxProjectActive: 1
+    });
+
+    const capacityClaimBWhileFull = await claimTransactionalJob({
+      id: capacityJobB,
+      leaseToken: capacityLeaseB,
+      attempt: 1,
+      leaseMs: 30000,
+      maxGlobalActive: 2000,
+      maxProjectActive: 1
+    });
+
+    await transitionTransactionalJob({
+      id: capacityJobA,
+      toStatus: 'succeeded',
+      leaseToken: capacityLeaseA,
+      resultRef: 'synthetic://capacity-a'
+    });
+
+    const capacityClaimBAfterRelease = await claimTransactionalJob({
+      id: capacityJobB,
+      leaseToken: capacityLeaseB,
+      attempt: 2,
+      leaseMs: 30000,
+      maxGlobalActive: 2000,
+      maxProjectActive: 1
+    });
+
+    await transitionTransactionalJob({
+      id: capacityJobB,
+      toStatus: 'succeeded',
+      leaseToken: capacityLeaseB,
+      resultRef: 'synthetic://capacity-b'
+    });
+
+    const ok =
+      submitting.state === 'submitting' &&
+      duplicateSubmissionBlocked &&
+      ambiguous?.state === 'ambiguous' &&
+      ambiguousRetryBlocked &&
+      revokedRightsBlockedSpend &&
+      job.created === true &&
+      claimA.claimed === true &&
+      claimB.claimed === false &&
+      staleLeaseRejected &&
+      completed?.status === 'succeeded' &&
+      capacityClaimA.claimed === true &&
+      capacityClaimBWhileFull.claimed === false &&
+      capacityClaimBWhileFull.reason === 'capacity-project' &&
+      capacityClaimBAfterRelease.claimed === true;
+
+    return json({
+      ok,
+      probe_version: 'transactional-state-self-test-v4',
+      provider_spend_guard: {
+        first_submission_claimed: submitting.state === 'submitting',
+        duplicate_submission_blocked: duplicateSubmissionBlocked,
+        ambiguous_state_persisted: ambiguous?.state === 'ambiguous',
+        automatic_retry_blocked: ambiguousRetryBlocked
+      },
+      rights_guard: {
+        rights_revision: rights.rights_revision,
+        revoked_rights_blocked_paid_submission: revokedRightsBlockedSpend
+      },
+      durable_job_guard: {
+        created: job.created,
+        first_worker_claimed: claimA.claimed,
+        second_worker_blocked: claimB.claimed === false,
+        stale_worker_completion_rejected: staleLeaseRejected,
+        final_status: completed?.status || null
+      },
+      admission_control: {
+        first_project_worker_claimed: capacityClaimA.claimed,
+        excess_project_worker_deferred: capacityClaimBWhileFull.claimed === false,
+        saturation_reason: capacityClaimBWhileFull.reason || null,
+        deferred_worker_claimed_after_release: capacityClaimBAfterRelease.claimed
+      }
+    }, ok ? 200 : 500);
+  } catch (error) {
+    return json({
+      ok: false,
+      probe_version: 'transactional-state-self-test-v4',
+      error: error instanceof Error ? error.message : String(error),
+      code: errorCode(error) || null
+    }, 500);
+  }
+};
+
+export const config = {
+  path: '/api/state-self-test',
+  rateLimit: {
+    windowLimit: 8,
+    windowSize: 60,
+    aggregateBy: ['ip', 'domain']
+  }
+};

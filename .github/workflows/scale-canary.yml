@@ -1,0 +1,224 @@
+name: PARABLE Scale Canary
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/transactional-state.mts'
+      - 'netlify/functions/_lib/job-store.mts'
+      - 'netlify/functions/_lib/job-processor.mts'
+      - 'netlify/functions/jobs.mts'
+      - 'netlify/functions/platform-health.mts'
+      - 'netlify/functions/scale-probe.mts'
+      - 'tests/load/k6-scale-canary.js'
+      - 'tests/load/k6-queue-canary.js'
+      - 'database/job-admission-control-v1.sql'
+      - 'netlify/functions/_lib/job-recovery.mts'
+      - 'netlify/functions/job-reconciler.mts'
+      - 'netlify/functions/job-recovery-self-test.mts'
+      - 'database/durable-job-recovery-v1.sql'
+      - '.github/workflows/scale-canary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: read
+
+concurrency:
+  group: parable-scale-canary
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve exact Netlify deploy for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_ALIAS: https://deploy-preview-1--parable-studio.netlify.app
+          OUTPUT_VAR: PARABLE_BASE
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { appendFileSync } = await import('node:fs');
+
+          const repo = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const token = process.env.GH_TOKEN;
+          const fallbackAlias = process.env.PREVIEW_ALIAS;
+          const outputVar = process.env.OUTPUT_VAR || 'PREVIEW_BASE';
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+          const githubHeaders = {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28'
+          };
+
+          const normalizeSha = value => String(value || '').trim().toLowerCase();
+          const validDeployId = value => /^[a-zA-Z0-9_-]{6,128}$/.test(String(value || ''));
+
+          async function readJson(url) {
+            const response = await fetch(url, { cache: 'no-store' });
+            const text = await response.text();
+            let body = {};
+            try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 600) }; }
+            return { response, body };
+          }
+
+          for (let attempt = 1; attempt <= 90; attempt++) {
+            const statusResponse = await fetch(
+              `https://api.github.com/repos/${repo}/commits/${sha}/status`,
+              { headers: githubHeaders, cache: 'no-store' }
+            );
+
+            if (!statusResponse.ok) {
+              console.log(`attempt ${attempt}: GitHub status lookup -> ${statusResponse.status}`);
+              await sleep(4000);
+              continue;
+            }
+
+            const combined = await statusResponse.json();
+            const status = (combined.statuses || []).find(
+              item => item.context === 'netlify/parable-studio/deploy-preview'
+            );
+
+            console.log(
+              `attempt ${attempt}: netlify=${status?.state || 'missing'} target=${status?.target_url || 'none'}`
+            );
+
+            if (status?.state === 'failure' || status?.state === 'error') {
+              throw new Error('Netlify marked this exact commit deploy as failed.');
+            }
+
+            if (status?.state !== 'success') {
+              await sleep(4000);
+              continue;
+            }
+
+            const alias = String(status?.target_url || fallbackAlias || '').replace(/\/$/, '');
+            if (!/^https:\/\//i.test(alias)) {
+              throw new Error('Netlify succeeded but did not provide a usable preview URL.');
+            }
+
+            const identity = await readJson(alias + '/parable-deploy-identity.json?sha=' + encodeURIComponent(sha));
+            const observedCommit = normalizeSha(identity.body?.commit_ref);
+            const deployId = String(identity.body?.deploy_id || '').trim();
+
+            console.log(
+              `identity: status=${identity.response.status} commit=${observedCommit || 'missing'} deploy=${deployId || 'missing'}`
+            );
+
+            // A moving PR alias is never trusted by itself. It must prove that
+            // it is currently serving this exact Git commit and disclose the
+            // Netlify deploy id before any benchmark/smoke request can run.
+            if (!identity.response.ok || observedCommit !== normalizeSha(sha) || !validDeployId(deployId)) {
+              await sleep(4000);
+              continue;
+            }
+
+            const immutableBase = String(
+              identity.body?.immutable_url || `https://${deployId}--parable-studio.netlify.app`
+            ).replace(/\/$/, '');
+
+            const immutableIdentity = await readJson(immutableBase + '/parable-deploy-identity.json?sha=' + encodeURIComponent(sha));
+            if (
+              !immutableIdentity.response.ok ||
+              normalizeSha(immutableIdentity.body?.commit_ref) !== normalizeSha(sha) ||
+              String(immutableIdentity.body?.deploy_id || '') !== deployId
+            ) {
+              console.log('Immutable deploy identity verification failed; retrying.');
+              await sleep(4000);
+              continue;
+            }
+
+            appendFileSync(
+              process.env.GITHUB_ENV,
+              `${outputVar}=${immutableBase}\nNETLIFY_DEPLOY_ID=${deployId}\nPARABLE_COMMIT_REF=${sha}\n`
+            );
+            console.log('Verified immutable preview:', immutableBase);
+            process.exit(0);
+          }
+
+          throw new Error('Timed out waiting for a verified immutable Netlify deploy for this exact commit.');
+          NODE
+      - name: Verify admission-controlled preview
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PARABLE_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          for (let attempt = 1; attempt <= 60; attempt++) {
+            const r = await fetch(base + '/api/platform-health', { cache:'no-store' }).catch(() => null);
+            if (r) {
+              const body = await r.json().catch(() => ({}));
+              console.log(
+                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} overload=${body?.architecture?.overload_strategy || 'unknown'}`
+              );
+              if (
+                r.ok &&
+                body?.ok === true &&
+                body?.runtime === 'parable-scale-foundation-v5' &&
+                body?.architecture?.state_adapter_version === 'transactional-state-v4' &&
+                body?.architecture?.overload_strategy === 'durable-queue-plus-postgres-admission-control' &&
+                body?.architecture?.stalled_job_recovery === 'scheduled-postgres-reconciler' &&
+                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v4'
+              ) process.exit(0);
+            }
+            await sleep(4000);
+          }
+
+          throw new Error('Admission-controlled preview did not become ready.');
+          NODE
+
+      - name: Install k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run bounded read-tier concurrency canary
+        env:
+          PARABLE_READ_VUS: '120'
+          PARABLE_READ_ITERATIONS: '1200'
+        run: k6 run tests/load/k6-scale-canary.js
+
+      - name: Run bounded durable-queue concurrency canary
+        env:
+          PARABLE_QUEUE_VUS: '20'
+          PARABLE_QUEUE_ITERATIONS: '80'
+        run: k6 run tests/load/k6-queue-canary.js
+
+      - name: Verify service remains healthy after burst
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PARABLE_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          let last = null;
+          for (let attempt = 1; attempt <= 30; attempt++) {
+            const r = await fetch(base + '/api/platform-health', { cache:'no-store' });
+            const body = await r.json().catch(() => ({}));
+            last = body;
+            const capacity = body?.checks?.worker_capacity || {};
+            const snapshot = capacity?.snapshot || {};
+
+            console.log(
+              `post-burst ${attempt}: status=${r.status} active=${snapshot?.active_processing ?? 'unknown'} queued=${snapshot?.queued ?? 'unknown'} retrying=${snapshot?.retrying ?? 'unknown'}`
+            );
+
+            if (
+              r.ok &&
+              body?.ok === true &&
+              Number(snapshot?.active_processing || 0) <= Number(capacity?.configured_global_limit || 250)
+            ) {
+              process.exit(0);
+            }
+
+            await sleep(2000);
+          }
+
+          throw new Error('PARABLE did not return to a healthy bounded-capacity state: ' + JSON.stringify(last));
+          NODE

@@ -1,0 +1,353 @@
+name: PARABLE AI V8 Benchmark
+
+# Deploy-preview benchmark credentials are read from the freshly built preview environment.
+
+on:
+  push:
+    branches: [immersive-v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: read
+
+concurrency:
+  group: parable-ai-v8-benchmark
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify benchmark quality gate itself
+        run: node tools/benchmark_quality_smoke.mts
+
+      - name: Verify benchmark provider failover contract
+        run: node tools/benchmark_provider_smoke.mts
+
+      - name: Resolve exact Netlify deploy for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_ALIAS: https://deploy-preview-1--parable-studio.netlify.app
+          OUTPUT_VAR: PREVIEW_BASE
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { appendFileSync } = await import('node:fs');
+
+          const repo = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const token = process.env.GH_TOKEN;
+          const fallbackAlias = process.env.PREVIEW_ALIAS;
+          const outputVar = process.env.OUTPUT_VAR || 'PREVIEW_BASE';
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+          const githubHeaders = {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28'
+          };
+
+          const normalizeSha = value => String(value || '').trim().toLowerCase();
+          const validDeployId = value => /^[a-zA-Z0-9_-]{6,128}$/.test(String(value || ''));
+
+          async function readJson(url) {
+            const response = await fetch(url, { cache: 'no-store' });
+            const text = await response.text();
+            let body = {};
+            try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 600) }; }
+            return { response, body };
+          }
+
+          for (let attempt = 1; attempt <= 90; attempt++) {
+            const statusResponse = await fetch(
+              `https://api.github.com/repos/${repo}/commits/${sha}/status`,
+              { headers: githubHeaders, cache: 'no-store' }
+            );
+
+            if (!statusResponse.ok) {
+              console.log(`attempt ${attempt}: GitHub status lookup -> ${statusResponse.status}`);
+              await sleep(4000);
+              continue;
+            }
+
+            const combined = await statusResponse.json();
+            const status = (combined.statuses || []).find(
+              item => item.context === 'netlify/parable-studio/deploy-preview'
+            );
+
+            console.log(
+              `attempt ${attempt}: netlify=${status?.state || 'missing'} target=${status?.target_url || 'none'}`
+            );
+
+            if (status?.state === 'failure' || status?.state === 'error') {
+              throw new Error('Netlify marked this exact commit deploy as failed.');
+            }
+
+            if (status?.state !== 'success') {
+              await sleep(4000);
+              continue;
+            }
+
+            const alias = String(status?.target_url || fallbackAlias || '').replace(/\/$/, '');
+            if (!/^https:\/\//i.test(alias)) {
+              throw new Error('Netlify succeeded but did not provide a usable preview URL.');
+            }
+
+            const identity = await readJson(alias + '/parable-deploy-identity.json?sha=' + encodeURIComponent(sha));
+            const observedCommit = normalizeSha(identity.body?.commit_ref);
+            const deployId = String(identity.body?.deploy_id || '').trim();
+
+            console.log(
+              `identity: status=${identity.response.status} commit=${observedCommit || 'missing'} deploy=${deployId || 'missing'}`
+            );
+
+            // A moving PR alias is never trusted by itself. It must prove that
+            // it is currently serving this exact Git commit and disclose the
+            // Netlify deploy id before any benchmark/smoke request can run.
+            if (!identity.response.ok || observedCommit !== normalizeSha(sha) || !validDeployId(deployId)) {
+              await sleep(4000);
+              continue;
+            }
+
+            const immutableBase = String(
+              identity.body?.immutable_url || `https://${deployId}--parable-studio.netlify.app`
+            ).replace(/\/$/, '');
+
+            const immutableIdentity = await readJson(immutableBase + '/parable-deploy-identity.json?sha=' + encodeURIComponent(sha));
+            if (
+              !immutableIdentity.response.ok ||
+              normalizeSha(immutableIdentity.body?.commit_ref) !== normalizeSha(sha) ||
+              String(immutableIdentity.body?.deploy_id || '') !== deployId
+            ) {
+              console.log('Immutable deploy identity verification failed; retrying.');
+              await sleep(4000);
+              continue;
+            }
+
+            appendFileSync(
+              process.env.GITHUB_ENV,
+              `${outputVar}=${immutableBase}\nNETLIFY_DEPLOY_ID=${deployId}\nPARABLE_COMMIT_REF=${sha}\n`
+            );
+            console.log('Verified immutable preview:', immutableBase);
+            process.exit(0);
+          }
+
+          throw new Error('Timed out waiting for a verified immutable Netlify deploy for this exact commit.');
+          NODE
+      - name: Wait for AI V8 Deploy Preview
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          for (let attempt = 1; attempt <= 60; attempt++) {
+            try {
+              const r = await fetch(base + '/api/ai-status', { cache: 'no-store' });
+              const body = await r.json().catch(() => ({}));
+              console.log(`attempt ${attempt}: status=${r.status} runtime=${body?.ai_runtime?.version || 'unknown'}`);
+              if (
+                r.ok &&
+                body?.ai_runtime?.version === 'parable-ai-v8' &&
+                body?.story_understanding?.lanes?.benchmark?.enabled === true
+              ) process.exit(0);
+            } catch (error) {
+              console.log(`attempt ${attempt}: ${error.message}`);
+            }
+            await sleep(5000);
+          }
+          throw new Error('AI V8 preview did not become ready in time.');
+          NODE
+
+      - name: Run isolated synthetic Story + Critic benchmark
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          const assert = (condition, message) => { if (!condition) throw new Error(message); };
+
+          async function get(path) {
+            const r = await fetch(`${base}${path}`, { cache: 'no-store' });
+            const text = await r.text();
+            let body; try { body = JSON.parse(text); } catch { body = text; }
+            return { r, body };
+          }
+
+          async function post(body) {
+            const r = await fetch(`${base}/api/ai-benchmark`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+              signal: AbortSignal.timeout(60000)
+            });
+            const text = await r.text();
+            let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
+            return { r, body: parsed };
+          }
+
+          function externalProviderUnavailable(body) {
+            const text = JSON.stringify(body || {}).toLowerCase();
+            return (
+              text.includes('free-models-per-day') ||
+              text.includes('quota exceeded') ||
+              text.includes('insufficient credit') ||
+              text.includes('insufficient balance') ||
+              text.includes('billing') ||
+              text.includes('resource_exhausted') ||
+              text.includes('rate limit') ||
+              text.includes('too many requests') ||
+              text.includes('api key not valid') ||
+              text.includes('invalid api key') ||
+              text.includes('credential is not configured') ||
+              text.includes('no benchmark inference credential')
+            );
+          }
+
+          async function benchmark(fixture, stage) {
+            let last;
+            const maxAttempts = stage === 'critic' ? 5 : 3;
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              try {
+                last = await post({ fixture, stage });
+                console.log(`${fixture}/${stage} attempt ${attempt}: ${last.r.status} ${JSON.stringify(last.body).slice(0, 1100)}`);
+                if (last.r.ok && last.body?.passed) return { kind: 'model', body: last.body };
+
+                const serialized = JSON.stringify(last.body || {}).toLowerCase();
+                const circuitOpen = serialized.includes('circuit-open');
+
+                if (
+                  last.r.ok &&
+                  last.body?.engine?.mode === 'deterministic-fallback' &&
+                  circuitOpen &&
+                  attempt < maxAttempts
+                ) {
+                  console.log(`${fixture}/${stage}: provider circuit is cooling down; retrying instead of declaring quality unavailable.`);
+                  await sleep(18000);
+                  continue;
+                }
+
+                if (
+                  last.r.ok &&
+                  last.body?.engine?.mode === 'deterministic-fallback' &&
+                  externalProviderUnavailable(last.body)
+                ) {
+                  return { kind: 'external-provider-unavailable', body: last.body };
+                }
+              } catch (error) {
+                last = { body: { transport_error: error?.name || 'Error', detail: error?.message || String(error) } };
+                console.log(`${fixture}/${stage} attempt ${attempt}: transport failure ${JSON.stringify(last.body)}`);
+              }
+
+              if (attempt < maxAttempts) await sleep(stage === 'critic' ? 9000 : 4000);
+            }
+
+            throw new Error(`${fixture}/${stage} failed for a non-quota reason: ${JSON.stringify(last?.body).slice(0, 1500)}`);
+          }
+
+          const status = await get('/api/ai-status');
+          assert(status.r.ok, `AI status failed: ${status.r.status}`);
+          assert(status.body?.ai_runtime?.version === 'parable-ai-v8', `wrong runtime: ${JSON.stringify(status.body)}`);
+          assert(status.body?.story_understanding?.lanes?.benchmark?.enabled === true, 'benchmark lane is not enabled on deploy preview');
+          assert(status.body?.story_understanding?.lanes?.protected?.default_for_user_manuscripts === true, 'protected manuscript lane is not default');
+          console.log(`AI status: ${JSON.stringify(status.body)}`);
+
+          const ids = ['altar', 'yes', 'watchman'];
+          const storyRuns = [];
+          for (const id of ids) {
+            const outcome = await benchmark(id, 'story');
+
+            if (outcome.kind === 'external-provider-unavailable') {
+              const { appendFileSync } = await import('node:fs');
+              const summary = [
+                '## PARABLE AI V8 external provider unavailable',
+                '',
+                'The exact deploy and benchmark endpoint are healthy, but every configured remote benchmark provider is currently unavailable.',
+                'PARABLE will now run its independent local real-model acceptance lane on this same commit instead of treating provider quota/credential health as model quality.',
+                ''
+              ].join('\n');
+              appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+              appendFileSync(process.env.GITHUB_ENV, 'PARABLE_EXTERNAL_BENCHMARK_BLOCKED=1\n');
+              console.log('::warning::Remote benchmark providers unavailable. Switching to the local real-model acceptance lane.');
+              process.exit(0);
+            }
+
+            const run = outcome.body;
+            assert(run.engine?.mode === 'model', `${id}: story did not use a model`);
+            assert(run.engine?.privacy_lane === 'benchmark', `${id}: wrong story privacy lane`);
+            assert(run.engine?.privacy_mode === 'benchmark-synthetic-only', `${id}: story privacy mode was not explicit`);
+            assert(run.result?.story_bible?.premise && run.result?.story_bible?.core_conflict, `${id}: incomplete Story Bible`);
+            assert(Array.isArray(run.result?.characters) && run.result.characters.length > 0, `${id}: no grounded characters`);
+            assert(Array.isArray(run.result?.scenes) && run.result.scenes.length > 0, `${id}: no scene understanding`);
+            assert(run.quality_gate?.version === 'parable-benchmark-quality-v1', `${id}: story quality gate missing`);
+            assert(run.quality_gate?.passed === true, `${id}: story quality gate failed: ${JSON.stringify(run.quality_gate)}`);
+            assert(Number(run.quality_gate?.score || 0) >= 0.82, `${id}: story quality score below threshold`);
+            storyRuns.push(run);
+            await sleep(2000);
+          }
+
+          const conflicts = new Set(storyRuns.map(x => String(x.result.story_bible.core_conflict).toLowerCase().replace(/\s+/g, ' ').trim()));
+          assert(conflicts.size >= 2, 'three genres collapsed into effectively identical core-conflict output');
+
+          for (const id of ids) {
+            const outcome = await benchmark(id, 'critic');
+            if (outcome.kind === 'external-provider-unavailable') {
+              const { appendFileSync } = await import('node:fs');
+              appendFileSync(
+                process.env.GITHUB_STEP_SUMMARY,
+                '\nRemote provider availability changed during Film Critic checks. Switching to the local real-model acceptance lane for the complete six-case gate.\n'
+              );
+              appendFileSync(process.env.GITHUB_ENV, 'PARABLE_EXTERNAL_BENCHMARK_BLOCKED=1\n');
+              console.log('::warning::Remote Film Critic provider unavailable. Switching to the local real-model acceptance lane.');
+              process.exit(0);
+            }
+
+            const run = outcome.body;
+            assert(run.engine?.mode === 'model', `${id}: critic did not use a model`);
+            assert(run.engine?.privacy_lane === 'benchmark', `${id}: wrong critic privacy lane`);
+            assert(run.engine?.privacy_mode === 'benchmark-synthetic-only', `${id}: critic privacy mode was not explicit`);
+            assert(run.result?.summary && run.result?.readiness, `${id}: critic output incomplete`);
+            assert(Array.isArray(run.result?.priorities) && run.result.priorities.length > 0, `${id}: critic priorities missing`);
+            assert(run.quality_gate?.version === 'parable-benchmark-quality-v1', `${id}: critic quality gate missing`);
+            assert(run.quality_gate?.passed === true, `${id}: critic quality gate failed: ${JSON.stringify(run.quality_gate)}`);
+            assert(Number(run.quality_gate?.score || 0) >= 0.82, `${id}: critic quality score below threshold`);
+            await sleep(2000);
+          }
+
+          const health = await get('/api/ai-health');
+          assert(health.r.ok, `AI health failed: ${health.r.status}`);
+          const recent = health.body?.health?.recent || [];
+          assert(recent.some(x => x.stage === 'story-understanding' && x.lane === 'benchmark' && x.ok), 'health has no successful Story Understanding benchmark event');
+          assert(recent.some(x => x.stage === 'film-critic' && x.lane === 'benchmark' && x.ok), 'health has no successful Film Critic benchmark event');
+          assert(recent.every(x => !('prompt' in x) && !('manuscript' in x)), 'health telemetry leaked story content');
+
+          const { appendFileSync } = await import('node:fs');
+          appendFileSync(process.env.GITHUB_ENV, 'PARABLE_EXTERNAL_BENCHMARK_BLOCKED=0\n');
+          console.log('PARABLE AI V8 benchmark passed: exact deploy verified; all 3 Story Understanding fixtures and all 3 Film Critic fixtures used real model inference and passed the fixture-specific quality gate; protected-lane and telemetry checks passed.');
+          NODE
+
+      - name: Install local real-model fallback
+        if: env.PARABLE_EXTERNAL_BENCHMARK_BLOCKED == '1'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve >/tmp/ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+          ollama pull qwen3:4b-instruct-2507-q4_K_M
+
+      - name: Run local real-model Story + Critic acceptance
+        if: env.PARABLE_EXTERNAL_BENCHMARK_BLOCKED == '1'
+        env:
+          PARABLE_LOCAL_BENCHMARK_MODEL: qwen3:4b-instruct-2507-q4_K_M
+        run: node tools/v8_local_model_acceptance.mts

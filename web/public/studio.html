@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f4f1ea" />
+  <title>PARABLE Studio — Story to Screen</title>
+  <meta name="description" content="A real PARABLE story-to-screen workflow: write, understand, adapt, direct and review." />
+  <link rel="stylesheet" href="/studio.css" />
+  <link rel="stylesheet" href="/studio-review.css" />
+  <link rel="stylesheet" href="/studio-render.css" />
+</head>
+<body>
+  <header class="studio-nav">
+    <a class="brand" href="/" aria-label="Back to PARABLE">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>PARABLE</span>
+    </a>
+    <div class="nav-meta">
+      <span class="engine-dot" id="engineDot"></span>
+      <span id="navEngineLabel">Story Intelligence ready</span>
+    </div>
+  </header>
+
+  <main class="studio-shell">
+    <aside class="story-pane">
+      <div class="pane-head">
+        <p class="eyebrow">01 · WRITE</p>
+        <h1>Begin with the story.</h1>
+        <p>Write naturally. PARABLE will turn the same words into story intelligence, screenplay beats and directable shots.</p>
+      </div>
+
+      <form id="goldenForm" class="story-form">
+        <label>
+          <span>Title</span>
+          <input name="title" value="The Altar" autocomplete="off" />
+        </label>
+        <label>
+          <span>Story</span>
+          <textarea name="sourceText" rows="12">The room fell quiet. Daniel looked at the empty chair across from him. Outside, rain touched the windows like fingertips. He had prayed for an answer. He had not expected silence. His calling had never frightened him until tonight.</textarea>
+        </label>
+        <div class="field-grid">
+          <label>
+            <span>Setting</span>
+            <input name="setting" value="Awka, Nigeria" autocomplete="off" />
+          </label>
+          <label>
+            <span>Primary audience</span>
+            <input name="primaryAudience" value="Global Christian young adults" autocomplete="off" />
+          </label>
+        </div>
+        <button class="analyze-btn" type="submit" id="analyzeBtn">
+          <span>Analyze story</span><b>→</b>
+        </button>
+        <p class="form-note" id="formNote">This action creates a real production and runs the backend Story Intelligence pipeline.</p>
+      </form>
+    </aside>
+
+    <section class="workbench" aria-live="polite">
+      <div class="workflow-bar workflow-bar-six">
+        <button class="workflow-step is-active" data-step="write"><span>01</span><b>Write</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="understand"><span>02</span><b>Understand</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="adapt"><span>03</span><b>Adapt</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="direct"><span>04</span><b>Direct</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="review"><span>05</span><b>Review</b></button>
+        <i></i>
+        <button class="workflow-step" data-step="render"><span>06</span><b>Render</b></button>
+      </div>
+
+      <div class="empty-state" id="emptyState">
+        <div class="empty-orbit" aria-hidden="true"><span></span><span></span><span></span><b></b></div>
+        <p class="eyebrow">REAL PRODUCT FLOW</p>
+        <h2>Your story becomes the interface.</h2>
+        <p>Run the story on the left. Every panel here will be generated from the actual text you entered.</p>
+      </div>
+
+      <div class="result-state" id="resultState" hidden>
+        <section class="result-panel intelligence-panel" data-panel="understand">
+          <div class="panel-head">
+            <div><p class="eyebrow">02 · UNDERSTAND</p><h2>Story Intelligence</h2></div>
+            <span class="engine-badge" id="engineBadge">waiting</span>
+          </div>
+          <div class="intel-grid">
+            <article><small>CHARACTERS</small><div id="charactersList"></div></article>
+            <article><small>THEMES</small><div id="themesList"></div></article>
+            <article><small>CORE CONFLICT</small><strong id="conflictText"></strong></article>
+            <article><small>WORLD</small><strong id="worldText"></strong></article>
+          </div>
+          <div class="turn-card">
+            <small>EMOTIONAL TURN</small>
+            <p id="emotionalTurn"></p>
+          </div>
+          <div class="trust-strip">
+            <article><small>ENGINE</small><strong id="modelMeta">Not run yet</strong><p id="versionMeta"></p></article>
+            <article><small>FIDELITY CHECK</small><strong id="confidenceText">—</strong><p id="reviewFlags">PARABLE will show uncertainty instead of hiding it.</p></article>
+          </div>
+        </section>
+
+        <section class="result-panel screenplay-panel" data-panel="adapt" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">03 · ADAPT</p><h2>Screenplay</h2></div>
+            <button class="copy-btn" id="copyScreenplay" type="button">Copy</button>
+          </div>
+          <div class="screenplay-page">
+            <h3 id="sceneHeading"></h3>
+            <div id="screenplayBeats"></div>
+          </div>
+        </section>
+
+        <section class="result-panel direct-panel" data-panel="direct" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">04 · DIRECT</p><h2>Shot direction</h2></div>
+            <span class="project-badge" id="projectBadge">LIVE PROJECT</span>
+          </div>
+
+          <div class="director-grid">
+            <div class="shot-browser" id="shotBrowser"></div>
+
+            <div class="shot-preview" id="shotPreview" data-lens="50">
+              <div class="preview-vignette"></div>
+              <div class="preview-grid"></div>
+              <div class="preview-window"></div>
+              <div class="preview-subject"></div>
+              <div class="preview-focus"><i></i><i></i><i></i><i></i></div>
+              <div class="preview-caption">
+                <small id="previewShotId">SHOT 02</small>
+                <strong id="previewBeat">Select a shot to direct it.</strong>
+              </div>
+            </div>
+
+            <div class="control-rack">
+              <label><span>Lens</span><select id="lensControl"><option>24</option><option>35</option><option selected>50</option><option>85</option></select></label>
+              <label><span>Motion</span><select id="motionControl"><option>Locked</option><option selected>Slow push-in</option><option>Slow drift</option><option>Gentle pull-back</option><option>Measured handheld</option></select></label>
+              <label><span>Light</span><select id="lightControl"><option selected>Soft motivated key</option><option>Natural environment</option><option>Window / practical edge</option><option>Low-contrast practicals</option><option>Shape silhouette and negative space</option></select></label>
+              <div class="performance-note"><small>PERFORMANCE</small><p id="performanceText">Hold one beat longer than comfortable.</p></div>
+              <p class="save-state" id="directionSaveState">Director choices are versioned with this story.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="result-panel review-panel" data-panel="review" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">05 · REVIEW</p><h2>Film Quality Critic</h2></div>
+            <span class="engine-badge" id="criticEngineBadge">not run</span>
+          </div>
+
+          <div class="critic-intro" id="criticIntro">
+            <div>
+              <small>BEFORE RENDER</small>
+              <h3>Ask the film to defend its choices.</h3>
+              <p>PARABLE reviews story fidelity, screenplay filmability, coverage, performance, editing options, continuity and Christian-content integrity. It suggests changes without silently rewriting the author.</p>
+            </div>
+            <button type="button" class="critic-run" id="runCriticBtn"><span>Run Director Critic</span><b>→</b></button>
+          </div>
+
+          <div class="critic-result" id="criticResult" hidden>
+            <div class="critic-summary">
+              <div>
+                <small>CRITIC SUMMARY</small>
+                <p id="criticSummary"></p>
+              </div>
+              <div class="critic-readiness">
+                <small>READINESS</small>
+                <strong id="criticReadiness">—</strong>
+                <span id="criticConfidence">—</span>
+              </div>
+            </div>
+
+            <div class="critic-best">
+              <small>STRONGEST CHOICE</small>
+              <strong id="criticStrongChoice"></strong>
+              <p id="criticStrongWhy"></p>
+            </div>
+
+            <div class="critic-section">
+              <div class="critic-section-head"><small>HIGH-LEVERAGE CHANGES</small><span id="criticPriorityCount"></span></div>
+              <div class="critic-priorities" id="criticPriorities"></div>
+            </div>
+
+            <div class="critic-safety-grid">
+              <article><small>CONTINUITY RISKS</small><div id="criticContinuity"></div></article>
+              <article><small>FIDELITY RISKS</small><div id="criticFidelity"></div></article>
+              <article><small>HUMAN QUESTIONS</small><div id="criticQuestions"></div></article>
+            </div>
+
+            <div class="critic-actions">
+              <p id="criticState">Review is versioned with this story.</p>
+              <button type="button" class="copy-btn" id="rerunCriticBtn">Run again</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="result-panel render-panel" data-panel="render" hidden>
+          <div class="panel-head">
+            <div><p class="eyebrow">06 · RENDER</p><h2>Render Engine</h2></div>
+            <span class="engine-badge" id="renderEngineBadge">foundation ready</span>
+          </div>
+
+          <div class="render-hero">
+            <div>
+              <small>PARABLE VISUAL CANON</small>
+              <h3>Approve the world before generating motion.</h3>
+              <p id="renderIntro">Build the visual canon, continuity-check the selected shot and generate a first-frame visual. On this Deploy Preview you can explicitly use the zero-cost development visual route for non-confidential test stories; full motion still waits for a compatible video renderer.</p>
+            </div>
+            <button type="button" class="render-primary" id="prepareRenderBtn"><span>Prepare selected shot</span><b>→</b></button>
+          </div>
+
+          <div class="render-grid">
+            <article class="render-card">
+              <div class="render-card-head"><small>VISUAL CANON</small><span id="canonStatus">not built</span></div>
+              <strong id="canonSummary">Characters, locations and approved references will appear here.</strong>
+              <p id="canonRights">Reference rights are checked separately from visual continuity locks.</p>
+            </article>
+
+            <article class="render-card">
+              <div class="render-card-head"><small>COMPOSITION INTELLIGENCE</small><span id="compositionStatus">waiting</span></div>
+              <strong id="compositionGrammar">—</strong>
+              <p id="compositionReason">PARABLE will choose composition for narrative reasons, not as a decorative preset.</p>
+            </article>
+
+            <article class="render-card">
+              <div class="render-card-head"><small>KEYFRAME GATE</small><span id="keyframeStatus">waiting</span></div>
+              <strong>First frame → motion → handoff frame</strong>
+              <p id="keyframeSummary">Final motion stays blocked until the visual world can be checked against canon.</p>
+            </article>
+
+            <article class="render-card">
+              <div class="render-card-head"><small>RENDER ROUTER</small><span id="routerStatus">waiting</span></div>
+              <strong id="routerSelection">No renderer selected yet.</strong>
+              <p id="routerReason">PARABLE will not weaken identity or continuity requirements just to force a generation.</p>
+            </article>
+          </div>
+
+          <div class="render-contract" id="renderContract" hidden>
+            <div class="render-contract-head">
+              <div><small>SHOT RENDER SPEC</small><strong id="renderShotLabel">—</strong></div>
+              <span id="renderSpecHash">—</span>
+            </div>
+            <div class="render-contract-grid">
+              <div><small>CAMERA</small><strong id="renderCamera">—</strong></div>
+              <div><small>PERFORMANCE</small><strong id="renderPerformance">—</strong></div>
+              <div><small>REFERENCES</small><strong id="renderReferences">—</strong></div>
+              <div><small>CONTINUITY</small><strong id="renderContinuity">—</strong></div>
+            </div>
+          </div>
+
+          <section class="keyframe-approval-box" id="keyframeApprovalBox" hidden>
+            <div class="keyframe-approval-head">
+              <div>
+                <small>HUMAN FIRST-FRAME APPROVAL</small>
+                <strong id="keyframeApprovalTitle">Final motion is locked.</strong>
+                <p id="keyframeApprovalState">Approve one exact still for this exact ShotRenderSpec before final motion can be created.</p>
+              </div>
+              <span id="keyframeApprovalBadge">LOCKED</span>
+            </div>
+
+            <div class="keyframe-approval-layout">
+              <div class="keyframe-preview-shell">
+                <img id="keyframeAssetPreview" alt="First-frame candidate preview" hidden />
+                <div id="keyframePreviewEmpty">
+                  <b>FIRST FRAME</b>
+                  <span>Paste the immutable generated/uploaded still URL that should become the motion starting frame.</span>
+                </div>
+              </div>
+
+              <div class="keyframe-controls">
+                <div class="keyframe-generate-row">
+                  <label>
+                    <span>Candidate image URL</span>
+                    <input id="keyframeAssetUrl" type="url" placeholder="https://…" autocomplete="off" />
+                  </label>
+                  <button type="button" class="copy-btn keyframe-generate-btn" id="generateKeyframeBtn">Generate candidate</button>
+                </div>
+
+                <label class="keyframe-immutable">
+                  <input id="freeDevVisual" type="checkbox" />
+                  <span><b>Free development visual.</b> I confirm this is a non-confidential test story. PARABLE may send only this shot's text prompt to a free third-party image service. No paid credits will be used, and the result is development-only until I approve it.</span>
+                </label>
+
+                <div class="keyframe-inspector" id="keyframeInspector" hidden>
+                  <div><small>VISUAL INSPECTOR</small><span id="keyframeInspectorBadge">waiting</span></div>
+                  <strong id="keyframeInspectorDecision">—</strong>
+                  <p id="keyframeInspectorSummary">PARABLE checks the generated still before you decide whether it becomes canon.</p>
+                  <div id="keyframeInspectorDetails"></div>
+                </div>
+
+                <div class="keyframe-meta-grid">
+                  <label>
+                    <span>Source</span>
+                    <select id="keyframeAssetSource">
+                      <option value="generated">Generated</option>
+                      <option value="uploaded">Uploaded / owned</option>
+                      <option value="external">External</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Optional SHA-256</span>
+                    <input id="keyframeContentSha" type="text" placeholder="64-character digest" autocomplete="off" />
+                  </label>
+                </div>
+
+                <label class="keyframe-immutable">
+                  <input id="keyframeImmutable" type="checkbox" />
+                  <span>I confirm this URL is an immutable asset, or I supplied its content SHA-256.</span>
+                </label>
+
+                <div class="keyframe-checks">
+                  <label><input type="checkbox" data-keyframe-check="identity" /><span>Identity</span></label>
+                  <label><input type="checkbox" data-keyframe-check="wardrobe_and_injuries" /><span>Wardrobe + injuries</span></label>
+                  <label><input type="checkbox" data-keyframe-check="props" /><span>Props</span></label>
+                  <label><input type="checkbox" data-keyframe-check="spatial_geography" /><span>Spatial geography</span></label>
+                  <label><input type="checkbox" data-keyframe-check="composition" /><span>Composition</span></label>
+                  <label><input type="checkbox" data-keyframe-check="lighting" /><span>Lighting</span></label>
+                  <label><input type="checkbox" data-keyframe-check="cultural_grounding" /><span>Cultural grounding</span></label>
+                  <label><input type="checkbox" data-keyframe-check="unwanted_text_or_artifacts" /><span>No unwanted text / AI artifacts</span></label>
+                </div>
+
+                <label>
+                  <span>Reviewer note</span>
+                  <input id="keyframeReviewerNote" type="text" placeholder="Optional unless overriding an inspector blocker" autocomplete="off" />
+                </label>
+
+                <label class="keyframe-immutable keyframe-override" id="keyframeOverrideRow" hidden>
+                  <input id="keyframeOverrideInspector" type="checkbox" />
+                  <span>Override the Visual Inspector blocker after manual review.</span>
+                </label>
+
+                <div class="keyframe-buttons">
+                  <button type="button" class="render-primary keyframe-approve" id="approveKeyframeBtn"><span>Approve first frame</span><b>✓</b></button>
+                  <button type="button" class="copy-btn" id="revokeKeyframeBtn" hidden>Revoke approval</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="film-reference-note">
+              <small>CHRISTIAN FILM REFERENCE LIBRARY</small>
+              <p>Movie frames and character faces can be registered as casting/cinematography inspiration. PARABLE keeps inspiration-only references out of the renderer; an exact actor likeness only becomes an identity reference after its usage rights are explicitly approved.</p>
+            </div>
+          </section>
+
+          <div class="render-actions">
+            <p id="renderState">No media is generated automatically. PARABLE prepares and validates the shot first.</p>
+            <button type="button" class="copy-btn" id="refreshRenderBtn">Refresh selected shot</button>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="studioToast" role="status" aria-live="polite"></div>
+  <script src="/studio.js"></script>
+</body>
+</html>

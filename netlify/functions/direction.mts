@@ -1,0 +1,134 @@
+import { getDeployStore, getStore } from '@netlify/blobs';
+import {
+  acquireProjectMutation,
+  abortProjectMutation,
+  commitProjectMutation,
+  projectMutationErrorResponse,
+  type ProjectMutationLease
+} from './_lib/project-concurrency.mts';
+import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
+
+const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {
+  status,
+  headers: {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store'
+  }
+});
+
+function store() {
+  const isProduction = Netlify.context?.deploy?.context === 'production';
+  return isProduction
+    ? getStore('parable-directions', { consistency: 'strong' })
+    : getDeployStore('parable-directions');
+}
+
+const clean = (value: unknown) => String(value ?? '').trim();
+const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
+const allowedLens = new Set([12, 14, 16, 18, 20, 24, 28, 32, 35, 40, 50, 65, 75, 85, 100, 135, 200]);
+
+export default async (request: Request) => {
+  if (!['GET', 'POST'].includes(request.method)) return json({ error: 'Method not allowed' }, 405);
+
+  const directions = store();
+
+  if (request.method === 'GET') {
+    const url = new URL(request.url);
+    const projectId = clean(url.searchParams.get('projectId'));
+    const storyVersion = clean(url.searchParams.get('storyVersion'));
+    if (!projectId || !storyVersion || !safeId(projectId) || !safeId(storyVersion)) {
+      return json({ error: 'A valid projectId and storyVersion are required.' }, 400);
+    }
+
+    try {
+      await authorizeProject(request, projectId, 'project:read');
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
+    const prefix = `project/${projectId}/${storyVersion}/`;
+    const { blobs } = await directions.list({ prefix });
+    const items = (await Promise.all(blobs.slice(0, 100).map(({ key }) => directions.get(key, { type: 'json' })))).filter(Boolean);
+    return json({ project_id: projectId, story_version: storyVersion, directions: items });
+  }
+
+  const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const projectId = clean(body.projectId);
+  const storyVersion = clean(body.storyVersion);
+  const shotId = clean(body.shotId);
+  const motion = clean(body.motion);
+  const lighting = clean(body.lighting);
+  const performance = clean(body.performance);
+  const blocking = clean(body.blocking);
+  const lens = Number(body.lens_mm);
+
+  if (!projectId || !storyVersion || !shotId || !safeId(projectId) || !safeId(storyVersion) || !safeId(shotId)) {
+    return json({ error: 'Valid projectId, storyVersion and shotId are required.' }, 400);
+  }
+
+  try {
+    await authorizeProject(request, projectId, 'project:edit');
+  } catch (error) {
+    const handled = securityErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+
+  if (!allowedLens.has(lens)) return json({ error: 'Unsupported lens value.' }, 400);
+  if (motion.length > 120 || lighting.length > 160 || performance.length > 240 || blocking.length > 320) {
+    return json({ error: 'Director control value is too long.' }, 400);
+  }
+
+  const value = {
+    project_id: projectId,
+    story_version: storyVersion,
+    shot_id: shotId,
+    lens_mm: lens,
+    motion,
+    lighting,
+    performance,
+    blocking,
+    updated_at: new Date().toISOString()
+  };
+
+  let lease: ProjectMutationLease | null = null;
+  try {
+    lease = await acquireProjectMutation({
+      projectId,
+      mutationType: 'director-direction',
+      expectedRevision: Number.isFinite(Number(body.expectedProjectRevision))
+        ? Number(body.expectedProjectRevision)
+        : null,
+      ttlMs: 20000
+    });
+
+    await directions.setJSON(`project/${projectId}/${storyVersion}/${shotId}`, value);
+    const committed = await commitProjectMutation(lease, {
+      story_version: storyVersion,
+      shot_id: shotId,
+      fields: ['lens_mm', 'motion', 'lighting', 'performance', 'blocking']
+    });
+
+    return json({
+      ...value,
+      project_revision: committed.revision,
+      mutation_id: committed.mutation_id
+    }, 201);
+  } catch (error) {
+    if (lease) await abortProjectMutation(lease).catch(() => false);
+    const handled = projectMutationErrorResponse(error);
+    if (handled) return json(handled.body, handled.status);
+    throw error;
+  }
+};
+
+export const config = {
+  path: '/api/direction',
+  rateLimit: {
+    windowLimit: 120,
+    windowSize: 60,
+    aggregateBy: ['ip', 'domain']
+  }
+};

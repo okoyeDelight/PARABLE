@@ -1,0 +1,76 @@
+name: PARABLE Production Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [immersive-v2, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-production-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  production-gate:
+    name: production-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+
+      - name: Syntax check production-critical runtime
+        run: |
+          node --check netlify/functions/render-dispatch.mts
+          node --check netlify/functions/render-provider-status.mts
+          node --check netlify/functions/_lib/final-motion-dispatch-gate.mts
+          node --check netlify/functions/_lib/higgsfield-runtime.mts
+          node --check netlify/functions/_lib/render-media-ingest-core.mts
+          node --check netlify/functions/_lib/render-media-assets.mts
+          node --check netlify/functions/_lib/motion-frame-extractor.mts
+          node --check netlify/functions/render-motion-inspect.mts
+          node --check netlify/functions/_lib/sequence-timeline.mts
+          node --check web/public/studio.js
+
+      - name: Prove final-motion approval lock
+        run: node tools/final_motion_gate_adversarial_smoke.mts
+
+      - name: Prove Higgsfield runtime and adapter contracts
+        run: |
+          node tools/higgsfield_runtime_contract_smoke.mts
+          node tools/higgsfield_credentials_smoke.mts
+          node tools/higgsfield_adapter_smoke.mts
+
+      - name: Prove immutable provider-media ingestion
+        run: node tools/render_media_ingest_smoke.mts
+
+      - name: Prove render and continuity foundations
+        run: |
+          node tools/render_foundation_smoke.mts
+          node tools/continuity_v4_smoke.mts
+          node tools/rights_policy_smoke.mts
+
+      - name: Prove deterministic AI benchmark guards
+        run: |
+          node tools/benchmark_quality_smoke.mts
+          node tools/benchmark_provider_smoke.mts
+
+      - name: Prove audio/edit contract
+        run: node tools/audio_edit_smoke.mts
+
+      - name: Install FFmpeg for assembler contract
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+
+      - name: Prove FFmpeg assembler contract
+        run: python3 tools/final_assembler_smoke.py

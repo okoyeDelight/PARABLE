@@ -1,0 +1,378 @@
+name: PARABLE Durable Pipeline Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: read
+
+concurrency:
+  group: parable-durable-pipeline-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve the exact Netlify deploy for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIEW_ALIAS: https://deploy-preview-1--parable-studio.netlify.app
+          OUTPUT_VAR: PREVIEW_BASE
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const { appendFileSync } = await import('node:fs');
+
+          const repo = process.env.GITHUB_REPOSITORY;
+          const sha = process.env.GITHUB_SHA;
+          const token = process.env.GH_TOKEN;
+          const fallbackAlias = process.env.PREVIEW_ALIAS;
+          const outputVar = process.env.OUTPUT_VAR || 'PREVIEW_BASE';
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+          const githubHeaders = {
+            authorization: `Bearer ${token}`,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28'
+          };
+
+          const normalizeSha = value => String(value || '').trim().toLowerCase();
+          const validDeployId = value => /^[a-zA-Z0-9_-]{6,128}$/.test(String(value || ''));
+
+          async function readJson(url) {
+            const response = await fetch(url, { cache: 'no-store' });
+            const text = await response.text();
+            let body = {};
+            try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 600) }; }
+            return { response, body };
+          }
+
+          for (let attempt = 1; attempt <= 90; attempt++) {
+            const statusResponse = await fetch(
+              `https://api.github.com/repos/${repo}/commits/${sha}/status`,
+              { headers: githubHeaders, cache: 'no-store' }
+            );
+
+            if (!statusResponse.ok) {
+              console.log(`attempt ${attempt}: GitHub status lookup -> ${statusResponse.status}`);
+              await sleep(4000);
+              continue;
+            }
+
+            const combined = await statusResponse.json();
+            const status = (combined.statuses || []).find(
+              item => item.context === 'netlify/parable-studio/deploy-preview'
+            );
+
+            console.log(
+              `attempt ${attempt}: netlify=${status?.state || 'missing'} target=${status?.target_url || 'none'}`
+            );
+
+            if (status?.state === 'failure' || status?.state === 'error') {
+              throw new Error('Netlify marked this exact commit deploy as failed.');
+            }
+
+            if (status?.state !== 'success') {
+              await sleep(4000);
+              continue;
+            }
+
+            const alias = String(status?.target_url || fallbackAlias || '').replace(/\/$/, '');
+            if (!/^https:\/\//i.test(alias)) {
+              throw new Error('Netlify succeeded but did not provide a usable preview URL.');
+            }
+
+            const identity = await readJson(alias + '/parable-deploy-identity.json?sha=' + encodeURIComponent(sha));
+            const observedCommit = normalizeSha(identity.body?.commit_ref);
+            const deployId = String(identity.body?.deploy_id || '').trim();
+
+            console.log(
+              `identity: status=${identity.response.status} commit=${observedCommit || 'missing'} deploy=${deployId || 'missing'}`
+            );
+
+            // A moving PR alias is never trusted by itself. It must prove that
+            // it is currently serving this exact Git commit and disclose the
+            // Netlify deploy id before any benchmark/smoke request can run.
+            if (!identity.response.ok || observedCommit !== normalizeSha(sha) || !validDeployId(deployId)) {
+              await sleep(4000);
+              continue;
+            }
+
+            const immutableBase = String(
+              identity.body?.immutable_url || `https://${deployId}--parable-studio.netlify.app`
+            ).replace(/\/$/, '');
+
+            const immutableIdentity = await readJson(immutableBase + '/parable-deploy-identity.json?sha=' + encodeURIComponent(sha));
+            if (
+              !immutableIdentity.response.ok ||
+              normalizeSha(immutableIdentity.body?.commit_ref) !== normalizeSha(sha) ||
+              String(immutableIdentity.body?.deploy_id || '') !== deployId
+            ) {
+              console.log('Immutable deploy identity verification failed; retrying.');
+              await sleep(4000);
+              continue;
+            }
+
+            appendFileSync(
+              process.env.GITHUB_ENV,
+              `${outputVar}=${immutableBase}\nNETLIFY_DEPLOY_ID=${deployId}\nPARABLE_COMMIT_REF=${sha}\n`
+            );
+            console.log('Verified immutable preview:', immutableBase);
+            process.exit(0);
+          }
+
+          throw new Error('Timed out waiting for a verified immutable Netlify deploy for this exact commit.');
+          NODE
+      - name: Wait for exact transactional preview
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+          for (let attempt = 1; attempt <= 72; attempt++) {
+            try {
+              const r = await fetch(base + '/api/platform-health', { cache: 'no-store' });
+              const body = await r.json().catch(() => ({}));
+              const architecture = body?.architecture || {};
+              console.log(
+                `attempt ${attempt}: status=${r.status} runtime=${body?.runtime || 'unknown'} queue=${body?.checks?.durable_workloads?.queue_mode || 'unknown'} state=${architecture?.transactional_hot_state || 'unknown'} adapter=${architecture?.state_adapter_version || 'unknown'}`
+              );
+
+              if (
+                r.ok &&
+                body?.ok === true &&
+                body?.runtime === 'parable-scale-foundation-v5' &&
+                architecture?.state_adapter_version === 'transactional-state-v4' &&
+                architecture?.queue_backend_abstraction === true &&
+                architecture?.single_queue_dependency === false &&
+                architecture?.transactional_hot_state === 'postgres-authoritative-cas' &&
+                architecture?.split_brain_write_fallback === false &&
+                body?.checks?.transactional_state?.ok === true &&
+                body?.checks?.transactional_state?.upstream?.engine === 'parable-postgres-hot-state-v4'
+              ) process.exit(0);
+            } catch (error) {
+              console.log(`attempt ${attempt}: ${error.message}`);
+            }
+            await sleep(5000);
+          }
+
+          throw new Error('The exact PostgreSQL-backed preview did not become healthy in time.');
+          NODE
+
+      - name: Verify signed Vault-backed transactional bridge
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/state-health', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('state health:', r.status, JSON.stringify(body).slice(0, 3000));
+
+          if (!r.ok || body?.ok !== true || body?.mode !== 'postgres' || body?.transactional !== true) {
+            throw new Error('Transactional state health failed: ' + JSON.stringify(body));
+          }
+
+          const upstream = body?.upstream || {};
+          if (
+            upstream?.engine !== 'parable-postgres-hot-state-v4' ||
+            upstream?.vault_backed_signing !== true ||
+            upstream?.replay_protection !== true ||
+            upstream?.job_leases !== 'postgres' ||
+            upstream?.rights_authority !== 'postgres' ||
+            upstream?.admission_control !== 'postgres' ||
+            upstream?.job_recovery !== 'postgres'
+          ) {
+            throw new Error('Transactional state capabilities are incomplete: ' + JSON.stringify(upstream));
+          }
+          NODE
+
+      - name: Verify revisions spend rights and durable leases
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/state-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('state self-test:', r.status, JSON.stringify(body).slice(0, 4500));
+
+          if (!r.ok || body?.ok !== true || body?.probe_version !== 'transactional-state-self-test-v4') {
+            throw new Error('Transactional state self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.provider_spend_guard?.duplicate_submission_blocked !== true) {
+            throw new Error('Duplicate paid submission was not blocked.');
+          }
+          if (body?.provider_spend_guard?.automatic_retry_blocked !== true) {
+            throw new Error('Ambiguous provider submission did not fail closed.');
+          }
+          if (body?.rights_guard?.revoked_rights_blocked_paid_submission !== true) {
+            throw new Error('Revoked rights did not block paid rendering.');
+          }
+          if (
+            body?.durable_job_guard?.first_worker_claimed !== true ||
+            body?.durable_job_guard?.second_worker_blocked !== true ||
+            body?.durable_job_guard?.stale_worker_completion_rejected !== true ||
+            body?.durable_job_guard?.final_status !== 'succeeded'
+          ) {
+            throw new Error('Durable job lease safety failed.');
+          }
+          if (
+            body?.admission_control?.first_project_worker_claimed !== true ||
+            body?.admission_control?.excess_project_worker_deferred !== true ||
+            body?.admission_control?.saturation_reason !== 'capacity-project' ||
+            body?.admission_control?.deferred_worker_claimed_after_release !== true
+          ) {
+            throw new Error('Worker admission control did not defer and resume saturated project work.');
+          }
+          NODE
+
+      - name: Verify stranded durable jobs self-heal
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/job-recovery-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('job recovery self-test:', r.status, JSON.stringify(body).slice(0, 4000));
+
+          if (!r.ok || body?.ok !== true || body?.probe_version !== 'job-recovery-self-test-v1') {
+            throw new Error('Durable job recovery self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.same_job_id !== true || body?.recovered_batch_claimed !== true) {
+            throw new Error('Recovery did not preserve and reclaim the original durable job.');
+          }
+          if (body?.recovery_failures !== 0) {
+            throw new Error('Recovery dispatcher reported failures.');
+          }
+          if (body?.job?.status !== 'succeeded') {
+            throw new Error('Recovered job did not complete successfully.');
+          }
+          NODE
+
+      - name: Verify real cross-invocation collision races
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const probe = 'ci' + Date.now().toString(36) + Math.random().toString(36).slice(2,10);
+          const url = (mode, writer='') =>
+            base + '/api/state-race-test?mode=' + encodeURIComponent(mode) +
+            '&probe=' + encodeURIComponent(probe) +
+            (writer ? '&writer=' + encodeURIComponent(writer) : '');
+
+          const init = await fetch(url('init'), { cache:'no-store' });
+          const initBody = await init.json().catch(() => ({}));
+          if (!init.ok || initBody?.ok !== true) {
+            throw new Error('Race probe initialization failed: ' + JSON.stringify(initBody));
+          }
+
+          const projectResponses = await Promise.all([
+            fetch(url('project-claim','a'), { cache:'no-store' }),
+            fetch(url('project-claim','b'), { cache:'no-store' })
+          ]);
+          const projectBodies = await Promise.all(projectResponses.map(r => r.json().catch(() => ({}))));
+          const projectStatuses = projectResponses.map(r => r.status).sort((a,b)=>a-b);
+          console.log('project race:', projectStatuses, projectBodies);
+
+          if (projectStatuses[0] !== 200 || projectStatuses[1] !== 409) {
+            throw new Error('Project race did not serialize exactly one writer.');
+          }
+
+          const providerResponses = await Promise.all([
+            fetch(url('provider-claim','a'), { cache:'no-store' }),
+            fetch(url('provider-claim','b'), { cache:'no-store' })
+          ]);
+          const providerBodies = await Promise.all(providerResponses.map(r => r.json().catch(() => ({}))));
+          const providerStatuses = providerResponses.map(r => r.status).sort((a,b)=>a-b);
+          console.log('provider race:', providerStatuses, providerBodies);
+
+          if (providerStatuses[0] !== 200 || providerStatuses[1] !== 409) {
+            throw new Error('Provider race did not serialize exactly one submission claim.');
+          }
+
+          const finalResponse = await fetch(url('read'), { cache:'no-store' });
+          const final = await finalResponse.json().catch(() => ({}));
+          console.log('race final:', finalResponse.status, final);
+
+          if (
+            !finalResponse.ok ||
+            final?.project_revision !== 1 ||
+            !['a','b'].includes(final?.project_winner) ||
+            final?.provider_state !== 'submitting' ||
+            final?.provider_submission_attempts !== 1
+          ) {
+            throw new Error('Cross-invocation race final state is invalid: ' + JSON.stringify(final));
+          }
+          NODE
+
+      - name: Verify end-to-end durable queue fallback and idempotency
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/queue-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('queue self-test:', r.status, JSON.stringify(body).slice(0, 3500));
+
+          if (!r.ok || body?.ok !== true) {
+            throw new Error('Durable queue self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.probe_version !== 'queue-self-test-v3') {
+            throw new Error('Unexpected queue self-test version.');
+          }
+          if (body?.idempotency?.duplicate_reused_job !== true) {
+            throw new Error('Idempotent duplicate did not reuse the original job.');
+          }
+          if (body?.idempotency?.conflicting_replay_rejected !== true) {
+            throw new Error('Conflicting replay was not rejected.');
+          }
+
+          console.log(
+            'PARABLE durable pipeline smoke passed via backend:',
+            body.backend,
+            'degraded_from_primary:',
+            body.degraded_from_primary
+          );
+          NODE
+
+      - name: Verify public project concurrency contract
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const r = await fetch(base + '/api/concurrency-self-test', { cache: 'no-store' });
+          const text = await r.text();
+          let body; try { body = JSON.parse(text); } catch { body = text; }
+
+          console.log('concurrency self-test:', r.status, JSON.stringify(body).slice(0, 3000));
+
+          if (!r.ok || body?.ok !== true) {
+            throw new Error('Project concurrency self-test failed: ' + JSON.stringify(body));
+          }
+          if (body?.overlapping_mutation_serialized !== true) {
+            throw new Error('Overlapping project mutation was not serialized safely.');
+          }
+          if (body?.stale_revision_rejected !== true) {
+            throw new Error('Stale project revision was not rejected.');
+          }
+          if (body?.revisions?.final !== 2) {
+            throw new Error('Unexpected final project revision.');
+          }
+          if (body?.probe_version !== 'project-concurrency-v2') {
+            throw new Error('Unexpected project concurrency self-test version.');
+          }
+          console.log('PARABLE project concurrency guard passed via backend:', body.backend);
+          NODE

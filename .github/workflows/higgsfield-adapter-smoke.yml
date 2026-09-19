@@ -1,0 +1,29 @@
+name: PARABLE Higgsfield Adapter Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'package.json'
+      - 'netlify/functions/_lib/render-adapters.mts'
+      - 'netlify/functions/_lib/render-router.mts'
+      - 'netlify/functions/_lib/render-commerce.mts'
+      - 'netlify/functions/render-dispatch.mts'
+      - 'netlify/functions/render-provider-status.mts'
+      - 'netlify/functions/render-route.mts'
+      - 'tools/higgsfield_adapter_smoke.mts'
+      - '.github/workflows/higgsfield-adapter-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  adapter-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts
+      - name: Verify Higgsfield adapter without spending credits
+        run: node tools/higgsfield_adapter_smoke.mts

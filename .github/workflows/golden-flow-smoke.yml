@@ -1,0 +1,196 @@
+name: PARABLE Golden Flow Model Quality Gate
+
+# This is deliberately manual. The full gate makes four real-model calls and
+# should not burn the free development quota on every UI/docs commit.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  golden-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Wait for Netlify preview and test real flow
+        env:
+          PREVIEW_BASE: https://deploy-preview-1--parable-studio.netlify.app
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          node <<'NODE'
+          const base = process.env.PREVIEW_BASE;
+          const sha = process.env.COMMIT_SHA;
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+          async function jsonFetch(path, options = {}) {
+            const response = await fetch(`${base}${path}`, options);
+            const text = await response.text();
+            let body = null;
+            try { body = JSON.parse(text); } catch { body = text; }
+            return { response, body };
+          }
+
+          async function post(path, body) {
+            return jsonFetch(path, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body)
+            });
+          }
+
+          function assert(condition, message) {
+            if (!condition) throw new Error(message);
+          }
+
+          function normalize(text) {
+            return String(text || '').toLowerCase().replace(/[“”‘’]/g, '"').replace(/\s+/g, ' ').trim();
+          }
+
+          function genericRole(name) {
+            return /^(unnamed|primary|secondary|character|narrator|mother|father|pastor|student|friend|man|woman|boy|girl|teacher|doctor|leader|roommate|brother|sister|husband|wife)(\s+[a-z-]+){0,3}$/i.test(name);
+          }
+
+          function validateResult(result, fixture) {
+            assert(result?.story_version, `${fixture.title}: missing story_version`);
+            assert(typeof result?.source_hash === 'string' && result.source_hash.length === 64, `${fixture.title}: invalid source_hash`);
+            assert(result?.engine?.mode && result?.engine?.version, `${fixture.title}: missing engine metadata`);
+            assert(result?.production_bible?.review, `${fixture.title}: missing production bible/review`);
+            assert(Array.isArray(result?.story_intelligence?.characters) && result.story_intelligence.characters.length > 0, `${fixture.title}: missing characters`);
+            assert(Array.isArray(result?.screenplay?.beats) && result.screenplay.beats.length > 0, `${fixture.title}: missing screenplay`);
+            assert(Array.isArray(result?.shot_plan) && result.shot_plan.length > 0, `${fixture.title}: missing shot plan`);
+
+            if (result.engine.mode === 'model') {
+              const source = normalize(fixture.sourceText);
+              for (const character of result.story_intelligence.characters) {
+                const name = String(character?.name || '').trim();
+                assert(!name || genericRole(name) || source.includes(normalize(name)), `${fixture.title}: unsupported character name ${name}`);
+              }
+              const mentions = result.production_bible?.spiritual_context?.scripture_mentions || [];
+              for (const mention of mentions) {
+                if (mention.reference) assert(source.includes(normalize(mention.reference)), `${fixture.title}: unsupported Scripture reference ${mention.reference}`);
+                if (mention.exact_quote_from_source) assert(source.includes(normalize(mention.text)), `${fixture.title}: unsupported exact Scripture quote`);
+              }
+            }
+          }
+
+          let previewReady = false;
+          for (let attempt = 1; attempt <= 30; attempt++) {
+            try {
+              const response = await fetch(`${base}/studio.js?commit=${sha}`, { cache: 'no-store' });
+              const text = await response.text();
+              if (response.ok && text.includes('/api/direction') && text.includes('/api/ai-status')) {
+                previewReady = true;
+                console.log(`Static preview ready on attempt ${attempt}.`);
+                break;
+              }
+            } catch (error) {
+              console.log(`Static preview attempt ${attempt}: ${error.message}`);
+            }
+            await sleep(8000);
+          }
+          if (!previewReady) throw new Error('PARABLE preview did not become ready in time.');
+
+          const aiStatus = await jsonFetch('/api/ai-status');
+          assert(aiStatus.response.ok, `AI status endpoint failed: ${aiStatus.response.status}`);
+          const providers = aiStatus.body?.story_intelligence?.configured_providers || {};
+          const requireRealModel = Boolean(providers.openrouter || providers.groq || providers.gemini);
+          console.log(`AI status: ${JSON.stringify(aiStatus.body?.story_intelligence || {})}`);
+          if (providers.openrouter) console.log('OpenRouter secret is visible to the deployed server function.');
+
+          const fixtures = [
+            {
+              title: 'The Altar CI',
+              sourceText: 'The room fell quiet.\n\nDaniel looked at the empty chair across from him. Outside, rain touched the windows like fingertips. He had prayed for an answer. He had not expected silence. His calling had never frightened him until tonight.',
+              setting: 'Awka, Nigeria',
+              primaryAudience: 'Global Christian young adults',
+              audienceScope: 'global', storyPeriod: 'present'
+            },
+            {
+              title: 'Before I Said Yes CI',
+              sourceText: 'Ada held the ring in her palm but did not put it on. Chidi waited beside the old courtyard wall. She loved him, yet the mission letter in her bag asked for two years abroad. "I need one night to pray," Ada said. Chidi nodded, hurt but unwilling to rush her.',
+              setting: 'Accra, Ghana',
+              primaryAudience: 'Christian young adults',
+              audienceScope: 'regional', storyPeriod: 'present'
+            },
+            {
+              title: 'The Watchman CI',
+              sourceText: 'Samuel crossed the university quadrangle after midnight and noticed the chapel door standing open. No service was scheduled. A phone vibrated on the front pew, displaying a message addressed to him: Do not wake the others. Samuel stopped. The generator behind the hostel suddenly went silent.',
+              setting: 'University campus, Nigeria',
+              primaryAudience: 'Christian students',
+              audienceScope: 'local', storyPeriod: 'present'
+            }
+          ];
+
+          const runs = [];
+          for (let index = 0; index < fixtures.length; index++) {
+            const fixture = fixtures[index];
+            const projectCall = await post('/api/projects', fixture);
+            assert(projectCall.response.status === 201 && projectCall.body?.id, `${fixture.title}: project creation failed ${projectCall.response.status}`);
+
+            let result = null;
+            for (let attempt = 1; attempt <= 24; attempt++) {
+              const adaptCall = await post('/api/adapt', { ...fixture, projectId: projectCall.body.id });
+              if (adaptCall.response.status === 201 && adaptCall.body?.story_version && adaptCall.body?.source_hash) {
+                result = adaptCall.body;
+                break;
+              }
+              console.log(`${fixture.title} adaptation attempt ${attempt}: ${adaptCall.response.status} ${JSON.stringify(adaptCall.body).slice(0, 180)}`);
+              if (adaptCall.response.status === 429) await sleep(6000);
+              else await sleep(8000);
+            }
+            assert(result, `${fixture.title}: latest Story Intelligence function did not become ready`);
+            validateResult(result, fixture);
+            runs.push({ fixture, project: projectCall.body, result });
+            console.log(`${fixture.title}: ${result.engine.provider}/${result.engine.model} (${result.engine.mode})`);
+            if (result.engine.mode !== 'model') console.log(`${fixture.title} fallback reason: ${result.engine.fallback_reason || 'none reported'}`);
+            if (requireRealModel) assert(result.engine.mode === 'model', `${fixture.title}: provider is configured but Story Intelligence fell back: ${result.engine.fallback_reason || 'no reason reported'}`);
+            await sleep(2500);
+          }
+
+          assert(new Set(runs.map(r => r.result.source_hash)).size === 3, 'Different stories produced duplicate source hashes.');
+          assert(new Set(runs.map(r => r.result.story_version)).size === 3, 'Different stories produced duplicate story versions.');
+          assert(new Set(runs.map(r => JSON.stringify(r.result.shot_plan.map(s => s.beat)))).size > 1, 'Shot-plan story beats did not vary across stories.');
+
+          const first = runs[0];
+          const changedFixture = {
+            ...first.fixture,
+            sourceText: `${first.fixture.sourceText}\n\nDaniel finally moved the empty chair beside his own and whispered, "I will still go."`
+          };
+          await sleep(2500);
+          const reanalysis = await post('/api/adapt', { ...changedFixture, projectId: first.project.id });
+          assert(reanalysis.response.status === 201, `Re-analysis failed: ${reanalysis.response.status} ${JSON.stringify(reanalysis.body)}`);
+          assert(reanalysis.body.story_version !== first.result.story_version, 'Changed manuscript did not produce a new story version.');
+          assert(reanalysis.body.source_hash !== first.result.source_hash, 'Changed manuscript did not produce a new source hash.');
+
+          const shot = reanalysis.body.shot_plan[0];
+          const directionCall = await post('/api/direction', {
+            projectId: first.project.id,
+            storyVersion: reanalysis.body.story_version,
+            shotId: shot.id,
+            lens_mm: Number(shot.lens_mm),
+            motion: shot.motion,
+            lighting: shot.lighting,
+            performance: shot.performance,
+            blocking: shot.blocking || ''
+          });
+          assert(directionCall.response.status === 201 && directionCall.body?.shot_id === shot.id, `Direction persistence failed: ${directionCall.response.status}`);
+
+          const directionRead = await jsonFetch(`/api/direction?projectId=${encodeURIComponent(first.project.id)}&storyVersion=${encodeURIComponent(reanalysis.body.story_version)}`);
+          assert(directionRead.response.ok && Array.isArray(directionRead.body?.directions) && directionRead.body.directions.length >= 1, 'Direction readback failed.');
+
+          let storedProject = null;
+          for (let attempt = 1; attempt <= 6; attempt++) {
+            const projectRead = await jsonFetch(`/api/projects?id=${encodeURIComponent(first.project.id)}`);
+            if (projectRead.response.ok && projectRead.body?.story_version === reanalysis.body.story_version) {
+              storedProject = projectRead.body;
+              break;
+            }
+            console.log(`Project readback attempt ${attempt}: ${projectRead.response.status} ${JSON.stringify(projectRead.body).slice(0, 180)}`);
+            await sleep(1500);
+          }
+          assert(storedProject?.story_version === reanalysis.body.story_version, 'Project did not advance to the latest story version.');
+          assert(String(storedProject?.source_text || '').includes('\n\n'), 'Manuscript paragraph formatting was not preserved in persistence.');
+
+          console.log('PARABLE Golden Flow passed: 3 genres -> grounded Story Intelligence -> version change -> directing persistence -> manuscript formatting.');
+          NODE

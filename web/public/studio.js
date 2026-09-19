@@ -1,0 +1,988 @@
+const $=(s,r=document)=>r.querySelector(s);
+const $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const form=$('#goldenForm');
+const analyzeBtn=$('#analyzeBtn');
+const emptyState=$('#emptyState');
+const resultState=$('#resultState');
+const toast=$('#studioToast');
+let currentProjectId=null;
+let currentResult=null;
+let currentUnderstanding=null;
+let currentCritic=null;
+let currentProjectRevision=null;
+let activeShot=null;
+let directionTimer=null;
+let currentVisualCanon=null;
+let currentRenderSpec=null;
+let currentKeyframePlan=null;
+let currentRenderRoute=null;
+let currentKeyframeApproval=null;
+let currentKeyframeInspection=null;
+const PENDING_PRODUCTION_JOB='parable.pending.production.v1';
+
+const escapeHtml=(v='')=>String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+const showToast=(message)=>{if(!toast)return;toast.textContent=message;toast.classList.add('show');clearTimeout(showToast.t);showToast.t=setTimeout(()=>toast.classList.remove('show'),2200)};
+const ensureOption=(select,value)=>{if(!select||value===undefined||value===null)return;if(![...select.options].some(o=>o.value===String(value))){const option=document.createElement('option');option.value=String(value);option.textContent=String(value);select.append(option)}};
+
+async function loadAiStatus(){
+  try{
+    const response=await fetch('/api/ai-status',{cache:'no-store'});
+    if(!response.ok)return;
+    const body=await response.json();
+    const status=body.story_understanding||body.story_intelligence||{};
+    const configured=status.configured_providers||{};
+    const provider=configured.openrouter?'OpenRouter':configured.groq?'Groq':configured.gemini?'Gemini':null;
+    $('#engineDot')?.classList.toggle('is-fallback',!status.ready);
+    $('#navEngineLabel').textContent=status.ready?`${provider||'Model'} Story Intelligence ready`:'Story Intelligence fallback ready';
+  }catch{
+    $('#engineDot')?.classList.add('is-fallback');
+    $('#navEngineLabel').textContent='Story Intelligence available';
+  }
+}
+
+function setStep(step){
+  $$('.workflow-step').forEach(btn=>{
+    btn.classList.toggle('is-active',btn.dataset.step===step);
+    const order=['write','understand','adapt','direct','review','render'];
+    if(currentResult){
+      const activeIndex=order.indexOf(step);const i=order.indexOf(btn.dataset.step);
+      btn.classList.toggle('is-ready',i<=activeIndex);
+    }
+  });
+  $$('[data-panel]').forEach(panel=>panel.hidden=panel.dataset.panel!==step);
+}
+
+function renderIntelligence(data){
+  const intel=data.story_intelligence;
+  $('#charactersList').innerHTML=`<div class="chip-list">${intel.characters.map(c=>`<span class="chip">${escapeHtml(c.name)}</span>`).join('')}</div>`;
+  $('#themesList').innerHTML=`<div class="chip-list">${intel.themes.map(t=>`<span class="chip">${escapeHtml(t)}</span>`).join('')}</div>`;
+  $('#conflictText').textContent=intel.conflict;
+  $('#worldText').textContent=intel.setting;
+  $('#emotionalTurn').textContent=intel.emotional_turn;
+
+  const engine=data.engine||{};
+  const understandingEngine=data.understanding_engine||currentUnderstanding?.engine||{};
+  const isModel=engine.mode==='model';
+  const understandingIsModel=understandingEngine.mode==='model';
+  $('#engineBadge').textContent=isModel
+    ?`${engine.provider} · ${engine.model}`
+    :understandingIsModel
+      ?`understood by ${understandingEngine.provider} · local adaptation`
+      :'protected local fallback';
+  $('#modelMeta').textContent=isModel
+    ?`${String(engine.provider).toUpperCase()} / ${engine.model}`
+    :understandingIsModel
+      ?`Story Understanding: ${String(understandingEngine.provider).toUpperCase()} / ${understandingEngine.model} · Adaptation: local`
+      :'Local deterministic engine · protected routing unavailable';
+  $('#versionMeta').textContent=`${engine.version||'unknown'} · ${data.story_version||'unversioned'}`;
+  $('#navEngineLabel').textContent=isModel?'Story Intelligence model live':understandingIsModel?'Model understanding · local adaptation':'Protected Story Intelligence fallback';
+  $('#engineDot')?.classList.toggle('is-fallback',!isModel&&!understandingIsModel);
+
+  const review=data.review||data.production_bible?.review||{};
+  const confidence=Math.round((Number(review.confidence)||0)*100);
+  $('#confidenceText').textContent=`${confidence}% confidence`;
+  const flags=[...(review.uncertainties||[]),...(review.fidelity_warnings||[]),...(review.human_review_flags||[])].filter(Boolean).slice(0,3);
+  $('#reviewFlags').textContent=flags.length?flags.join(' · '):'No major review flags in this pass.';
+}
+
+function renderScreenplay(data){
+  $('#sceneHeading').textContent=data.screenplay.heading;
+  $('#screenplayBeats').innerHTML=(data.screenplay.beats||[]).map(beat=>{
+    if(beat.type==='dialogue') return `<div class="beat dialogue"><b>${escapeHtml(beat.speaker||'CHARACTER')}</b><span>${escapeHtml(beat.text)}</span></div>`;
+    return `<p class="beat">${escapeHtml(beat.text)}</p>`;
+  }).join('');
+}
+
+function selectShot(shot){
+  activeShot=shot;
+  $$('.shot-item').forEach(btn=>btn.classList.toggle('is-active',btn.dataset.shot===shot.id));
+  $('#previewShotId').textContent=shot.id.replace('_',' ').toUpperCase()+` · ${String(shot.shot_size||'shot').toUpperCase()}`;
+  $('#previewBeat').textContent=shot.beat;
+  const lens=$('#lensControl');ensureOption(lens,shot.lens_mm);lens.value=String(shot.lens_mm||50);
+  const motion=$('#motionControl');ensureOption(motion,shot.motion);motion.value=shot.motion||'Locked';
+  const light=$('#lightControl');ensureOption(light,shot.lighting);light.value=shot.lighting||'Natural environment';
+  $('#performanceText').textContent=shot.performance||'Keep the performance truthful to the beat.';
+  $('#shotPreview').dataset.lens=String(shot.lens_mm||50);
+  $('#directionSaveState').textContent='Director choices are versioned with this story.';
+  currentRenderSpec=null;currentKeyframePlan=null;currentRenderRoute=null;currentKeyframeApproval=null;currentKeyframeInspection=null;
+  if($('#keyframeApprovalBox'))$('#keyframeApprovalBox').hidden=true;
+  if($('#renderState'))$('#renderState').textContent='Selected shot changed. Prepare it again before rendering.';
+}
+
+function renderDirect(data){
+  $('#projectBadge').textContent=currentProjectId?`PROJECT · ${currentProjectId.slice(-6).toUpperCase()}`:'LIVE PROJECT';
+  const shots=data.shot_plan||[];
+  $('#shotBrowser').innerHTML=shots.map((shot,index)=>`<button type="button" class="shot-item${index===0?' is-active':''}" data-shot="${escapeHtml(shot.id)}"><small>${escapeHtml(shot.id.replace('_',' ').toUpperCase())}</small><b>${escapeHtml(shot.shot_size)}</b></button>`).join('');
+  $$('.shot-item').forEach(btn=>btn.addEventListener('click',()=>{
+    const shot=shots.find(s=>s.id===btn.dataset.shot);if(shot)selectShot(shot);
+  }));
+  // Production starts at Shot 1. Later shots may require an accepted previous-shot
+  // handoff, so preselecting Shot 2 created a false-looking "continuity failure"
+  // before the user had rendered anything.
+  if(shots.length)selectShot(shots[0]);
+}
+
+function resetCritic(){
+  currentCritic=null;
+  if($('#criticIntro'))$('#criticIntro').hidden=false;
+  if($('#criticResult'))$('#criticResult').hidden=true;
+  if($('#criticEngineBadge'))$('#criticEngineBadge').textContent='not run';
+}
+
+function listMarkup(items,emptyText){
+  const values=(items||[]).filter(Boolean);
+  if(!values.length)return `<p>${escapeHtml(emptyText)}</p>`;
+  return `<ul>${values.map(item=>`<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+}
+
+function renderCritic(result){
+  currentCritic=result;
+  const review=result.review||{};
+  const engine=result.engine||{};
+  $('#criticIntro').hidden=true;
+  $('#criticResult').hidden=false;
+  $('#criticEngineBadge').textContent=engine.mode==='model'?`${engine.provider} · ${engine.model}`:'local structural critic';
+  $('#criticSummary').textContent=review.summary||'No summary returned.';
+  $('#criticReadiness').textContent=String(review.readiness||'revise').replaceAll('-',' ');
+  $('#criticConfidence').textContent=`${Math.round((Number(review.confidence)||0)*100)}% confidence`;
+  $('#criticStrongChoice').textContent=review.strongest_choice?.choice||'No strongest choice identified.';
+  $('#criticStrongWhy').textContent=review.strongest_choice?.why_it_works||'Human review required.';
+
+  const priorities=review.priorities||[];
+  $('#criticPriorityCount').textContent=`${priorities.length} ${priorities.length===1?'priority':'priorities'}`;
+  $('#criticPriorities').innerHTML=priorities.length?priorities.map(item=>`<article class="critic-priority"><span class="area">${escapeHtml(item.area||'review')}</span><div><strong>${escapeHtml(item.issue||'Review this choice')}</strong><p>${escapeHtml(item.why_it_matters||'')}</p><em>${escapeHtml(item.action||'')}</em></div></article>`).join(''):'<p>No high-leverage change was returned in this pass.</p>';
+
+  $('#criticContinuity').innerHTML=listMarkup(review.continuity_risks,'No continuity risk was identified in this pass.');
+  $('#criticFidelity').innerHTML=listMarkup(review.fidelity_risks,'No source-fidelity risk was identified in this pass.');
+  $('#criticQuestions').innerHTML=listMarkup(review.human_questions,'No unresolved human question was returned.');
+  $('#criticState').textContent=engine.mode==='model'
+    ?`Model-backed review saved to ${result.story_version}. Nothing is rewritten until you choose to change it.`
+    :`Structural fallback review saved to ${result.story_version}. A model critic was unavailable for this pass.`;
+  setStep('review');
+}
+
+function renderResult(data){
+  currentResult=data;
+  if(Number.isFinite(Number(data?.project_revision))) currentProjectRevision=Number(data.project_revision);
+  emptyState.hidden=true;
+  resultState.hidden=false;
+  resetCritic();
+  renderIntelligence(data);
+  renderScreenplay(data);
+  renderDirect(data);
+  setStep('understand');
+}
+
+async function createProject(payload){
+  const r=await fetch('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...payload,audienceScope:'global',storyPeriod:'present'})});
+  const body=await r.json();if(!r.ok)throw new Error(body.error||'Could not create production');
+  return body;
+}
+
+function rememberPendingProduction(jobId,projectId,kind='adaptation'){
+  try{localStorage.setItem(PENDING_PRODUCTION_JOB,JSON.stringify({jobId,projectId,kind,at:Date.now()}));}catch{}
+}
+function clearPendingProduction(){
+  try{localStorage.removeItem(PENDING_PRODUCTION_JOB);}catch{}
+}
+function readPendingProduction(){
+  try{
+    const value=JSON.parse(localStorage.getItem(PENDING_PRODUCTION_JOB)||'null');
+    if(!value?.jobId||!value?.projectId)return null;
+    if(Date.now()-Number(value.at||0)>24*60*60*1000){clearPendingProduction();return null;}
+    return value;
+  }catch{return null;}
+}
+
+async function stableIdempotencyKey(value){
+  const bytes=new TextEncoder().encode(value);
+  const digest=await crypto.subtle.digest('SHA-256',bytes);
+  return [...new Uint8Array(digest)].map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,48);
+}
+
+async function submitDurableJob(kind,payload,idempotencyKey){
+  let lastError=null;
+  for(let attempt=1;attempt<=3;attempt++){
+    try{
+      const r=await fetch('/api/jobs',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Idempotency-Key':idempotencyKey},
+        body:JSON.stringify({kind,payload})
+      });
+      const body=await r.json().catch(()=>({}));
+      if(r.ok&&body?.job?.id)return body;
+      lastError=new Error(body.error||'PARABLE could not start this production job.');
+      if(r.status<500&&r.status!==429)throw lastError;
+    }catch(err){
+      lastError=err instanceof Error?err:new Error(String(err||'Production request failed.'));
+    }
+    if(attempt<3){
+      $('#formNote').textContent='Connection was interrupted. PARABLE kept the request safe and is retrying…';
+      await new Promise(resolve=>setTimeout(resolve,attempt===1?900:2200));
+    }
+  }
+  throw lastError||new Error('PARABLE could not start this production job.');
+}
+
+async function waitForJob(jobId,{timeoutMs=180000,onProgress}={}){
+  const started=Date.now();
+  let delay=700;
+  while(Date.now()-started<timeoutMs){
+    const r=await fetch('/api/job-status?id='+encodeURIComponent(jobId),{cache:'no-store'});
+    const body=await r.json();if(!r.ok)throw new Error(body.error||'Could not read production job');
+    const status=body.job?.status||'queued';
+    onProgress?.(status,body.job);
+    if(status==='succeeded'){
+      if(!body.result)throw new Error('Production completed without a result.');
+      return body.result;
+    }
+    if(status==='failed')throw new Error(body.job?.last_error||'Production job failed.');
+    const serverDelay=Math.max(500,Math.min(10000,Number(body.poll_after_ms)||delay));
+    await new Promise(resolve=>setTimeout(resolve,serverDelay));
+    delay=Math.min(5000,Math.round(delay*1.25));
+  }
+  throw new Error('Production is still processing. You can safely retry; PARABLE will reuse the same job.');
+}
+
+async function understandProject(payload,projectId){
+  const jobPayload={...payload,projectId};
+  const idempotencyKey=await stableIdempotencyKey('understand|'+JSON.stringify({
+    projectId,
+    title:payload.title||'',
+    sourceText:payload.sourceText||'',
+    setting:payload.setting||'',
+    primaryAudience:payload.primaryAudience||''
+  }));
+  const body=await submitDurableJob('story-understanding',jobPayload,idempotencyKey);
+  rememberPendingProduction(body.job.id,projectId,'story-understanding');
+  const result=await waitForJob(body.job.id,{
+    onProgress:(status)=>{
+      if(status==='queued')$('#formNote').textContent='Story Understanding is queued safely…';
+      if(status==='processing')$('#formNote').textContent='PARABLE is understanding premise, characters, conflict, themes and scene intent before it adapts anything…';
+      if(status==='retrying')$('#formNote').textContent='The protected model route slowed down. PARABLE kept the manuscript safe and is retrying the same job…';
+    }
+  });
+  clearPendingProduction();
+  currentUnderstanding=result;
+  return result;
+}
+
+async function adaptProject(payload,projectId){
+  const jobPayload={...payload,projectId};
+  const idempotencyKey=await stableIdempotencyKey(JSON.stringify({
+    projectId,
+    title:payload.title||'',
+    sourceText:payload.sourceText||'',
+    setting:payload.setting||'',
+    primaryAudience:payload.primaryAudience||''
+  }));
+  const body=await submitDurableJob('adaptation',jobPayload,idempotencyKey);
+  rememberPendingProduction(body.job.id,projectId,'adaptation');
+  const result=await waitForJob(body.job.id,{
+    onProgress:(status)=>{
+      if(status==='queued')$('#formNote').textContent='Production queued safely. PARABLE is preparing Story Intelligence…';
+      if(status==='processing')$('#formNote').textContent='Story Intelligence is processing. You can stay on this screen; the work is durable.';
+      if(status==='retrying')$('#formNote').textContent='A provider slowed down. PARABLE preserved the job and is retrying safely…';
+    }
+  });
+  clearPendingProduction();
+  return result;
+}
+
+async function runDirectorCritic(){
+  if(!currentProjectId||!currentResult?.story_version){showToast('Analyze the story first.');return;}
+  const buttons=[$('#runCriticBtn'),$('#rerunCriticBtn')].filter(Boolean);
+  buttons.forEach(button=>button.disabled=true);
+  if($('#criticState'))$('#criticState').textContent='Film Quality Critic is queued safely…';
+  showToast('Director Critic is reviewing the production.');
+  try{
+    const payload={projectId:currentProjectId,storyVersion:currentResult.story_version};
+    const key=await stableIdempotencyKey('critic|'+currentProjectId+'|'+currentResult.story_version);
+    const body=await submitDurableJob('film-critic',payload,key);
+    const review=await waitForJob(body.job.id,{
+      onProgress:(status)=>{
+        if($('#criticState'))$('#criticState').textContent=status==='processing'
+          ?'Film Quality Critic is reviewing the current production…'
+          :'Film Quality Critic is waiting in the durable production queue…';
+      }
+    });
+    renderCritic(review);
+    showToast(review.engine?.mode==='model'?'Model-backed Director Critic complete.':'Structural Director Critic complete.');
+  }catch(err){
+    showToast(err.message||'Director Critic failed.');
+    if($('#criticState'))$('#criticState').textContent=err.message||'Director Critic failed.';
+  }finally{
+    buttons.forEach(button=>button.disabled=false);
+  }
+}
+
+async function persistDirection(){
+  if(!currentProjectId||!currentResult?.story_version||!activeShot)return;
+  $('#directionSaveState').textContent='Saving direction…';
+  const payload={
+    projectId:currentProjectId,
+    storyVersion:currentResult.story_version,
+    shotId:activeShot.id,
+    lens_mm:Number(activeShot.lens_mm||50),
+    motion:activeShot.motion||'',
+    lighting:activeShot.lighting||'',
+    performance:activeShot.performance||'',
+    blocking:activeShot.blocking||'',
+    ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+  };
+  try{
+    const r=await fetch('/api/direction',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const body=await r.json();
+    if(!r.ok){
+      if(r.status===409&&(body.code==='PROJECT_REVISION_CONFLICT'||body.code==='PROJECT_MUTATION_BUSY')){
+        try{
+          const latest=await fetch('/api/project-revision?projectId='+encodeURIComponent(currentProjectId),{cache:'no-store'}).then(x=>x.json());
+          if(Number.isFinite(Number(latest?.revision)))currentProjectRevision=Number(latest.revision);
+        }catch{}
+        throw new Error('This project changed elsewhere while you were directing. PARABLE protected the newer version instead of overwriting it.');
+      }
+      throw new Error(body.error||'Could not save this directing choice');
+    }
+    if(Number.isFinite(Number(body.project_revision)))currentProjectRevision=Number(body.project_revision);
+    $('#directionSaveState').textContent='Saved safely to project revision '+(currentProjectRevision??'—')+'.';
+  }catch(err){
+    $('#directionSaveState').textContent='Not saved — retry by changing the control again.';
+    showToast(err.message||'Direction save failed.');
+  }
+}
+
+function scheduleDirectionSave(){
+  clearTimeout(directionTimer);
+  directionTimer=setTimeout(persistDirection,420);
+}
+
+form?.addEventListener('submit',async e=>{
+  e.preventDefault();
+  const payload=Object.fromEntries(new FormData(form).entries());
+  analyzeBtn.disabled=true;
+  analyzeBtn.querySelector('span').textContent=currentProjectId?'Re-analyzing…':'Creating production…';
+  $('#formNote').textContent='PARABLE is reading the actual manuscript and building the production structure.';
+  try{
+    if(!currentProjectId){
+      const project=await createProject(payload);currentProjectId=project.id;
+      analyzeBtn.querySelector('span').textContent='Understanding story…';
+    }
+    analyzeBtn.querySelector('span').textContent='Understanding story…';
+    const understanding=await understandProject(payload,currentProjectId);
+    currentUnderstanding=understanding;
+    analyzeBtn.querySelector('span').textContent='Adapting for screen…';
+    $('#formNote').textContent='Story Understanding is locked to this manuscript version. PARABLE is now adapting it into screenplay and shot direction.';
+    const result=await adaptProject(payload,currentProjectId);
+    renderResult(result);
+    const model=result.engine?.mode==='model';
+    const understoodByModel=result.understanding_engine?.mode==='model'||understanding?.engine?.mode==='model';
+    $('#formNote').textContent=model
+      ?`Model-backed adaptation completed with ${result.engine.provider}. Understanding, source and adaptation are versioned together.`
+      :understoodByModel
+        ?'Model-backed Story Understanding was preserved; screenplay and shot adaptation completed through the protected local fallback.'
+        :'Protected free-model routing was unavailable, so PARABLE kept this manuscript private and used the local fallback. Your OpenRouter connection is configured; PARABLE did not weaken privacy just to force an AI answer.';
+    showToast(model?'Story Intelligence model pass complete.':understoodByModel?'Story understood; local screen adaptation complete.':'Private local fallback complete.');
+  }catch(err){
+    $('#formNote').textContent=err.message;showToast(err.message);
+  }finally{
+    analyzeBtn.disabled=false;analyzeBtn.querySelector('span').textContent='Analyze story';
+  }
+});
+
+$$('.workflow-step').forEach(btn=>btn.addEventListener('click',()=>{
+  const step=btn.dataset.step;
+  if(step==='write'){$('.story-pane')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(!currentResult){showToast('Analyze the story first.');return}
+  setStep(step);
+  if(step==='render'&&!currentRenderSpec){
+    $('#renderState').textContent='Select a shot in Direct, then prepare it here. PARABLE will build canon and continuity before routing.';
+  }
+}));
+
+$('#copyScreenplay')?.addEventListener('click',async()=>{
+  if(!currentResult)return;
+  const text=[currentResult.screenplay.heading,...currentResult.screenplay.beats.map(b=>b.type==='dialogue'?`${b.speaker}\n${b.text}`:b.text)].join('\n\n');
+  try{await navigator.clipboard.writeText(text);showToast('Screenplay copied.')}catch{showToast('Copy is not available in this browser.')}
+});
+
+$('#runCriticBtn')?.addEventListener('click',runDirectorCritic);
+$('#rerunCriticBtn')?.addEventListener('click',runDirectorCritic);
+$('#prepareRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
+$('#refreshRenderBtn')?.addEventListener('click',prepareSelectedShotForRender);
+$('#generateKeyframeBtn')?.addEventListener('click',generateCurrentKeyframe);
+$('#approveKeyframeBtn')?.addEventListener('click',approveCurrentKeyframe);
+$('#revokeKeyframeBtn')?.addEventListener('click',revokeCurrentKeyframe);
+$('#keyframeAssetUrl')?.addEventListener('input',e=>setKeyframePreview(e.target.value));
+
+$('#lensControl')?.addEventListener('change',e=>{
+  $('#shotPreview').dataset.lens=e.target.value;
+  if(activeShot){activeShot.lens_mm=Number(e.target.value);scheduleDirectionSave();}
+});
+$('#motionControl')?.addEventListener('change',e=>{if(activeShot){activeShot.motion=e.target.value;scheduleDirectionSave();}showToast(`Motion: ${e.target.value}`)});
+$('#lightControl')?.addEventListener('change',e=>{if(activeShot){activeShot.lighting=e.target.value;scheduleDirectionSave();}showToast(`Light: ${e.target.value}`)});
+
+
+function currentScene(){
+  const scenes=currentResult?.production_bible?.scenes||[];
+  return scenes[0]||{
+    id:'scene_1',
+    heading:currentResult?.screenplay?.heading||'',
+    index:1
+  };
+}
+
+function currentSceneText(){
+  const screenplay=currentResult?.screenplay||{};
+  return (screenplay.beats||[]).map(beat=>{
+    const body=String(beat?.text||'').trim();
+    if(!body)return '';
+    return beat?.speaker?String(beat.speaker).trim()+': '+body:body;
+  }).filter(Boolean).join('\n');
+}
+
+async function fetchJson(url,options={}){
+  const r=await fetch(url,options);
+  const body=await r.json().catch(()=>({}));
+  if(!r.ok){
+    const err=new Error(body.error||'PARABLE request failed.');
+    err.status=r.status;err.body=body;throw err;
+  }
+  return body;
+}
+
+async function refreshProjectRevision(){
+  if(!currentProjectId)return null;
+  try{
+    const body=await fetchJson('/api/project-revision?projectId='+encodeURIComponent(currentProjectId),{cache:'no-store'});
+    if(Number.isFinite(Number(body?.revision)))currentProjectRevision=Number(body.revision);
+    return currentProjectRevision;
+  }catch{return currentProjectRevision}
+}
+
+async function ensureVisualCanon(){
+  if(!currentProjectId||!currentResult?.story_version)throw new Error('Analyze the story first.');
+  let canon=null;
+  try{
+    canon=await fetchJson('/api/visual-canon?projectId='+encodeURIComponent(currentProjectId),{cache:'no-store'});
+  }catch(err){
+    if(err.status!==404)throw err;
+  }
+
+  if(!canon||canon.story_version!==currentResult.story_version){
+    canon=await fetchJson('/api/visual-canon',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        action:'bootstrap',
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(canon.project_revision)))currentProjectRevision=Number(canon.project_revision);
+  }
+
+  currentVisualCanon=canon;
+  const referenceCount=[...(canon.characters||[]),...(canon.locations||[]),...(canon.props||[])]
+    .reduce((sum,entity)=>sum+(entity.references||[]).length,0);
+  $('#canonStatus').textContent='ready';
+  $('#canonSummary').textContent=`${(canon.characters||[]).length} characters · ${(canon.locations||[]).length} locations · ${referenceCount} locked references`;
+  $('#canonRights').textContent=(canon.unresolved_rights||[]).length
+    ?`${canon.unresolved_rights.length} reference-rights item(s) still require review before final rendering.`
+    :'No unresolved reference-rights issue is recorded in this canon.';
+  return canon;
+}
+
+async function ensureSceneContinuity(){
+  const scene=currentScene();
+  const sceneId=scene.id||'scene_1';
+  const base='/api/scene-state?projectId='+encodeURIComponent(currentProjectId)
+    +'&storyVersion='+encodeURIComponent(currentResult.story_version)
+    +'&sceneId='+encodeURIComponent(sceneId);
+
+  try{
+    return await fetchJson(base,{cache:'no-store'});
+  }catch(err){
+    if(err.status!==404)throw err;
+  }
+
+  const result=await fetchJson('/api/scene-state',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      projectId:currentProjectId,
+      storyVersion:currentResult.story_version,
+      sceneId,
+      sceneIndex:Number(scene.index||1),
+      heading:scene.heading||currentResult?.screenplay?.heading||'',
+      sceneText:currentSceneText(),
+      mode:'apply',
+      ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+    })
+  });
+  if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+  return result;
+}
+
+async function ensureShotContinuityThroughSelected(){
+  const scene=currentScene();
+  const sceneId=scene.id||'scene_1';
+  const shots=currentResult?.shot_plan||[];
+  const targetIndex=shots.findIndex(shot=>shot.id===activeShot?.id);
+  if(targetIndex<0)throw new Error('Select a shot first.');
+
+  let last=null;
+  for(let i=0;i<=targetIndex;i++){
+    const shot=shots[i];
+    const base='/api/shot-state?projectId='+encodeURIComponent(currentProjectId)
+      +'&storyVersion='+encodeURIComponent(currentResult.story_version)
+      +'&sceneId='+encodeURIComponent(sceneId)
+      +'&shotId='+encodeURIComponent(shot.id);
+
+    let existing=null;
+    try{existing=await fetchJson(base,{cache:'no-store'});}catch(err){if(err.status!==404)throw err}
+
+    const shouldRefresh=i===targetIndex;
+    if(existing&&!shouldRefresh){last=existing;continue;}
+
+    last=await fetchJson('/api/shot-state',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:shot.id,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(last.project_revision)))currentProjectRevision=Number(last.project_revision);
+  }
+  return last;
+}
+
+
+
+function renderKeyframeInspection(report){
+  currentKeyframeInspection=report||null;
+  const box=$('#keyframeInspector');
+  if(!box)return;
+  box.hidden=!report;
+  if(!report)return;
+
+  const decision=String(report.decision||'INSPECTOR_UNAVAILABLE');
+  const badge=$('#keyframeInspectorBadge');
+  badge.textContent=decision==='CLEAR_FOR_HUMAN_REVIEW'?'CLEAR'
+    :decision==='REPAIR_BEFORE_REVIEW'?'REPAIR':'MANUAL';
+  badge.classList.toggle('is-clear',decision==='CLEAR_FOR_HUMAN_REVIEW');
+  badge.classList.toggle('is-repair',decision==='REPAIR_BEFORE_REVIEW');
+  $('#keyframeInspectorDecision').textContent=decision.replaceAll('_',' ').toLowerCase();
+
+  const blockers=report.blockers||[];
+  const warnings=report.warnings||[];
+  $('#keyframeInspectorSummary').textContent=blockers[0]
+    ||warnings[0]
+    ||'No automated hard blocker was found. Human approval is still required.';
+
+  const scores=Object.entries(report.scores||{}).map(([key,value])=>
+    `<em>${escapeHtml(key.replaceAll('_',' '))} · ${Math.round(Number(value||0)*100)}%</em>`
+  ).join('');
+  const unavailable=(report.not_assessable||[]).slice(0,4).map(key=>
+    `<em>${escapeHtml(String(key).replaceAll('_',' '))} · manual</em>`
+  ).join('');
+  $('#keyframeInspectorDetails').className='keyframe-inspector-details';
+  $('#keyframeInspectorDetails').innerHTML=scores+unavailable;
+
+  const overrideRow=$('#keyframeOverrideRow');
+  if(overrideRow)overrideRow.hidden=decision!=='REPAIR_BEFORE_REVIEW';
+  if(decision!=='REPAIR_BEFORE_REVIEW'&&$('#keyframeOverrideInspector'))$('#keyframeOverrideInspector').checked=false;
+}
+
+async function inspectCurrentKeyframe(assetUri){
+  if(!currentRenderSpec||!assetUri)return null;
+  $('#keyframeInspector').hidden=false;
+  $('#keyframeInspectorBadge').textContent='CHECKING';
+  $('#keyframeInspectorDecision').textContent='Visual Inspector is checking the still…';
+  $('#keyframeInspectorSummary').textContent='Identity, wardrobe, props, geography, composition, lighting, technical artifacts and cultural grounding are being checked where evidence exists.';
+  try{
+    const report=await fetchJson('/api/keyframe-inspect',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentRenderSpec.story_version,
+        sceneId:currentRenderSpec.scene_id,
+        shotId:currentRenderSpec.shot_id,
+        specHash:currentRenderSpec.spec_hash,
+        assetUri
+      })
+    });
+    renderKeyframeInspection(report);
+    return report;
+  }catch(err){
+    renderKeyframeInspection({
+      decision:'INSPECTOR_UNAVAILABLE',
+      scores:{},
+      not_assessable:[],
+      blockers:[],
+      warnings:[err.message||'Automated inspection was unavailable.'],
+      observations:[]
+    });
+    return null;
+  }
+}
+
+async function generateCurrentKeyframe(){
+  if(!currentRenderSpec||!currentKeyframePlan){
+    showToast('Prepare the selected shot first.');return;
+  }
+  const button=$('#generateKeyframeBtn');if(button)button.disabled=true;
+  $('#renderState').textContent='Generating one first-frame candidate through the durable production queue…';
+  try{
+    const key='keyframe|'+currentProjectId+'|'+currentRenderSpec.story_version+'|'
+      +currentRenderSpec.scene_id+'|'+currentRenderSpec.shot_id+'|'+currentRenderSpec.spec_hash+'|'
+      +Date.now()+'|'+(crypto.randomUUID?crypto.randomUUID():Math.random());
+
+    const freeDevelopment=Boolean($('#freeDevVisual')?.checked);
+    if(!freeDevelopment){
+      throw new Error('No paid image generation will run automatically. Enable the Free development visual option for this test story, or add an approved production image provider later.');
+    }
+    const submitted=await submitDurableJob('keyframe-generate',{
+      projectId:currentProjectId,
+      storyVersion:currentRenderSpec.story_version,
+      sceneId:currentRenderSpec.scene_id,
+      shotId:currentRenderSpec.shot_id,
+      specHash:currentRenderSpec.spec_hash,
+      freeDevelopment:true,
+      nonConfidentialConfirmed:true
+    },await stableIdempotencyKey(key));
+
+    const result=await waitForJob(submitted.job.id,{
+      timeoutMs:180000,
+      onProgress:(status)=>{
+        $('#renderState').textContent=status==='processing'
+          ?'PARABLE is generating and storing the first-frame candidate…'
+          :status==='retrying'
+            ?'The image provider slowed down. The same durable job is retrying without creating a second purchase…'
+            :'First-frame generation is queued safely…';
+      }
+    });
+
+    if(!result?.asset_uri)throw new Error('Keyframe generation completed without an asset.');
+
+    $('#keyframeAssetUrl').value=result.asset_uri;
+    $('#keyframeContentSha').value=result.content_sha256||'';
+    $('#keyframeAssetSource').value='generated';
+    $('#keyframeImmutable').checked=true;
+    setKeyframePreview(result.asset_uri);
+
+    const cost=Number(result.actual_cost_usd);
+    $('#renderState').textContent=Number.isFinite(cost)
+      ?`Candidate generated and stored immutably. Provider cost reported: ${cost.toFixed(4)}. Running Visual Inspector…`
+      :'Candidate generated and stored immutably. Running Visual Inspector…';
+
+    await inspectCurrentKeyframe(result.asset_uri);
+    showToast('First-frame candidate ready for human review.');
+  }catch(err){
+    $('#renderState').textContent=err.message||'First-frame generation failed.';
+    showToast(err.message||'First-frame generation failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
+function setKeyframePreview(uri){
+  const image=$('#keyframeAssetPreview');
+  const empty=$('#keyframePreviewEmpty');
+  if(!image||!empty)return;
+  const value=String(uri||'').trim();
+  if(!value){
+    image.hidden=true;image.removeAttribute('src');empty.hidden=false;return;
+  }
+  image.onload=()=>{image.hidden=false;empty.hidden=true};
+  image.onerror=()=>{image.hidden=true;empty.hidden=false};
+  image.src=value;
+}
+
+function renderKeyframeApproval(approval){
+  currentKeyframeApproval=approval||null;
+  const approved=approval?.status==='approved'&&approval?.spec_hash===currentRenderSpec?.spec_hash;
+  $('#keyframeApprovalBox').hidden=false;
+  $('#keyframeApprovalBadge').textContent=approved?'APPROVED':'LOCKED';
+  $('#keyframeApprovalBadge').classList.toggle('is-approved',approved);
+  $('#keyframeApprovalTitle').textContent=approved?'First frame approved for final motion.':'Final motion is locked.';
+  $('#keyframeApprovalState').textContent=approved
+    ?'This exact still is bound to this exact ShotRenderSpec. Changing the shot or revoking approval locks final motion again.'
+    :'Approve one exact still for this exact ShotRenderSpec before final motion can be created.';
+  $('#keyframeStatus').textContent=approved?'approved':'human gate';
+  $('#revokeKeyframeBtn').hidden=!approved;
+
+  if(approved){
+    $('#keyframeAssetUrl').value=approval.asset?.uri||'';
+    $('#keyframeAssetSource').value=approval.asset?.source||'generated';
+    $('#keyframeContentSha').value=approval.asset?.content_sha256||'';
+    $('#keyframeImmutable').checked=Boolean(approval.asset?.immutable_binding);
+    $$('[data-keyframe-check]').forEach(box=>{
+      box.checked=Boolean(approval.checks?.[box.dataset.keyframeCheck]);
+    });
+    setKeyframePreview(approval.asset?.uri||'');
+  }
+}
+
+async function loadKeyframeApproval(){
+  if(!currentProjectId||!currentRenderSpec)return null;
+  const query=new URLSearchParams({
+    projectId:currentProjectId,
+    sceneId:currentRenderSpec.scene_id,
+    shotId:currentRenderSpec.shot_id
+  });
+  try{
+    const result=await fetchJson('/api/keyframe-approval?'+query.toString(),{cache:'no-store'});
+    renderKeyframeApproval(result.approval||null);
+    if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+    return result.approval||null;
+  }catch(err){
+    if(err.status===404){
+      renderKeyframeApproval(null);
+      return null;
+    }
+    throw err;
+  }
+}
+
+function keyframeChecksPayload(){
+  return Object.fromEntries($$('[data-keyframe-check]').map(box=>[
+    box.dataset.keyframeCheck,
+    Boolean(box.checked)
+  ]));
+}
+
+async function approveCurrentKeyframe(){
+  if(!currentRenderSpec||!currentKeyframePlan){
+    showToast('Prepare the selected shot first.');return;
+  }
+  const assetUri=String($('#keyframeAssetUrl')?.value||'').trim();
+  if(!assetUri){showToast('Add the first-frame image URL.');return;}
+
+  const button=$('#approveKeyframeBtn');if(button)button.disabled=true;
+  $('#keyframeApprovalState').textContent='Saving human first-frame approval…';
+  try{
+    const result=await fetchJson('/api/keyframe-approval',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        action:'approve',
+        projectId:currentProjectId,
+        storyVersion:currentRenderSpec.story_version,
+        sceneId:currentRenderSpec.scene_id,
+        shotId:currentRenderSpec.shot_id,
+        specHash:currentRenderSpec.spec_hash,
+        assetUri,
+        assetSource:$('#keyframeAssetSource')?.value||'generated',
+        contentSha256:String($('#keyframeContentSha')?.value||'').trim()||undefined,
+        immutableBinding:Boolean($('#keyframeImmutable')?.checked),
+        checks:keyframeChecksPayload(),
+        humanApproved:true,
+        overrideInspector:Boolean($('#keyframeOverrideInspector')?.checked),
+        note:String($('#keyframeReviewerNote')?.value||'').trim()||undefined,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+    renderKeyframeApproval(result.approval);
+    $('#renderState').textContent='First frame is now persistently approved. Final motion can only use this exact shot spec and this bound image.';
+    showToast('First frame approved.');
+  }catch(err){
+    if(err.status===409&&err.body?.code==='PROJECT_REVISION_CONFLICT')await refreshProjectRevision();
+    $('#keyframeApprovalState').textContent=err.message||'Could not approve this first frame.';
+    showToast(err.message||'First-frame approval failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
+async function revokeCurrentKeyframe(){
+  if(!currentRenderSpec||!currentKeyframeApproval)return;
+  const button=$('#revokeKeyframeBtn');if(button)button.disabled=true;
+  try{
+    const result=await fetchJson('/api/keyframe-approval',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        action:'revoke',
+        projectId:currentProjectId,
+        storyVersion:currentRenderSpec.story_version,
+        sceneId:currentRenderSpec.scene_id,
+        shotId:currentRenderSpec.shot_id,
+        specHash:currentRenderSpec.spec_hash,
+        reason:'Revoked from PARABLE Studio.',
+        humanApproved:true,
+        ...(Number.isFinite(Number(currentProjectRevision))?{expectedProjectRevision:Number(currentProjectRevision)}:{})
+      })
+    });
+    if(Number.isFinite(Number(result.project_revision)))currentProjectRevision=Number(result.project_revision);
+    renderKeyframeApproval(result.approval);
+    $('#renderState').textContent='First-frame approval revoked. Final motion is locked again.';
+    showToast('Keyframe approval revoked.');
+  }catch(err){
+    $('#keyframeApprovalState').textContent=err.message||'Could not revoke approval.';
+    showToast(err.message||'Revoke failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
+function renderRenderSpec(spec,route,keyframe){
+  currentRenderSpec=spec;currentRenderRoute=route;currentKeyframePlan=keyframe;
+  $('#renderContract').hidden=false;
+  $('#renderShotLabel').textContent=(spec.shot_id||'shot').replaceAll('_',' ').toUpperCase();
+  $('#renderSpecHash').textContent=(spec.spec_hash||'').slice(0,18);
+  $('#compositionStatus').textContent='compiled';
+  $('#compositionGrammar').textContent=String(spec.composition?.grammar||'natural').replaceAll('_',' ');
+  $('#compositionReason').textContent=spec.composition?.reason||'Composition follows the dramatic intent.';
+  $('#keyframeStatus').textContent=keyframe?.final_motion_render_blocked_until_approved?'canon gate':'ready';
+  $('#keyframeSummary').textContent=keyframe?.acceptance_checklist?.[0]||'First-frame approval protects the visual canon before motion.';
+  $('#renderCamera').textContent=[spec.camera?.shot_type,spec.camera?.lens_mm?spec.camera.lens_mm+'mm':'',spec.camera?.motion].filter(Boolean).join(' · ');
+  $('#renderPerformance').textContent=spec.performance?.direction||'Natural performance';
+  $('#renderReferences').textContent=`${(spec.references||[]).length} approved continuity reference(s)`;
+  $('#renderContinuity').textContent=spec.human_review?.required_before_final_render?'Human review required':'Continuity gate compiled';
+  const selected=route?.route?.selected;
+  $('#routerStatus').textContent=selected?'route ready':'no runtime route';
+  $('#routerSelection').textContent=selected?`${selected.provider} · ${selected.model}`:'Render providers are not configured in the deployed runtime yet.';
+  $('#routerReason').textContent=(route?.route?.decision_notes||[]).join(' ')||'The ShotRenderSpec remains provider-neutral.';
+  $('#renderEngineBadge').textContent=selected?'renderer ready':'render spec ready';
+}
+
+async function prepareSelectedShotForRender(){
+  if(!currentProjectId||!currentResult?.story_version||!activeShot){
+    showToast('Analyze the story and select a shot first.');return;
+  }
+  const button=$('#prepareRenderBtn');if(button)button.disabled=true;
+  $('#renderState').textContent='Building Visual Canon…';
+  try{
+    await refreshProjectRevision();
+    await ensureVisualCanon();
+
+    $('#renderState').textContent='Checking scene continuity…';
+    await ensureSceneContinuity();
+
+    $('#renderState').textContent='Building shot-by-shot physical continuity…';
+    await ensureShotContinuityThroughSelected();
+
+    const scene=currentScene();const sceneId=scene.id||'scene_1';
+    $('#renderState').textContent='Compiling provider-neutral ShotRenderSpec…';
+    const spec=await fetchJson('/api/shot-compile',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:activeShot.id
+      })
+    });
+
+    $('#renderState').textContent='Planning the first-frame canon gate…';
+    const keyframe=await fetchJson('/api/keyframe-plan',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:activeShot.id,
+        specHash:spec.spec_hash
+      })
+    });
+
+    $('#renderState').textContent='Finding a renderer without weakening continuity…';
+    const route=await fetchJson('/api/render-route',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        projectId:currentProjectId,
+        storyVersion:currentResult.story_version,
+        sceneId,
+        shotId:activeShot.id,
+        specHash:spec.spec_hash
+      })
+    });
+
+    renderRenderSpec(spec,route,keyframe);
+    await loadKeyframeApproval();
+    $('#renderState').textContent=route.ready_to_dispatch
+      ?'Shot is compiled and a compatible renderer route is available. Media generation remains a separate explicit action.'
+      :'Shot is compiled safely. No deployed renderer route is configured yet; PARABLE kept the production contract instead of degrading it.';
+    showToast('Render package prepared.');
+  }catch(err){
+    if(err.status===409&&err.body?.code==='PROJECT_REVISION_CONFLICT'){
+      await refreshProjectRevision();
+      $('#renderState').textContent='The project changed during preparation. PARABLE protected the newer revision; run Prepare selected shot again.';
+    }else if(err.status===409&&err.body?.code==='CONTINUITY_GATE_BLOCKED'){
+      const blockers=Array.isArray(err.body?.blockers)?err.body.blockers:[];
+      const handoff=blockers.find(item=>['PREVIOUS_RENDER_HANDOFF_REQUIRED','PREVIOUS_HANDOFF_FRAME_REQUIRED'].includes(String(item?.code||'')));
+      const spatial=blockers.find(item=>['SPATIAL_PLAN_BLOCKED','SPATIAL_PLAN_APPROVAL_REQUIRED'].includes(String(item?.code||'')));
+      if(handoff){
+        $('#renderState').textContent=(handoff.message||'This shot depends on the previous shot.')+' Start with Shot 1, approve its first frame/final handoff, then continue forward in sequence.';
+      }else if(spatial){
+        $('#renderState').textContent=(spatial.message||'Spatial continuity needs review.')+' PARABLE is intentionally blocking final rendering until the camera-axis/spatial plan is approved.';
+      }else if(blockers.length){
+        $('#renderState').textContent='Continuity found a real blocker: '+(blockers[0]?.message||blockers[0]?.code||'Review the continuity state before rendering.');
+      }else{
+        const unchecked=Array.isArray(err.body?.unchecked_shots)?err.body.unchecked_shots.filter(Boolean):[];
+        $('#renderState').textContent=unchecked.length
+          ?'Continuity is still building for '+unchecked.join(', ')+'. Prepare the shots in order, starting from Shot 1.'
+          :(err.message||'This shot has not passed the continuity gate.');
+      }
+    }else{
+      $('#renderState').textContent=err.message||'Render preparation failed.';
+    }
+    showToast($('#renderState').textContent||err.message||'Render preparation failed.');
+  }finally{
+    if(button)button.disabled=false;
+  }
+}
+
+async function resumePendingProduction(){
+  const pending=readPendingProduction();
+  if(!pending)return;
+  currentProjectId=pending.projectId;
+  $('#formNote').textContent='Restoring your in-progress production…';
+  try{
+    const result=await waitForJob(pending.jobId,{
+      timeoutMs:180000,
+      onProgress:(status)=>{
+        $('#formNote').textContent=status==='retrying'
+          ?'Production is being retried safely after an upstream delay…'
+          :'Restoring durable production work…';
+      }
+    });
+    clearPendingProduction();
+    if(pending.kind==='story-understanding'){
+      currentUnderstanding=result;
+      const project=await fetchJson('/api/projects?id='+encodeURIComponent(pending.projectId),{cache:'no-store'});
+      const payload={
+        title:project.title||'Untitled story',
+        sourceText:project.source_text||'',
+        setting:project.setting||'',
+        primaryAudience:project.primary_audience||''
+      };
+      $('#formNote').textContent='Story Understanding restored. PARABLE is continuing into screenplay and directing adaptation…';
+      const adapted=await adaptProject(payload,pending.projectId);
+      renderResult(adapted);
+      $('#formNote').textContent='Your staged production was restored and completed.';
+      showToast('Production restored.');
+      return;
+    }
+    renderResult(result);
+    $('#formNote').textContent='Your production was restored from the durable job queue.';
+    showToast('Production restored.');
+  }catch(err){
+    if(String(err?.message||'').includes('still processing'))return;
+    clearPendingProduction();
+    $('#formNote').textContent=err.message||'Could not restore the previous production job.';
+  }
+}
+
+loadAiStatus();
+resumePendingProduction();

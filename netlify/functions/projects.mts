@@ -1,4 +1,12 @@
 import { getDeployStore, getStore } from '@netlify/blobs';
+import { readProjectRevision } from './_lib/project-concurrency.mts';
+import {
+  authorizeProject,
+  authorizeProjectCreation,
+  createProjectAccess,
+  listAccessibleProjectIds,
+  securityErrorResponse
+} from './_lib/security.mts';
 
 const starterProjects = [
   {
@@ -53,6 +61,8 @@ const json = (data: unknown, status = 200) => new Response(JSON.stringify(data),
   }
 });
 
+const safeId = (value: string) => /^[a-zA-Z0-9_-]{1,96}$/.test(value);
+
 function getStores() {
   const isProduction = Netlify.context?.deploy?.context === 'production';
   if (isProduction) {
@@ -68,16 +78,27 @@ function getStores() {
 }
 
 async function seedIfNeeded(projectsStore: ReturnType<typeof getStore>) {
-  const { blobs } = await projectsStore.list({ prefix: 'project/' });
-  if (blobs.length) return;
-  await Promise.all(starterProjects.map((project) => projectsStore.setJSON(`project/${project.id}`, project)));
+  const seeded = await projectsStore.get('system/seed-v1', { type: 'json' }) as { ready?: boolean } | null;
+  if (seeded?.ready) return;
+  await Promise.all([
+    ...starterProjects.map((project) => projectsStore.setJSON(`project/${project.id}`, project)),
+    projectsStore.setJSON('system/seed-v1', { ready: true, seeded_at: new Date().toISOString() })
+  ]);
 }
 
-async function listProjects(projectsStore: ReturnType<typeof getStore>) {
+async function listProjects(projectsStore: ReturnType<typeof getStore>, limit = 50) {
   await seedIfNeeded(projectsStore);
-  const { blobs } = await projectsStore.list({ prefix: 'project/' });
+  const keys: string[] = [];
+  const pages = projectsStore.list({ prefix: 'project/', paginate: true });
+  for await (const page of pages as AsyncIterable<{ blobs: { key: string }[] }>) {
+    for (const blob of page.blobs) {
+      keys.push(blob.key);
+      if (keys.length >= limit) break;
+    }
+    if (keys.length >= limit) break;
+  }
   const projects = (await Promise.all(
-    blobs.map(({ key }) => projectsStore.get(key, { type: 'json' }))
+    keys.map((key) => projectsStore.get(key, { type: 'json' }))
   )).filter(Boolean) as typeof starterProjects;
   return projects.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
@@ -86,15 +107,54 @@ export default async (request: Request) => {
   const { projects, contexts } = getStores();
 
   if (request.method === 'GET') {
-    return json(await listProjects(projects));
+    const url = new URL(request.url);
+    const projectId = String(url.searchParams.get('id') || '').trim();
+
+    if (projectId) {
+      if (!safeId(projectId)) return json({ error: 'Invalid project identifier.' }, 400);
+      try {
+        await authorizeProject(request, projectId, 'project:read');
+      } catch (error) {
+        const handled = securityErrorResponse(error);
+        if (handled) return json(handled.body, handled.status);
+        throw error;
+      }
+      const stored = await projects.get(`project/${projectId}`, { type: 'json' });
+      if (stored) return json(stored);
+      const starter = starterProjects.find((project) => project.id === projectId);
+      return starter ? json(starter) : json({ error: 'Project not found.' }, 404);
+    }
+
+    const requestedLimit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 50) || 50));
+    try {
+      const accessible = await listAccessibleProjectIds(request);
+      const all = await listProjects(projects, Math.max(requestedLimit, 100));
+      const allowed = new Set(accessible.project_ids);
+      return json(all.filter((project) => allowed.has(project.id)).slice(0, requestedLimit));
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
   }
 
   if (request.method === 'POST') {
+    let actor;
+    try {
+      actor = await authorizeProjectCreation(request);
+    } catch (error) {
+      const handled = securityErrorResponse(error);
+      if (handled) return json(handled.body, handled.status);
+      throw error;
+    }
+
     const body = await request.json().catch(() => ({})) as Record<string, unknown>;
     const title = String(body.title || '').trim();
     if (!title) return json({ error: 'Story title is required.' }, 400);
 
     const sourceText = String(body.sourceText || '');
+    if (sourceText.length > 120000) return json({ error: 'Story input is too large for this project creation pass.' }, 413);
+
     const setting = String(body.setting || '').trim();
     const primaryAudience = String(body.primaryAudience || '').trim();
     const audienceScope = ['global', 'regional', 'local'].includes(String(body.audienceScope)) ? String(body.audienceScope) : 'global';
@@ -104,11 +164,11 @@ export default async (request: Request) => {
 
     const project = {
       id,
-      title,
+      title: title.slice(0, 160),
       logline: sourceText.trim().slice(0, 180) || 'New story waiting for its first creative analysis.',
       source_text: sourceText || null,
-      setting: setting || null,
-      primary_audience: primaryAudience || null,
+      setting: setting.slice(0, 240) || null,
+      primary_audience: primaryAudience.slice(0, 240) || null,
       audience_scope: audienceScope,
       story_period: storyPeriod,
       status: 'draft',
@@ -118,20 +178,32 @@ export default async (request: Request) => {
     };
 
     const projectContexts = [
-      { context_type: 'audience', label: 'Primary audience', scope_value: primaryAudience || audienceScope, status: 'planned' },
+      { context_type: 'audience', label: 'Primary audience', scope_value: primaryAudience.slice(0, 240) || audienceScope, status: 'planned' },
       { context_type: 'time', label: 'Story period', scope_value: storyPeriod, status: 'planned' }
     ];
-    if (setting) projectContexts.push({ context_type: 'location', label: 'Story setting', scope_value: setting, status: 'planned' });
+    if (setting) projectContexts.push({ context_type: 'location', label: 'Story setting', scope_value: setting.slice(0, 240), status: 'planned' });
 
     await Promise.all([
       projects.setJSON(`project/${id}`, project),
       contexts.setJSON(`project/${id}`, projectContexts)
     ]);
 
-    return json(project, 201);
+    await createProjectAccess(id, actor);
+    const revision = await readProjectRevision(id);
+    return json({
+      ...project,
+      project_revision: revision.revision
+    }, 201);
   }
 
   return json({ error: 'Method not allowed' }, 405);
 };
 
-export const config = { path: '/api/projects' };
+export const config = {
+  path: '/api/projects',
+  rateLimit: {
+    windowLimit: 30,
+    windowSize: 60,
+    aggregateBy: ['ip', 'domain']
+  }
+};

@@ -1,0 +1,40 @@
+name: PARABLE Final Motion Gate + Higgsfield Runtime Smoke
+
+on:
+  push:
+    branches: [immersive-v2]
+    paths:
+      - 'netlify/functions/_lib/final-motion-dispatch-gate.mts'
+      - 'netlify/functions/_lib/higgsfield-runtime.mts'
+      - 'netlify/functions/_lib/keyframe-approval-core.mts'
+      - 'netlify/functions/_lib/render-foundation.mts'
+      - 'netlify/functions/render-attempts.mts'
+      - 'netlify/functions/render-dispatch.mts'
+      - 'netlify/functions/render-provider-status.mts'
+      - 'tools/final_motion_gate_adversarial_smoke.mts'
+      - 'tools/higgsfield_runtime_contract_smoke.mts'
+      - '.github/workflows/final-motion-gate-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parable-final-motion-gate-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install runtime dependencies
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Prove final-motion approval cannot be bypassed
+        run: node tools/final_motion_gate_adversarial_smoke.mts
+      - name: Prove Higgsfield v2 lifecycle parsing
+        run: node tools/higgsfield_runtime_contract_smoke.mts

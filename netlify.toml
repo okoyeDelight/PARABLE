@@ -1,9 +1,16 @@
 [build]
+  command = "node tools/write_deploy_identity.mjs"
   publish = "web/public"
   functions = "netlify/functions"
 
 [functions]
   node_bundler = "esbuild"
+
+# Benchmark routing is deliberately enabled only for Netlify Deploy Previews.
+# The /api/ai-benchmark endpoint accepts only PARABLE's hardcoded synthetic
+# fixtures; real manuscripts always use the protected privacy lane.
+[context.deploy-preview.environment]
+  PARABLE_ENABLE_BENCHMARK_LANE = "true"
 
 [[redirects]]
   from = "/*"
