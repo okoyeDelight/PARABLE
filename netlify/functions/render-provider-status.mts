@@ -11,6 +11,8 @@ import {
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
 import { readHiggsfieldCredentials } from './_lib/higgsfield-credentials.mts';
 import { normalizeHiggsfieldResponse } from './_lib/higgsfield-runtime.mts';
+import { ingestRenderMedia, signedRenderMediaUrl } from './_lib/render-media-assets.mts';
+import { RenderMediaIngestError } from './_lib/render-media-ingest-core.mts';
 
 const json = (data: unknown, status = 200, extra: Record<string, string> = {}) => new Response(JSON.stringify(data), {
   status,
@@ -274,33 +276,113 @@ export default async (request: Request) => {
     }, 200, { 'retry-after': String(retryAfter) });
   }
 
+  let ingested:any;
+  try {
+    ingested = await ingestRenderMedia({
+      projectId: attempt.project_id,
+      attemptId: attempt.id,
+      sourceUrl: polled.asset_uri,
+      provider: attempt.provider,
+      providerRequestId: attempt.provider_request_id
+    });
+  } catch (error) {
+    const ingestError = error instanceof RenderMediaIngestError ? error : null;
+    const retryable = ingestError?.retryable === true;
+    const detail = clean(error instanceof Error ? error.message : error, 1000) || 'Immutable render-media ingestion failed.';
+
+    const next = retryable ? {
+      ...attempt,
+      status: 'rendering' as const,
+      failure_class: 'immutable-ingest-retryable',
+      failure_detail: detail,
+      updated_at: new Date().toISOString()
+    } : {
+      ...attempt,
+      status: 'failed' as const,
+      failure_class: ingestError?.code || 'immutable-ingest-failed',
+      failure_detail: detail,
+      updated_at: new Date().toISOString()
+    };
+
+    await saveRenderAttempt(next);
+    await appendRenderAttemptEvent(next, 'immutable-ingest-failed', {
+      code: ingestError?.code || 'RENDER_MEDIA_INGEST_FAILED',
+      retryable,
+      provider_status: polled.provider_status
+    });
+
+    return json({
+      error: detail,
+      code: ingestError?.code || 'RENDER_MEDIA_INGEST_FAILED',
+      retryable,
+      attempt: next,
+      provider_completed: true,
+      immutable_ingest: 'failed'
+    }, retryable ? 503 : 422);
+  }
+
+  if (attempt.provider_transaction_id) {
+    try {
+      await settleProviderTransaction({
+        id: attempt.provider_transaction_id,
+        projectId: attempt.project_id,
+        actualCostUsd: attempt.actual_cost_usd
+      });
+    } catch (error) {
+      await appendRenderAttemptEvent(attempt, 'provider-cost-settlement-pending', {
+        detail: clean(error instanceof Error ? error.message : error, 800),
+        asset_sha256: ingested.sha256
+      }).catch(() => {});
+
+      return json({
+        error: 'The provider completed and PARABLE secured the immutable media, but cost settlement is still pending. Retry status safely.',
+        code: 'PROVIDER_COST_SETTLEMENT_PENDING',
+        retryable: true,
+        provider_completed: true,
+        immutable_ingest: 'secured',
+        asset_sha256: ingested.sha256
+      }, 503);
+    }
+  }
+
+  const canonicalUri = String(ingested.canonical_uri);
+  const playbackUrl = await signedRenderMediaUrl({
+    projectId: attempt.project_id,
+    hash: ingested.sha256,
+    purpose: 'render-preview',
+    ttlSeconds: 1800
+  });
+
   const succeeded = {
     ...attempt,
     status: 'succeeded' as const,
-    asset_uri: polled.asset_uri,
+    asset_uri: canonicalUri,
+    asset_sha256: ingested.sha256,
+    asset_media_type: ingested.media_type,
+    asset_byte_length: ingested.byte_length,
+    asset_storage: 'parable-blobs-v1' as const,
     failure_class: null,
     failure_detail: null,
     updated_at: new Date().toISOString()
   };
 
-  if (attempt.provider_transaction_id) {
-    await settleProviderTransaction({
-      id: attempt.provider_transaction_id,
-      projectId: attempt.project_id,
-      actualCostUsd: attempt.actual_cost_usd
-    }).catch(() => null);
-  }
-
   await saveRenderAttempt(succeeded);
-  await appendRenderAttemptEvent(succeeded, 'provider-completed', {
+  await appendRenderAttemptEvent(succeeded, 'provider-completed-and-ingested', {
     seed: polled.seed,
-    asset_uri: polled.asset_uri
+    asset_sha256: ingested.sha256,
+    asset_media_type: ingested.media_type,
+    asset_byte_length: ingested.byte_length,
+    asset_storage: 'parable-blobs-v1',
+    provider_source_url_hash: ingested.origin?.source_url_hash || null,
+    ingest_deduplicated: Boolean(ingested.deduplicated)
   });
 
   return json({
     attempt: succeeded,
+    playback_url: playbackUrl,
     provider_status: polled.provider_status,
     seed: polled.seed,
+    immutable_ingest: 'secured',
     next_action: {
       endpoint: 'POST /api/jobs',
       kind: 'motion-inspect',
@@ -310,7 +392,7 @@ export default async (request: Request) => {
       },
       idempotency_key_hint: 'motion-inspect:' + succeeded.id + ':' + succeeded.spec_hash
     },
-    note: 'Media exists, but a final shot cannot enter the film timeline until PARABLE extracts temporal evidence, runs full-motion Visual Inspection, binds QA to this exact asset/spec, and then receives explicit acceptance.'
+    note: 'PARABLE now owns the content-addressed render bytes. The temporary provider URL is no longer authoritative. Full-motion inspection and explicit acceptance are still required before sequence use.'
   });
 };
 
