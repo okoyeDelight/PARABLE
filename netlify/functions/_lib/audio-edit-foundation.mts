@@ -60,6 +60,8 @@ export type FinalEditClip = {
   shot_id: string;
   attempt_id: string;
   asset_uri: string;
+  asset_sha256: string;
+  asset_storage: 'parable-blobs-v1';
   spec_hash: string;
   duration_seconds: number;
   transition: 'cut' | 'dissolve';
@@ -377,6 +379,8 @@ export async function buildFinalEditPlan(args: {
     shot_id: entry.shot_id,
     attempt_id: entry.attempt_id,
     asset_uri: entry.asset_uri,
+    asset_sha256: entry.asset_sha256,
+    asset_storage: entry.asset_storage,
     spec_hash: entry.spec_hash,
     duration_seconds: durationByShot.get(entry.shot_id) || 6,
     transition: 'cut' as const
@@ -393,8 +397,15 @@ export async function buildFinalEditPlan(args: {
     }));
 
   if (!clips.length) blockers.push('There are no accepted clips to edit.');
-  if (clips.some((clip) => !/^https:\/\//i.test(clip.asset_uri))) {
-    blockers.push('Every accepted clip must have a valid HTTP media asset URI.');
+  if (clips.some((clip) => !/^parable:\/\/render\/[a-f0-9]{64}$/i.test(clip.asset_uri))) {
+    blockers.push('Every accepted clip must use a PARABLE-owned immutable render URI.');
+  }
+  if (clips.some((clip) =>
+    !/^[a-f0-9]{64}$/i.test(String(clip.asset_sha256||'')) ||
+    clip.asset_uri !== 'parable://render/' + String(clip.asset_sha256||'').toLowerCase() ||
+    clip.asset_storage !== 'parable-blobs-v1'
+  )) {
+    blockers.push('Every accepted clip must carry a matching immutable media SHA-256 and PARABLE storage binding.');
   }
 
   const unsigned = {
