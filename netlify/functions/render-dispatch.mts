@@ -2,7 +2,9 @@ import { prepareRendererRequest } from './_lib/render-adapters.mts';
 import { routeRenderSpec } from './_lib/render-router.mts';
 import { evaluateProviderSpend } from './_lib/render-commerce.mts';
 import { readHiggsfieldCredentials } from './_lib/higgsfield-credentials.mts';
+import { normalizeHiggsfieldResponse } from './_lib/higgsfield-runtime.mts';
 import { evaluateStoredKeyframeGate } from './_lib/keyframe-approval.mts';
+import { evaluateFinalMotionDispatchGate } from './_lib/final-motion-dispatch-gate.mts';
 import {
   acknowledgeProviderSubmission,
   beginProviderSubmission,
@@ -275,28 +277,28 @@ async function dispatchHiggsfield(attempt: any, spec: any, approvedKeyframe: any
       withPolling: false
     });
 
-    const status = clean(result?.status, 80).toLowerCase();
-    if (['failed','canceled','cancelled','nsfw','moderated'].includes(status)) {
+    const normalized = normalizeHiggsfieldResponse(result);
+    if (normalized.state === 'failed' || normalized.state === 'moderated') {
       const failed = await failProviderTransaction({
         id: transaction.id,
         projectId: attempt.project_id,
-        failureClass: status === 'nsfw' || status === 'moderated' ? 'provider-moderated' : 'provider-rejected',
-        failureDetail: 'Higgsfield returned terminal status: ' + status
+        failureClass: normalized.state === 'moderated' ? 'provider-moderated' : 'provider-rejected',
+        failureDetail: 'Higgsfield returned terminal status: ' + (normalized.provider_status || normalized.state)
       });
       return {
         ok: false,
-        status: status === 'nsfw' || status === 'moderated' ? 422 : 502,
-        error: status === 'nsfw' || status === 'moderated'
+        status: normalized.state === 'moderated' ? 422 : 502,
+        error: normalized.state === 'moderated'
           ? 'Higgsfield moderated this generation request.'
           : 'Higgsfield rejected or canceled this generation request.',
-        code: status === 'nsfw' || status === 'moderated' ? 'RENDERER_MODERATED' : 'RENDERER_SUBMISSION_FAILED',
+        code: normalized.state === 'moderated' ? 'RENDERER_MODERATED' : 'RENDERER_SUBMISSION_FAILED',
         latency_ms: Date.now() - started,
         transaction: failed,
         spend
       };
     }
 
-    const requestId = clean(result?.request_id || result?.id, 300);
+    const requestId = normalized.request_id;
     if (!requestId) {
       const ambiguous = await markProviderSubmissionAmbiguous({
         id: transaction.id,
@@ -318,7 +320,7 @@ async function dispatchHiggsfield(attempt: any, spec: any, approvedKeyframe: any
       id: transaction.id,
       projectId: attempt.project_id,
       providerRequestId: requestId,
-      statusUrl: clean(result?.status_url, 1800) || ('https://api.higgsfield.ai/requests/' + encodeURIComponent(requestId) + '/status'),
+      statusUrl: normalized.status_url,
       responseUrl: null
     });
 
@@ -415,14 +417,6 @@ export default async (request: Request) => {
 
   if (!spec) return json({ error: 'The ShotRenderSpec for this attempt was not found.' }, 409);
 
-  if (attempt.mode === 'final' && spec.human_review.required_before_final_render) {
-    return json({
-      error: 'This final render is blocked pending human review.',
-      code: 'HUMAN_REVIEW_REQUIRED',
-      reasons: spec.human_review.reasons
-    }, 409);
-  }
-
   const keyframeGate = attempt.mode === 'final'
     ? await evaluateStoredKeyframeGate({
         projectId: attempt.project_id,
@@ -432,47 +426,51 @@ export default async (request: Request) => {
       })
     : null;
 
-  if (keyframeGate && !keyframeGate.allowed) {
-    return json({
-      error: keyframeGate.message,
-      code: keyframeGate.code,
-      final_motion_gate: 'blocked'
-    }, 409);
-  }
-
-  if (
-    attempt.mode === 'final' &&
-    (
-      !attempt.keyframe_approval_ref ||
-      attempt.keyframe_approval_ref !== keyframeGate?.authoritative_ref ||
-      attempt.keyframe_asset_uri !== keyframeGate?.approval?.asset?.uri ||
-      attempt.keyframe_plan_hash !== keyframeGate?.approval?.keyframe_plan_hash
-    )
-  ) {
-    return json({
-      error: 'The approved first frame changed after this render attempt was created. Create a new final attempt so its inputs remain immutable.',
-      code: 'KEYFRAME_APPROVAL_CHANGED',
-      final_motion_gate: 'blocked'
-    }, 409);
-  }
-
   const route = routeRenderSpec(spec, [], attempt.mode);
-  if (!route.selected) {
-    return json({
-      error: 'No deployed renderer currently satisfies this ShotRenderSpec.',
-      code: 'NO_RENDERER_ROUTE',
-      route
-    }, 409);
-  }
 
-  if (route.selected.provider !== attempt.provider || route.selected.model !== attempt.model) {
-    return json({
-      error: 'The attempt provider/model no longer matches the current Render Router decision.',
-      code: 'RENDER_ROUTE_CHANGED',
-      attempt_route: { provider: attempt.provider, model: attempt.model },
-      current_route: route.selected,
-      hint: 'Create a new render attempt using the current route instead of mutating this immutable attempt identity.'
-    }, 409);
+  if (attempt.mode === 'final') {
+    const dispatchGate = evaluateFinalMotionDispatchGate({
+      attempt,
+      spec,
+      keyframeGate,
+      route
+    });
+
+    if (!dispatchGate.allowed) {
+      await appendRenderAttemptEvent(attempt, 'final-motion-blocked', {
+        code: dispatchGate.code,
+        keyframe_approval_ref: attempt.keyframe_approval_ref,
+        keyframe_asset_sha256: attempt.keyframe_asset_sha256 || null,
+        keyframe_plan_hash: attempt.keyframe_plan_hash
+      }).catch(() => {});
+
+      return json({
+        error: dispatchGate.message,
+        code: dispatchGate.code,
+        final_motion_gate: 'blocked',
+        reasons: dispatchGate.code === 'HUMAN_REVIEW_REQUIRED'
+          ? spec.human_review.reasons
+          : undefined
+      }, 409);
+    }
+  } else {
+    if (!route.selected) {
+      return json({
+        error: 'No deployed renderer currently satisfies this ShotRenderSpec.',
+        code: 'NO_RENDERER_ROUTE',
+        route
+      }, 409);
+    }
+
+    if (route.selected.provider !== attempt.provider || route.selected.model !== attempt.model) {
+      return json({
+        error: 'The attempt provider/model no longer matches the current Render Router decision.',
+        code: 'RENDER_ROUTE_CHANGED',
+        attempt_route: { provider: attempt.provider, model: attempt.model },
+        current_route: route.selected,
+        hint: 'Create a new render attempt using the current route instead of mutating this immutable attempt identity.'
+      }, 409);
+    }
   }
 
   const hydratedKeyframeApproval = keyframeGate?.approval
