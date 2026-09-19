@@ -8,6 +8,8 @@ export type SequenceTimelineEntry = {
   handoff_ref: string | null;
   attempt_id: string;
   asset_uri: string;
+  asset_sha256: string;
+  asset_storage: 'parable-blobs-v1';
   spec_hash: string;
   provider: string;
   model: string;
@@ -117,6 +119,16 @@ export async function buildSequenceTimeline(args: {
     if (attempt.status !== 'accepted') blockers.push('Shot ' + shotId + ' authoritative render is not in accepted state.');
     if (attempt.mode !== 'final') blockers.push('Shot ' + shotId + ' uses a draft render; only final renders may enter a locked sequence.');
     if (!clean(attempt.asset_uri, 1800)) blockers.push('Shot ' + shotId + ' accepted render has no media asset URI.');
+    const assetHash=clean(attempt.asset_sha256,64).toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(assetHash)) {
+      blockers.push('Shot ' + shotId + ' accepted render has no immutable media SHA-256.');
+    }
+    if (attempt.asset_storage !== 'parable-blobs-v1') {
+      blockers.push('Shot ' + shotId + ' accepted render is not stored in PARABLE-owned immutable media storage.');
+    }
+    if (assetHash && clean(attempt.asset_uri,1800) !== 'parable://render/' + assetHash) {
+      blockers.push('Shot ' + shotId + ' accepted render canonical URI does not match its media SHA-256.');
+    }
     if (!clean(attempt.spec_hash, 96)) blockers.push('Shot ' + shotId + ' accepted render has no immutable spec hash.');
 
     const humanOverride = accepted?.accepted_by_human_override === true;
@@ -165,6 +177,8 @@ export async function buildSequenceTimeline(args: {
       handoff_ref: handoffState?.ref || null,
       attempt_id: clean(attempt.id, 180),
       asset_uri: clean(attempt.asset_uri, 1800),
+      asset_sha256: assetHash,
+      asset_storage: 'parable-blobs-v1',
       spec_hash: clean(attempt.spec_hash, 96),
       provider: clean(attempt.provider, 80),
       model: clean(attempt.model, 240),
