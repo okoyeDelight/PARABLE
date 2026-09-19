@@ -9,6 +9,8 @@ import {
   settleProviderTransaction
 } from './_lib/provider-transactions.mts';
 import { authorizeProject, securityErrorResponse } from './_lib/security.mts';
+import { readHiggsfieldCredentials } from './_lib/higgsfield-credentials.mts';
+import { normalizeHiggsfieldResponse } from './_lib/higgsfield-runtime.mts';
 
 const json = (data: unknown, status = 200, extra: Record<string, string> = {}) => new Response(JSON.stringify(data), {
   status,
@@ -127,7 +129,7 @@ async function pollFal(attempt: any) {
 
 
 async function pollHiggsfield(attempt: any) {
-  const credentials = Netlify.env.get('HF_CREDENTIALS') || '';
+  const credentials = readHiggsfieldCredentials();
   if (!credentials) {
     return {
       ok: false,
@@ -155,48 +157,38 @@ async function pollHiggsfield(attempt: any) {
     };
   }
 
-  const providerStatus = clean(body?.status, 80).toLowerCase();
-  if (providerStatus === 'queued') {
-    return { ok: true, state: 'queued', provider_status: providerStatus, queue_position: null };
+  const normalized = normalizeHiggsfieldResponse(body);
+  if (normalized.state === 'queued') {
+    return { ok: true, state: 'queued', provider_status: normalized.provider_status, queue_position: null };
   }
-  if (providerStatus === 'in_progress' || providerStatus === 'processing') {
-    return { ok: true, state: 'rendering', provider_status: providerStatus, queue_position: null };
+  if (normalized.state === 'rendering') {
+    return { ok: true, state: 'rendering', provider_status: normalized.provider_status, queue_position: null };
   }
-  if (['failed','canceled','cancelled','nsfw','moderated'].includes(providerStatus)) {
+  if (normalized.state === 'failed' || normalized.state === 'moderated') {
     return {
       ok: false,
-      status: providerStatus === 'nsfw' || providerStatus === 'moderated' ? 422 : 502,
-      error: providerStatus === 'nsfw' || providerStatus === 'moderated'
+      status: normalized.state === 'moderated' ? 422 : 502,
+      error: normalized.state === 'moderated'
         ? 'Higgsfield moderated this generation.'
-        : 'Higgsfield generation ended with status: ' + providerStatus,
+        : 'Higgsfield generation ended with status: ' + (normalized.provider_status || normalized.state),
       retryable: false
     };
   }
-  if (providerStatus !== 'completed') {
+  if (normalized.state !== 'succeeded' || !normalized.asset_uri) {
     return {
       ok: false,
       status: 502,
-      error: 'Unknown Higgsfield status: ' + (providerStatus || 'empty'),
+      error: 'Unknown or incomplete Higgsfield status: ' + (normalized.provider_status || 'empty'),
       retryable: true
-    };
-  }
-
-  const assetUri = clean(body?.video?.url || body?.data?.video?.url || body?.output?.video?.url, 1800);
-  if (!assetUri) {
-    return {
-      ok: false,
-      status: 502,
-      error: 'Higgsfield completed but returned no video URL.',
-      retryable: false
     };
   }
 
   return {
     ok: true,
     state: 'succeeded',
-    provider_status: providerStatus,
-    asset_uri: assetUri,
-    seed: body?.seed ?? null,
+    provider_status: normalized.provider_status,
+    asset_uri: normalized.asset_uri,
+    seed: normalized.seed,
     provider_result: body
   };
 }
