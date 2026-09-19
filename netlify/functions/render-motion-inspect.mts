@@ -108,10 +108,23 @@ export default async(request:Request)=>{
     },409);
   }
 
-  if(!attempt.asset_uri||!safeHttpUrl(attempt.asset_uri)){
+  if(!attempt.asset_uri){
     return json({
-      error:'The completed render attempt has no valid video asset URI.',
+      error:'The completed render attempt has no immutable video asset reference.',
       code:'RENDER_ASSET_REQUIRED'
+    },409);
+  }
+  if(
+    attempt.mode==='final'&&
+    (
+      attempt.asset_storage!=='parable-blobs-v1'||
+      !/^[a-f0-9]{64}$/i.test(String(attempt.asset_sha256||''))||
+      attempt.asset_uri!=='parable://render/'+String(attempt.asset_sha256||'').toLowerCase()
+    )
+  ){
+    return json({
+      error:'Final motion inspection requires PARABLE-owned content-addressed video bytes.',
+      code:'IMMUTABLE_RENDER_ASSET_REQUIRED'
     },409);
   }
 
