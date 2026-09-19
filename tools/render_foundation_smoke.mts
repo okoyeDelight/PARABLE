@@ -548,7 +548,9 @@ const acceptedFor = (shotId:string) => ({
       shot_id: shotId,
       status: 'accepted',
       mode: 'final',
-      asset_uri: 'https://example.com/' + shotId + '.mp4',
+      asset_sha256: 'c'.repeat(64),
+      asset_storage: 'parable-blobs-v1',
+      asset_uri: 'parable://render/' + 'c'.repeat(64),
       spec_hash: 'spec_' + shotId,
       provider: 'fal',
       model: 'seedance'
